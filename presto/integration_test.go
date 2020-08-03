@@ -67,7 +67,7 @@ func integrationOpen(t *testing.T, dsn ...string) *sql.DB {
 }
 
 // integration tests based on python tests:
-// https://github.com/prestodb/presto-python-client/tree/master/integration_tests
+// https://github.com/prestosql/presto-python-client/tree/master/integration_tests
 
 func TestIntegrationEnabled(t *testing.T) {
 	dsn := *integrationServerFlag
@@ -280,7 +280,9 @@ func TestIntegrationSessionProperties(t *testing.T) {
 }
 
 func TestIntegrationTypeConversion(t *testing.T) {
-	db := integrationOpen(t)
+	dsn := integrationServerDSN(t)
+	dsn += "?session_properties=parse_decimal_literals_as_double=true"
+	db := integrationOpen(t, dsn)
 	var (
 		goTime            time.Time
 		nullTime          NullTime

@@ -2,33 +2,21 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
 LOCAL_PORT=8080
-IMAGE_NAME=presto/test_server
+IMAGE_NAME=prestosql/presto
 
 cd "$( dirname "${BASH_SOURCE[0]}" )"
 
-function test_container() {
-	echo `docker ps | grep $IMAGE_NAME | cut -d\  -f1`
-}
-
 function test_cleanup() {
-	local id=`test_container`
-	[ -n "$id" ] && docker rm -f $id
-	#docker rmi $IMAGE_NAME
+   docker rm -f $CONTAINER
 }
 
 trap test_cleanup EXIT
 
-function test_build() {
-	local image=`docker images | grep $IMAGE_NAME`
-	[ -z "$image" ] && docker build -t $IMAGE_NAME .
-}
-
 function test_query() {
-	docker exec -t -i `test_container` bin/presto-cli --server localhost:${LOCAL_PORT} --execute "$*"
+	docker exec -t -i $CONTAINER bin/presto --server localhost:${LOCAL_PORT} --execute "$*"
 }
 
-test_build
-docker run -p ${LOCAL_PORT}:${LOCAL_PORT} --rm -d $IMAGE_NAME
+CONTAINER=$(docker run -v "$PWD/etc:/etc/presto" -p ${LOCAL_PORT}:${LOCAL_PORT} --rm -d $IMAGE_NAME)
 
 attempts=10
 while [ $attempts -gt 0 ]

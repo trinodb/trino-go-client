@@ -1,9 +1,9 @@
 # Presto client
 
-A [Presto](https://prestodb.io) client for the [Go](https://golang.org) programming language.
+A [Presto](https://prestosql.io) client for the [Go](https://golang.org) programming language.
 
-[![Build Status](https://secure.travis-ci.org/prestodb/presto-go-client.png)](http://travis-ci.org/prestodb/presto-go-client)
-[![GoDoc](https://godoc.org/github.com/prestodb/presto-go-client?status.svg)](https://godoc.org/github.com/prestodb/presto-go-client)
+[![Build Status](https://travis-ci.com/prestosql/presto-go-client.svg)](http://travis-ci.com/prestosql/presto-go-client)
+[![GoDoc](https://godoc.org/github.com/prestosql/presto-go-client?status.svg)](https://godoc.org/github.com/prestosql/presto-go-client)
 
 ## Features
 
@@ -32,7 +32,7 @@ You need a working environment with Go installed and $GOPATH set.
 Download and install presto database/sql driver:
 
 ```bash
-go get github.com/prestodb/presto-go-client/presto
+go get github.com/prestosql/presto-go-client/presto
 ```
 
 Make sure you have Git installed and in your $PATH.
@@ -49,7 +49,7 @@ Example:
 
 ```go
 import "database/sql"
-import _ "github.com/prestodb/presto-go-client/presto"
+import _ "github.com/prestosql/presto-go-client/presto"
 
 dsn := "http://user@localhost:8080?catalog=default&schema=test"
 db, err := sql.Open("presto", dsn)
@@ -67,13 +67,13 @@ HTTP Basic authentication **is only supported on encrypted connections over HTTP
 
 #### Kerberos authentication
 
-This driver supports Kerberos authentication by setting up the Kerberos fields in the [Config](https://godoc.org/github.com/prestodb/presto-go-client/presto#Config) struct.
+This driver supports Kerberos authentication by setting up the Kerberos fields in the [Config](https://godoc.org/github.com/prestosql/presto-go-client/presto#Config) struct.
 
-Please refer to the [Coordinator Kerberos Authentication](https://prestodb.io/docs/current/security/server.html) for server-side configuration.
+Please refer to the [Coordinator Kerberos Authentication](https://prestosql.io/docs/current/security/server.html) for server-side configuration.
 
 #### System access control and per-query user information
 
-It's possible to pass user information to presto, different from the principal used to authenticate to the coordinator. See the [System Access Control](https://prestodb.io/docs/current/develop/system-access-control.html) documentation for details.
+It's possible to pass user information to presto, different from the principal used to authenticate to the coordinator. See the [System Access Control](https://prestosql.io/docs/current/develop/system-access-control.html) documentation for details.
 
 In order to pass user information in queries to presto, you have to add a [NamedArg](https://godoc.org/database/sql#NamedArg) to the query parameters where the key is X-Presto-User. This parameter is used by the driver to inform presto about the user executing the query regardless of the authentication method for the actual connection, and its value is NOT passed to the query.
 
@@ -93,7 +93,7 @@ The Data Source Name is a URL with a mandatory username, and optional query stri
 http[s]://user[:pass]@host[:port][?parameters]
 ```
 
-The easiest way to build your DSN is by using the [Config.FormatDSN](https://godoc.org/github.com/prestodb/presto-go-client/presto#Config.FormatDSN) helper function.
+The easiest way to build your DSN is by using the [Config.FormatDSN](https://godoc.org/github.com/prestosql/presto-go-client/presto#Config.FormatDSN) helper function.
 
 The driver supports both HTTP and HTTPS. If you use HTTPS it's recommended that you also provide a custom `http.Client` that can validate (or skip) the security checks of the server certificate, and/or to configure TLS client authentication.
 
@@ -101,7 +101,7 @@ The driver supports both HTTP and HTTPS. If you use HTTPS it's recommended that 
 
 *Parameters are case-sensitive*
 
-Refer to the [Presto Concepts](https://prestodb.io/docs/current/overview/concepts.html) documentation for more information.
+Refer to the [Presto Concepts](https://prestosql.io/docs/current/overview/concepts.html) documentation for more information.
 
 ##### `source`
 

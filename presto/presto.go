@@ -39,12 +39,12 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-// Package presto provides a database/sql driver for Facebook's Presto.
+// Package presto provides a database/sql driver for Presto.
 //
 // The driver should be used via the database/sql package:
 //
 //  import "database/sql"
-//  import _ "github.com/prestodb/presto-go-client/presto"
+//  import _ "github.com/prestosql/presto-go-client/presto"
 //
 //  dsn := "http://user@localhost:8080?catalog=default&schema=test"
 //  db, err := sql.Open("presto", dsn)

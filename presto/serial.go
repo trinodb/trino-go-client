@@ -36,7 +36,7 @@ func (e UnsupportedArgError) Error() string {
 type Numeric string
 
 // Serial converts any supported value to its equivalent string for as a presto parameter
-// See https://prestodb.io/docs/current/language/types.html
+// See https://prestosql.io/docs/current/language/types.html
 func Serial(v interface{}) (string, error) {
 	switch x := v.(type) {
 	case nil:
@@ -123,7 +123,7 @@ func Serial(v interface{}) (string, error) {
 		return "", UnsupportedArgError{"map"}
 	}
 
-	// TODO - consider the remaining types in https://prestodb.io/docs/current/language/types.html (Row, IP, ...)
+	// TODO - consider the remaining types in https://prestosql.io/docs/current/language/types.html (Row, IP, ...)
 
 	return "", UnsupportedArgError{fmt.Sprintf("%T", v)}
 }
