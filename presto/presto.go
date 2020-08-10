@@ -574,7 +574,9 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 				ss = append(ss, s)
 			}
 		}
-		query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(ss, ", ")
+		if len(ss) > 0 {
+			query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(ss, ", ")
+		}
 	}
 
 	req, err := st.conn.newRequest("POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
