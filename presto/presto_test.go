@@ -203,7 +203,7 @@ func TestAuthFailure(t *testing.T) {
 	defer db.Close()
 }
 
-func TestQueryWithJustUserHeader(t *testing.T) {
+func TestQueryForUsername(t *testing.T) {
 	c := &Config{
 		PrestoURI:         "http://foobar@localhost:8080",
 		SessionProperties: map[string]string{"query_priority": "1"},
@@ -218,7 +218,7 @@ func TestQueryWithJustUserHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query("SELECT 2", sql.Named("X-Presto-User", string("TestUser")))
+	rows, err := db.Query("SELECT current_user", sql.Named("X-Presto-User", string("TestUser")))
 	if err != nil {
 		t.Fatal("Failed executing query", err.Error())
 	}
@@ -230,7 +230,7 @@ func TestQueryWithJustUserHeader(t *testing.T) {
 			if err != nil {
 				t.Fatal("Failed scanning query result", err.Error())
 			}
-			want := "2"
+			want := "TestUser"
 			if ts != want {
 				t.Fatal("Expected value does not equal result value : ", ts, " != ", want)
 			}

@@ -565,7 +565,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 				return nil, err
 			}
 			if arg.Name == prestoUserHeader {
-				st.user = s
+				st.user = arg.Value.(string)
 				hs.Add(prestoUserHeader, st.user)
 			} else {
 				if hs.Get(preparedStatementHeader) == "" {
