@@ -13,7 +13,7 @@ function test_cleanup() {
 trap test_cleanup EXIT
 
 function test_query() {
-	docker exec -t -i $CONTAINER bin/presto --server localhost:${LOCAL_PORT} --execute "$*"
+	docker exec -t $CONTAINER bin/presto --server localhost:${LOCAL_PORT} --execute "$*"
 }
 
 CONTAINER=$(docker run -v "$PWD/etc:/etc/presto" -p ${LOCAL_PORT}:${LOCAL_PORT} --rm -d $IMAGE_NAME)
