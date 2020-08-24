@@ -2,7 +2,7 @@
 
 A [Presto](https://prestosql.io) client for the [Go](https://golang.org) programming language.
 
-[![Build Status](https://travis-ci.com/prestosql/presto-go-client.svg)](http://travis-ci.com/prestosql/presto-go-client)
+[![Build Status](https://github.com/prestosql/workflows/ci/badge.svg)](https://github.com/prestosql/presto-go-client/actions?query=workflow%3Aci+event%3Apush+branch%3Amaster)
 [![GoDoc](https://godoc.org/github.com/prestosql/presto-go-client?status.svg)](https://godoc.org/github.com/prestosql/presto-go-client)
 
 ## Features
