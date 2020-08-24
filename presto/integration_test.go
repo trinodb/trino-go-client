@@ -39,6 +39,8 @@ var (
 )
 
 func init() {
+	// explicitly init testing module so flags are registered before call to flag.Parse
+	testing.Init()
 	flag.Parse()
 	DefaultQueryTimeout = *integrationServerQueryTimeout
 	DefaultCancelQueryTimeout = *integrationServerQueryTimeout
