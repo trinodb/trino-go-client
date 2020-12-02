@@ -725,9 +725,15 @@ type queryColumn struct {
 type queryData []interface{}
 
 type typeSignature struct {
-	RawType          string        `json:"rawType"`
-	TypeArguments    []interface{} `json:"typeArguments"`
-	LiteralArguments []interface{} `json:"literalArguments"`
+	RawType          string                   `json:"rawType"`
+	Arguments        []typeSignatureParameter `json:"arguments"`
+	TypeArguments    []interface{}            `json:"typeArguments"`
+	LiteralArguments []interface{}            `json:"literalArguments"`
+}
+
+type typeSignatureParameter struct {
+	Kind  string      `json:"kind"`
+	Value interface{} `json:"value"`
 }
 
 type infoResponse struct {
