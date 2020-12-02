@@ -736,11 +736,6 @@ type typeSignatureParameter struct {
 	Value interface{} `json:"value"`
 }
 
-type infoResponse struct {
-	QueryID string `json:"queryId"`
-	State   string `json:"state"`
-}
-
 func handleResponseError(status int, respErr stmtError) error {
 	switch respErr.ErrorName {
 	case "":
