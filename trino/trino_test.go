@@ -325,8 +325,13 @@ func TestUnsupportedTransaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if _, err := db.Begin(); err == nil {
+	_, err = db.Begin()
+	if err == nil {
 		t.Fatal("unsupported transaction succeeded with no error")
+	}
+	expected := "operation not supported"
+	if !strings.Contains(err.Error(), expected) {
+		t.Fatalf("expected begin to fail with %s but got %v", expected, err)
 	}
 }
 
