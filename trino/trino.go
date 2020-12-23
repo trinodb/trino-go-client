@@ -910,7 +910,7 @@ func newTypeConverter(typeName string) *typeConverter {
 // parses presto types, e.g. array(varchar(10)) to "array", "varchar"
 // TODO: Use queryColumn.TypeSignature instead.
 func parseType(name string) []string {
-	parts := strings.Split(name, "(")
+	parts := strings.Split(strings.ToLower(name), "(")
 	if len(parts) == 1 {
 		return parts
 	}
