@@ -428,7 +428,7 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 		case <-timer.C:
 			timeout := DefaultQueryTimeout
 			if deadline, ok := ctx.Deadline(); ok {
-				timeout = deadline.Sub(time.Now())
+				timeout = time.Until(deadline)
 			}
 			client := c.httpClient
 			client.Timeout = timeout
@@ -716,6 +716,7 @@ func (qr *driverRows) Close() error {
 	return qr.err
 }
 
+// Columns returns the names of the columns.
 func (qr *driverRows) Columns() []string {
 	if qr.err != nil {
 		return []string{}
@@ -739,6 +740,11 @@ func (qr *driverRows) ColumnTypeDatabaseTypeName(index int) string {
 	return name
 }
 
+// Next is called to populate the next row of data into
+// the provided slice. The provided slice will be the same
+// size as the Columns() are wide.
+//
+// Next should return io.EOF when there are no more rows.
 func (qr *driverRows) Next(dest []driver.Value) error {
 	if qr.err != nil {
 		return qr.err
@@ -806,11 +812,6 @@ type typeSignature struct {
 	RawType          string        `json:"rawType"`
 	TypeArguments    []interface{} `json:"typeArguments"`
 	LiteralArguments []interface{} `json:"literalArguments"`
-}
-
-type infoResponse struct {
-	QueryID string `json:"queryId"`
-	State   string `json:"state"`
 }
 
 func handleResponseError(status int, respErr stmtError) error {
@@ -1445,11 +1446,11 @@ type NullTime struct {
 
 // Scan implements the sql.Scanner interface.
 func (s *NullTime) Scan(value interface{}) error {
-	switch value.(type) {
+	switch t := value.(type) {
 	case time.Time:
-		s.Time, s.Valid = value.(time.Time)
+		s.Time, s.Valid = t, true
 	case NullTime:
-		*s = value.(NullTime)
+		*s = t
 	}
 	return nil
 }
@@ -1574,7 +1575,8 @@ func (s *NullSliceMap) Scan(value interface{}) error {
 			return fmt.Errorf("cannot convert %v (%T) to []NullMap", value, value)
 		}
 		m := NullMap{}
-		m.Scan(vs[i])
+		// this scan can never fail
+		_ = m.Scan(vs[i])
 		slice[i] = m
 	}
 	s.SliceMap = slice
