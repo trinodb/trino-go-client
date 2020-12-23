@@ -432,6 +432,7 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 			}
 			client := c.httpClient
 			client.Timeout = timeout
+			req.Cancel = ctx.Done()
 			resp, err := client.Do(req)
 			if err != nil {
 				return nil, &ErrQueryFailed{Reason: err}
@@ -525,6 +526,7 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 	rows := &driverRows{
 		ctx:          ctx,
 		stmt:         st,
+		queryID:      sr.ID,
 		nextURI:      sr.NextURI,
 		rowsAffected: sr.UpdateCount,
 	}
@@ -616,6 +618,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 	rows := &driverRows{
 		ctx:     ctx,
 		stmt:    st,
+		queryID: sr.ID,
 		nextURI: sr.NextURI,
 	}
 	if err = rows.fetch(false); err != nil {
@@ -675,6 +678,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 type driverRows struct {
 	ctx     context.Context
 	stmt    *driverStmt
+	queryID string
 	nextURI string
 
 	err          error
@@ -690,29 +694,30 @@ var _ driver.Result = &driverRows{}
 
 // Close closes the rows iterator.
 func (qr *driverRows) Close() error {
-	if qr.nextURI != "" {
-		hs := make(http.Header)
-		hs.Add(trinoUserHeader, qr.stmt.user)
-		req, err := qr.stmt.conn.newRequest("DELETE", qr.nextURI, nil, hs)
-		if err != nil {
-			return err
-		}
-		ctx, cancel := context.WithDeadline(
-			context.Background(),
-			time.Now().Add(DefaultCancelQueryTimeout),
-		)
-		defer cancel()
-		resp, err := qr.stmt.conn.roundTrip(ctx, req)
-		if err != nil {
-			qferr, ok := err.(*ErrQueryFailed)
-			if ok && qferr.StatusCode == http.StatusNoContent {
-				qr.nextURI = ""
-				return nil
-			}
-			return err
-		}
-		resp.Body.Close()
+	if qr.err == sql.ErrNoRows || qr.err == io.EOF {
+		return nil
 	}
+	qr.err = io.EOF
+	hs := make(http.Header)
+	if qr.stmt.user != "" {
+		hs.Add(trinoUserHeader, qr.stmt.user)
+	}
+	req, err := qr.stmt.conn.newRequest("DELETE", qr.stmt.conn.baseURL+"/v1/query/"+url.PathEscape(qr.queryID), nil, hs)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultCancelQueryTimeout)
+	defer cancel()
+	resp, err := qr.stmt.conn.roundTrip(ctx, req)
+	if err != nil {
+		qferr, ok := err.(*ErrQueryFailed)
+		if ok && qferr.StatusCode == http.StatusNoContent {
+			qr.nextURI = ""
+			return nil
+		}
+		return err
+	}
+	resp.Body.Close()
 	return qr.err
 }
 
@@ -843,6 +848,10 @@ func (qr *driverRows) fetch(allowEOF bool) error {
 	}
 	resp, err := qr.stmt.conn.roundTrip(qr.ctx, req)
 	if err != nil {
+		if qr.ctx.Err() == context.Canceled {
+			qr.Close()
+			return err
+		}
 		return err
 	}
 	defer resp.Body.Close()
@@ -866,7 +875,8 @@ func (qr *driverRows) fetch(allowEOF bool) error {
 			return qr.fetch(allowEOF)
 		}
 		if allowEOF {
-			return io.EOF
+			qr.err = io.EOF
+			return qr.err
 		}
 	}
 	if qr.columns == nil && len(qresp.Columns) > 0 {
