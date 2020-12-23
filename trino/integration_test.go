@@ -422,3 +422,37 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 		})
 	}
 }
+
+func TestIntegrationExec(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+
+	_, err := db.Query(`SELECT count(*) FROM nation`)
+	expected := "Schema must be specified when session schema is not set"
+	if err == nil || !strings.Contains(err.Error(), expected) {
+		t.Fatalf("Expected to fail to execute query with error: %v, got: %v", expected, err)
+	}
+
+	result, err := db.Exec("USE tpch.sf100")
+	if err != nil {
+		t.Fatal("Failed executing query:", err.Error())
+	}
+	if result == nil {
+		t.Fatal("Expected exec result to be not nil")
+	}
+
+	a, err := result.RowsAffected()
+	if err != nil {
+		t.Fatal("Expected RowsAffected not to return any error, got:", err)
+	}
+	if a != 0 {
+		t.Fatal("Expected RowsAffected to be zero, got:", a)
+	}
+	rows, err := db.Query(`SELECT count(*) FROM nation`)
+	if err != nil {
+		t.Fatal("Failed executing query:", err.Error())
+	}
+	if rows == nil || !rows.Next() {
+		t.Fatal("Failed fetching results")
+	}
+}

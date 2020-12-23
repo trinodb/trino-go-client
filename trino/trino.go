@@ -103,6 +103,8 @@ const (
 	trinoCatalogHeader      = "X-Presto-Catalog"
 	trinoSchemaHeader       = "X-Presto-Schema"
 	trinoSessionHeader      = "X-Presto-Session"
+	trinoSetCatalogHeader   = "X-Presto-Set-Catalog"
+	trinoSetSchemaHeader    = "X-Presto-Set-Schema"
 
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
@@ -416,6 +418,14 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 			}
 			switch resp.StatusCode {
 			case http.StatusOK:
+				catalog := resp.Header.Get(trinoSetCatalogHeader)
+				if catalog != "" {
+					c.httpHeaders.Set(trinoCatalogHeader, catalog)
+				}
+				schema := resp.Header.Get(trinoSetSchemaHeader)
+				if schema != "" {
+					c.httpHeaders.Set(trinoSchemaHeader, schema)
+				}
 				return resp, nil
 			case http.StatusServiceUnavailable:
 				resp.Body.Close()
@@ -470,6 +480,7 @@ type driverStmt struct {
 var (
 	_ driver.Stmt             = &driverStmt{}
 	_ driver.StmtQueryContext = &driverStmt{}
+	_ driver.StmtExecContext  = &driverStmt{}
 )
 
 func (st *driverStmt) Close() error {
@@ -481,15 +492,38 @@ func (st *driverStmt) NumInput() int {
 }
 
 func (st *driverStmt) Exec(args []driver.Value) (driver.Result, error) {
-	return nil, ErrOperationNotSupported
+	return nil, driver.ErrSkip
+}
+
+func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	sr, err := st.exec(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	rows := &driverRows{
+		ctx:          ctx,
+		stmt:         st,
+		nextURI:      sr.NextURI,
+		rowsAffected: sr.UpdateCount,
+	}
+	// consume all results, if there are any
+	for err == nil {
+		err = rows.fetch(true)
+	}
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return rows, nil
 }
 
 type stmtResponse struct {
-	ID      string    `json:"id"`
-	InfoURI string    `json:"infoUri"`
-	NextURI string    `json:"nextUri"`
-	Stats   stmtStats `json:"stats"`
-	Error   stmtError `json:"error"`
+	ID          string    `json:"id"`
+	InfoURI     string    `json:"infoUri"`
+	NextURI     string    `json:"nextUri"`
+	Stats       stmtStats `json:"stats"`
+	Error       stmtError `json:"error"`
+	UpdateType  string    `json:"updateType"`
+	UpdateCount int64     `json:"updateCount"`
 }
 
 type stmtStats struct {
@@ -553,6 +587,22 @@ func (st *driverStmt) Query(args []driver.Value) (driver.Rows, error) {
 }
 
 func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	sr, err := st.exec(ctx, args)
+	if err != nil {
+		return nil, err
+	}
+	rows := &driverRows{
+		ctx:     ctx,
+		stmt:    st,
+		nextURI: sr.NextURI,
+	}
+	if err = rows.fetch(false); err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
 	query := st.query
 	var hs http.Header
 
@@ -588,6 +638,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 	if err != nil {
 		return nil, err
 	}
+
 	defer resp.Body.Close()
 	var sr stmtResponse
 	d := json.NewDecoder(resp.Body)
@@ -596,19 +647,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 	if err != nil {
 		return nil, fmt.Errorf("trino: %v", err)
 	}
-	err = handleResponseError(resp.StatusCode, sr.Error)
-	if err != nil {
-		return nil, err
-	}
-	rows := &driverRows{
-		ctx:     ctx,
-		stmt:    st,
-		nextURI: sr.NextURI,
-	}
-	if err = rows.fetch(false); err != nil {
-		return nil, err
-	}
-	return rows, nil
+	return &sr, handleResponseError(resp.StatusCode, sr.Error)
 }
 
 type driverRows struct {
@@ -616,15 +655,18 @@ type driverRows struct {
 	stmt    *driverStmt
 	nextURI string
 
-	err      error
-	rowindex int
-	columns  []string
-	coltype  []*typeConverter
-	data     []queryData
+	err          error
+	rowindex     int
+	columns      []string
+	coltype      []*typeConverter
+	data         []queryData
+	rowsAffected int64
 }
 
 var _ driver.Rows = &driverRows{}
+var _ driver.Result = &driverRows{}
 
+// Close closes the rows iterator.
 func (qr *driverRows) Close() error {
 	if qr.nextURI != "" {
 		hs := make(http.Header)
@@ -705,6 +747,18 @@ func (qr *driverRows) Next(dest []driver.Value) error {
 	return nil
 }
 
+// LastInsertId returns the database's auto-generated ID
+// after, for example, an INSERT into a table with primary
+// key.
+func (qr driverRows) LastInsertId() (int64, error) {
+	return 0, ErrOperationNotSupported
+}
+
+// RowsAffected returns the number of rows affected by the query.
+func (qr driverRows) RowsAffected() (int64, error) {
+	return qr.rowsAffected, qr.err
+}
+
 type queryResponse struct {
 	ID               string        `json:"id"`
 	InfoURI          string        `json:"infoUri"`
@@ -714,6 +768,8 @@ type queryResponse struct {
 	Data             []queryData   `json:"data"`
 	Stats            stmtStats     `json:"stats"`
 	Error            stmtError     `json:"error"`
+	UpdateType       string        `json:"updateType"`
+	UpdateCount      int64         `json:"updateCount"`
 }
 
 type queryColumn struct {
@@ -750,6 +806,12 @@ func handleResponseError(status int, respErr stmtError) error {
 }
 
 func (qr *driverRows) fetch(allowEOF bool) error {
+	if qr.nextURI == "" {
+		if allowEOF {
+			return io.EOF
+		}
+		return nil
+	}
 	hs := make(http.Header)
 	hs.Add(trinoUserHeader, qr.stmt.user)
 	req, err := qr.stmt.conn.newRequest("GET", qr.nextURI, nil, hs)
@@ -772,6 +834,7 @@ func (qr *driverRows) fetch(allowEOF bool) error {
 	if err != nil {
 		return err
 	}
+
 	qr.rowindex = 0
 	qr.data = qresp.Data
 	qr.nextURI = qresp.NextURI
@@ -786,6 +849,7 @@ func (qr *driverRows) fetch(allowEOF bool) error {
 	if qr.columns == nil && len(qresp.Columns) > 0 {
 		qr.initColumns(&qresp)
 	}
+	qr.rowsAffected = qresp.UpdateCount
 	return nil
 }
 
