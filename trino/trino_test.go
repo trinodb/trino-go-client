@@ -302,17 +302,6 @@ func TestWithoutSSLCertPath(t *testing.T) {
 	}
 }
 
-func TestUnsupportedExec(t *testing.T) {
-	db, err := sql.Open("trino", "http://localhost:9")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	if _, err := db.Exec("CREATE TABLE foobar (V VARCHAR)"); err == nil {
-		t.Fatal("unsupported exec succeeded with no error")
-	}
-}
-
 func TestUnsupportedTransaction(t *testing.T) {
 	db, err := sql.Open("trino", "http://localhost:9")
 	if err != nil {
