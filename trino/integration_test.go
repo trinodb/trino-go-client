@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"errors"
 	"flag"
+	"net/http"
 	"os"
 	"strings"
 	"testing"
@@ -488,5 +489,97 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 		if err == nil || err.Error() != c.err.Error() {
 			t.Fatal("unexpected error:", err)
 		}
+	}
+}
+
+func TestIntegrationQueryContextCancellation(t *testing.T) {
+	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn := integrationServerDSN(t)
+	dsn += "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=uncompressed"
+	db := integrationOpen(t, dsn)
+	defer db.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 3)
+	done := make(chan struct{})
+	longQuery := "SELECT COUNT(*) FROM lineitem"
+	go func() {
+		// query will complete in ~7s unless cancelled
+		rows, err := db.QueryContext(ctx, longQuery)
+		if err != nil {
+			errCh <- err
+			return
+		}
+		rows.Next()
+		if err = rows.Err(); err != nil {
+			errCh <- err
+			return
+		}
+		close(done)
+	}()
+
+	// poll system.runtime.queries and wait for query to start working
+	var queryID string
+	pollCtx, pollCancel := context.WithTimeout(context.Background(), 1*time.Second)
+	defer pollCancel()
+	for {
+		row := db.QueryRowContext(pollCtx, "SELECT query_id FROM system.runtime.queries WHERE state = 'RUNNING' AND source = 'cancel-test' AND query = ?", longQuery)
+		err := row.Scan(&queryID)
+		if err == nil {
+			break
+		}
+		if err != sql.ErrNoRows {
+			t.Fatal("failed to read query id", err)
+		}
+		if err = contextSleep(pollCtx, 100*time.Millisecond); err != nil {
+			t.Fatal("query did not start in 1 second")
+		}
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+		t.Fatal("unexpected query with cancelled context succeeded")
+		break
+	case err = <-errCh:
+		if !strings.Contains(err.Error(), "canceled") {
+			t.Fatal("expected err to be canceled but got:", err)
+		}
+	}
+
+	// poll system.runtime.queries and wait for query to be cancelled
+	pollCtx, pollCancel = context.WithTimeout(context.Background(), 1*time.Second)
+	defer pollCancel()
+	for {
+		row := db.QueryRowContext(pollCtx, "SELECT state, error_code FROM system.runtime.queries WHERE query_id = ?", queryID)
+		var state string
+		var code *string
+		err := row.Scan(&state, &code)
+		if err != nil {
+			t.Fatal("failed to read query id", err)
+		}
+		if state == "FAILED" && code != nil && *code == "USER_CANCELED" {
+			break
+		}
+		if err = contextSleep(pollCtx, 100*time.Millisecond); err != nil {
+			t.Fatal("query was not cancelled in 1 second; state, code, err are:", state, code, err)
+		}
+	}
+}
+
+func contextSleep(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(100 * time.Millisecond)
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		if !timer.Stop() {
+			<-timer.C
+		}
+		return ctx.Err()
 	}
 }
