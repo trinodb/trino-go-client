@@ -14,7 +14,7 @@
 
 // +build go1.9
 
-package presto
+package trino
 
 import (
 	"bytes"
@@ -55,7 +55,7 @@ func TestIntegrationInsecureTLS(t *testing.T) {
 }
 
 func testSimpleQuery(t *testing.T, dsn string) {
-	db, err := sql.Open("presto", dsn)
+	db, err := sql.Open("trino", dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,31 +75,31 @@ func testSimpleQuery(t *testing.T, dsn string) {
 // newTLSReverseProxy creates a TLS integration test server.
 func newTLSReverseProxy(t *testing.T) *httptest.Server {
 	dsn := integrationServerDSN(t)
-	prestoURL, _ := url.Parse(dsn)
+	serverURL, _ := url.Parse(dsn)
 	cproxyURL := make(chan string, 1)
-	handler := newReverseProxyHandler(prestoURL, cproxyURL)
+	handler := newReverseProxyHandler(serverURL, cproxyURL)
 	srv := httptest.NewTLSServer(http.HandlerFunc(handler))
 	cproxyURL <- srv.URL
 	close(cproxyURL)
 	proxyURL, _ := url.Parse(srv.URL)
-	proxyURL.User = prestoURL.User
-	proxyURL.Path = prestoURL.Path
-	proxyURL.RawPath = prestoURL.RawPath
-	proxyURL.RawQuery = prestoURL.RawQuery
+	proxyURL.User = serverURL.User
+	proxyURL.Path = serverURL.Path
+	proxyURL.RawPath = serverURL.RawPath
+	proxyURL.RawQuery = serverURL.RawQuery
 	srv.URL = proxyURL.String()
 	return srv
 }
 
-// newReverseProxyHandler creates an http handler that proxies requests to the given prestoURL, and replaces URLs in responses with the first value sent to the cproxyURL channel.
-func newReverseProxyHandler(prestoURL *url.URL, cproxyURL chan string) http.HandlerFunc {
-	baseURL := []byte(prestoURL.Scheme + "://" + prestoURL.Host)
+// newReverseProxyHandler creates an http handler that proxies requests to the given serverUrl, and replaces URLs in responses with the first value sent to the cproxyURL channel.
+func newReverseProxyHandler(serverURL *url.URL, cproxyURL chan string) http.HandlerFunc {
+	baseURL := []byte(serverURL.Scheme + "://" + serverURL.Host)
 	var proxyURL []byte
 	var onceProxyURL sync.Once
 	return func(w http.ResponseWriter, r *http.Request) {
 		onceProxyURL.Do(func() {
 			proxyURL = []byte(<-cproxyURL)
 		})
-		target := *prestoURL
+		target := *serverURL
 		target.User = nil
 		target.Path = r.URL.Path
 		target.RawPath = r.URL.RawPath

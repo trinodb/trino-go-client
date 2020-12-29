@@ -39,17 +39,17 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-// Package presto provides a database/sql driver for Presto.
+// Package trino provides a database/sql driver for Trino.
 //
 // The driver should be used via the database/sql package:
 //
 //  import "database/sql"
-//  import _ "github.com/prestosql/presto-go-client/presto"
+//  import _ "github.com/trinodb/trino-go-client/trino"
 //
 //  dsn := "http://user@localhost:8080?catalog=default&schema=test"
-//  db, err := sql.Open("presto", dsn)
+//  db, err := sql.Open("trino", dsn)
 //
-package presto
+package trino
 
 import (
 	"context"
@@ -78,31 +78,31 @@ import (
 )
 
 func init() {
-	sql.Register("presto", &sqldriver{})
+	sql.Register("trino", &sqldriver{})
 }
 
 var (
 	// DefaultQueryTimeout is the default timeout for queries executed without a context.
 	DefaultQueryTimeout = 60 * time.Second
 
-	// DefaultCancelQueryTimeout is the timeout for the request to cancel queries in presto.
+	// DefaultCancelQueryTimeout is the timeout for the request to cancel queries in Trino.
 	DefaultCancelQueryTimeout = 30 * time.Second
 
 	// ErrOperationNotSupported indicates that a database operation is not supported.
-	ErrOperationNotSupported = errors.New("presto: operation not supported")
+	ErrOperationNotSupported = errors.New("trino: operation not supported")
 
 	// ErrQueryCancelled indicates that a query has been cancelled.
-	ErrQueryCancelled = errors.New("presto: query cancelled")
+	ErrQueryCancelled = errors.New("trino: query cancelled")
 )
 
 const (
 	preparedStatementHeader = "X-Presto-Prepared-Statement"
-	preparedStatementName   = "_presto_go"
-	prestoUserHeader        = "X-Presto-User"
-	prestoSourceHeader      = "X-Presto-Source"
-	prestoCatalogHeader     = "X-Presto-Catalog"
-	prestoSchemaHeader      = "X-Presto-Schema"
-	prestoSessionHeader     = "X-Presto-Session"
+	preparedStatementName   = "_trino_go"
+	trinoUserHeader         = "X-Presto-User"
+	trinoSourceHeader       = "X-Presto-Source"
+	trinoCatalogHeader      = "X-Presto-Catalog"
+	trinoSchemaHeader       = "X-Presto-Schema"
+	trinoSessionHeader      = "X-Presto-Session"
 
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
@@ -122,7 +122,7 @@ var _ driver.Driver = &sqldriver{}
 
 // Config is a configuration that can be encoded to a DSN string.
 type Config struct {
-	PrestoURI          string            // URI of the Presto server, e.g. http://user@localhost:8080
+	ServerURI          string            // URI of the Trino server, e.g. http://user@localhost:8080
 	Source             string            // Source of the connection (optional)
 	Catalog            string            // Catalog (optional)
 	Schema             string            // Schema (optional)
@@ -138,7 +138,7 @@ type Config struct {
 
 // FormatDSN returns a DSN string from the configuration.
 func (c *Config) FormatDSN() (string, error) {
-	prestoURL, err := url.Parse(c.PrestoURI)
+	serverURL, err := url.Parse(c.ServerURI)
 	if err != nil {
 		return "", err
 	}
@@ -150,13 +150,13 @@ func (c *Config) FormatDSN() (string, error) {
 	}
 	source := c.Source
 	if source == "" {
-		source = "presto-go-client"
+		source = "trino-go-client"
 	}
 	query := make(url.Values)
 	query.Add("source", source)
 
 	KerberosEnabled, _ := strconv.ParseBool(c.KerberosEnabled)
-	isSSL := prestoURL.Scheme == "https"
+	isSSL := serverURL.Scheme == "https"
 
 	if isSSL && c.SSLCertPath != "" {
 		query.Add(SSLCertPathConfig, c.SSLCertPath)
@@ -169,7 +169,7 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add(kerberosRealmConfig, c.KerberosRealm)
 		query.Add(kerberosConfigPathConfig, c.KerberosConfigPath)
 		if !isSSL {
-			return "", fmt.Errorf("presto: client configuration error, SSL must be enabled for secure env")
+			return "", fmt.Errorf("trino: client configuration error, SSL must be enabled for secure env")
 		}
 	}
 
@@ -183,11 +183,11 @@ func (c *Config) FormatDSN() (string, error) {
 			query[k] = []string{v}
 		}
 	}
-	prestoURL.RawQuery = query.Encode()
-	return prestoURL.String(), nil
+	serverURL.RawQuery = query.Encode()
+	return serverURL.String(), nil
 }
 
-// Conn is a presto connection.
+// Conn is a Trino connection.
 type Conn struct {
 	baseURL         string
 	auth            *url.Userinfo
@@ -203,47 +203,47 @@ var (
 )
 
 func newConn(dsn string) (*Conn, error) {
-	prestoURL, err := url.Parse(dsn)
+	serverURL, err := url.Parse(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("presto: malformed dsn: %v", err)
+		return nil, fmt.Errorf("trino: malformed dsn: %v", err)
 	}
 
-	prestoQuery := prestoURL.Query()
+	query := serverURL.Query()
 
-	kerberosEnabled, _ := strconv.ParseBool(prestoQuery.Get(KerberosEnabledConfig))
+	kerberosEnabled, _ := strconv.ParseBool(query.Get(KerberosEnabledConfig))
 
 	var kerberosClient client.Client
 
 	if kerberosEnabled {
-		kt, err := keytab.Load(prestoQuery.Get(kerberosKeytabPathConfig))
+		kt, err := keytab.Load(query.Get(kerberosKeytabPathConfig))
 		if err != nil {
-			return nil, fmt.Errorf("presto: Error loading Keytab: %v", err)
+			return nil, fmt.Errorf("trino: Error loading Keytab: %v", err)
 		}
 
-		kerberosClient = client.NewClientWithKeytab(prestoQuery.Get(kerberosPrincipalConfig), prestoQuery.Get(kerberosRealmConfig), kt)
-		conf, err := config.Load(prestoQuery.Get(kerberosConfigPathConfig))
+		kerberosClient = client.NewClientWithKeytab(query.Get(kerberosPrincipalConfig), query.Get(kerberosRealmConfig), kt)
+		conf, err := config.Load(query.Get(kerberosConfigPathConfig))
 		if err != nil {
-			return nil, fmt.Errorf("presto: Error loading krb config: %v", err)
+			return nil, fmt.Errorf("trino: Error loading krb config: %v", err)
 		}
 
 		kerberosClient.WithConfig(conf)
 
 		loginErr := kerberosClient.Login()
 		if loginErr != nil {
-			return nil, fmt.Errorf("presto: Error login to KDC: %v", loginErr)
+			return nil, fmt.Errorf("trino: Error login to KDC: %v", loginErr)
 		}
 	}
 
 	var httpClient = http.DefaultClient
-	if clientKey := prestoQuery.Get("custom_client"); clientKey != "" {
+	if clientKey := query.Get("custom_client"); clientKey != "" {
 		httpClient = getCustomClient(clientKey)
 		if httpClient == nil {
-			return nil, fmt.Errorf("presto: custom client not registered: %q", clientKey)
+			return nil, fmt.Errorf("trino: custom client not registered: %q", clientKey)
 		}
-	} else if certPath := prestoQuery.Get(SSLCertPathConfig); certPath != "" && prestoURL.Scheme == "https" {
+	} else if certPath := query.Get(SSLCertPathConfig); certPath != "" && serverURL.Scheme == "https" {
 		cert, err := ioutil.ReadFile(certPath)
 		if err != nil {
-			return nil, fmt.Errorf("presto: Error loading SSL Cert File: %v", err)
+			return nil, fmt.Errorf("trino: Error loading SSL Cert File: %v", err)
 		}
 		certPool := x509.NewCertPool()
 		certPool.AppendCertsFromPEM(cert)
@@ -258,7 +258,7 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	c := &Conn{
-		baseURL:         prestoURL.Scheme + "://" + prestoURL.Host,
+		baseURL:         serverURL.Scheme + "://" + serverURL.Host,
 		httpClient:      *httpClient,
 		httpHeaders:     make(http.Header),
 		kerberosClient:  kerberosClient,
@@ -266,20 +266,20 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	var user string
-	if prestoURL.User != nil {
-		user = prestoURL.User.Username()
-		pass, _ := prestoURL.User.Password()
-		if pass != "" && prestoURL.Scheme == "https" {
-			c.auth = prestoURL.User
+	if serverURL.User != nil {
+		user = serverURL.User.Username()
+		pass, _ := serverURL.User.Password()
+		if pass != "" && serverURL.Scheme == "https" {
+			c.auth = serverURL.User
 		}
 	}
 
 	for k, v := range map[string]string{
-		prestoUserHeader:    user,
-		prestoSourceHeader:  prestoQuery.Get("source"),
-		prestoCatalogHeader: prestoQuery.Get("catalog"),
-		prestoSchemaHeader:  prestoQuery.Get("schema"),
-		prestoSessionHeader: prestoQuery.Get("session_properties"),
+		trinoUserHeader:    user,
+		trinoSourceHeader:  query.Get("source"),
+		trinoCatalogHeader: query.Get("catalog"),
+		trinoSchemaHeader:  query.Get("schema"),
+		trinoSessionHeader: query.Get("session_properties"),
 	} {
 		if v != "" {
 			c.httpHeaders.Add(k, v)
@@ -318,12 +318,12 @@ var customClientRegistry = struct {
 //			},
 //		},
 //	}
-//	presto.RegisterCustomClient("foobar", foobarClient)
-//	db, err := sql.Open("presto", "https://user@localhost:8080?custom_client=foobar")
+//	trino.RegisterCustomClient("foobar", foobarClient)
+//	db, err := sql.Open("trino", "https://user@localhost:8080?custom_client=foobar")
 //
 func RegisterCustomClient(key string, client *http.Client) error {
 	if _, err := strconv.ParseBool(key); err == nil {
-		return fmt.Errorf("presto: custom client key %q is reserved", key)
+		return fmt.Errorf("trino: custom client key %q is reserved", key)
 	}
 	customClientRegistry.Lock()
 	customClientRegistry.Index[key] = *client
@@ -370,7 +370,7 @@ func (c *Conn) Close() error {
 func (c *Conn) newRequest(method, url string, body io.Reader, hs http.Header) (*http.Request, error) {
 	req, err := http.NewRequest(method, url, body)
 	if err != nil {
-		return nil, fmt.Errorf("presto: %v", err)
+		return nil, fmt.Errorf("trino: %v", err)
 	}
 
 	if c.kerberosEnabled {
@@ -432,7 +432,7 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 	}
 }
 
-// ErrQueryFailed indicates that a query to presto failed.
+// ErrQueryFailed indicates that a query to Trino failed.
 type ErrQueryFailed struct {
 	StatusCode int
 	Reason     error
@@ -440,7 +440,7 @@ type ErrQueryFailed struct {
 
 // Error implements the error interface.
 func (e *ErrQueryFailed) Error() string {
-	return fmt.Sprintf("presto: query failed (%d %s): %q",
+	return fmt.Sprintf("trino: query failed (%d %s): %q",
 		e.StatusCode, http.StatusText(e.StatusCode), e.Reason)
 }
 
@@ -564,9 +564,9 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 			if err != nil {
 				return nil, err
 			}
-			if arg.Name == prestoUserHeader {
+			if arg.Name == trinoUserHeader {
 				st.user = arg.Value.(string)
-				hs.Add(prestoUserHeader, st.user)
+				hs.Add(trinoUserHeader, st.user)
 			} else {
 				if hs.Get(preparedStatementHeader) == "" {
 					hs.Add(preparedStatementHeader, preparedStatementName+"="+url.QueryEscape(st.query))
@@ -594,7 +594,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 	d.UseNumber()
 	err = d.Decode(&sr)
 	if err != nil {
-		return nil, fmt.Errorf("presto: %v", err)
+		return nil, fmt.Errorf("trino: %v", err)
 	}
 	err = handleResponseError(resp.StatusCode, sr.Error)
 	if err != nil {
@@ -628,7 +628,7 @@ var _ driver.Rows = &driverRows{}
 func (qr *driverRows) Close() error {
 	if qr.nextURI != "" {
 		hs := make(http.Header)
-		hs.Add(prestoUserHeader, qr.stmt.user)
+		hs.Add(trinoUserHeader, qr.stmt.user)
 		req, err := qr.stmt.conn.newRequest("DELETE", qr.nextURI, nil, hs)
 		if err != nil {
 			return err
@@ -751,7 +751,7 @@ func handleResponseError(status int, respErr stmtError) error {
 
 func (qr *driverRows) fetch(allowEOF bool) error {
 	hs := make(http.Header)
-	hs.Add(prestoUserHeader, qr.stmt.user)
+	hs.Add(trinoUserHeader, qr.stmt.user)
 	req, err := qr.stmt.conn.newRequest("GET", qr.nextURI, nil, hs)
 	if err != nil {
 		return err
@@ -766,7 +766,7 @@ func (qr *driverRows) fetch(allowEOF bool) error {
 	d.UseNumber()
 	err = d.Decode(&qresp)
 	if err != nil {
-		return fmt.Errorf("presto: %v", err)
+		return fmt.Errorf("trino: %v", err)
 	}
 	err = handleResponseError(resp.StatusCode, qresp.Error)
 	if err != nil {
@@ -920,7 +920,7 @@ func (s *NullSliceBool) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to []bool", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to []bool", value, value)
 	}
 	slice := make([]sql.NullBool, len(vs))
 	for i := range vs {
@@ -948,7 +948,7 @@ func (s *NullSlice2Bool) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][]bool", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][]bool", value, value)
 	}
 	slice := make([][]sql.NullBool, len(vs))
 	for i := range vs {
@@ -976,7 +976,7 @@ func (s *NullSlice3Bool) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][][]bool", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][][]bool", value, value)
 	}
 	slice := make([][][]sql.NullBool, len(vs))
 	for i := range vs {
@@ -1016,7 +1016,7 @@ func (s *NullSliceString) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to []string", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to []string", value, value)
 	}
 	slice := make([]sql.NullString, len(vs))
 	for i := range vs {
@@ -1044,7 +1044,7 @@ func (s *NullSlice2String) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][]string", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][]string", value, value)
 	}
 	slice := make([][]sql.NullString, len(vs))
 	for i := range vs {
@@ -1072,7 +1072,7 @@ func (s *NullSlice3String) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][][]string", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][][]string", value, value)
 	}
 	slice := make([][][]sql.NullString, len(vs))
 	for i := range vs {
@@ -1117,7 +1117,7 @@ func (s *NullSliceInt64) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to []int64", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to []int64", value, value)
 	}
 	slice := make([]sql.NullInt64, len(vs))
 	for i := range vs {
@@ -1145,7 +1145,7 @@ func (s *NullSlice2Int64) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][]int64", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][]int64", value, value)
 	}
 	slice := make([][]sql.NullInt64, len(vs))
 	for i := range vs {
@@ -1173,7 +1173,7 @@ func (s *NullSlice3Int64) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][][]int64", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][][]int64", value, value)
 	}
 	slice := make([][][]sql.NullInt64, len(vs))
 	for i := range vs {
@@ -1225,7 +1225,7 @@ func (s *NullSliceFloat64) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to []float64", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to []float64", value, value)
 	}
 	slice := make([]sql.NullFloat64, len(vs))
 	for i := range vs {
@@ -1253,7 +1253,7 @@ func (s *NullSlice2Float64) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][]float64", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][]float64", value, value)
 	}
 	slice := make([][]sql.NullFloat64, len(vs))
 	for i := range vs {
@@ -1281,7 +1281,7 @@ func (s *NullSlice3Float64) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][][]float64", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][][]float64", value, value)
 	}
 	slice := make([][][]sql.NullFloat64, len(vs))
 	for i := range vs {
@@ -1381,7 +1381,7 @@ func (s *NullSliceTime) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to []time.Time", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to []time.Time", value, value)
 	}
 	slice := make([]NullTime, len(vs))
 	for i := range vs {
@@ -1409,7 +1409,7 @@ func (s *NullSlice2Time) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][]time.Time", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][]time.Time", value, value)
 	}
 	slice := make([][]NullTime, len(vs))
 	for i := range vs {
@@ -1437,7 +1437,7 @@ func (s *NullSlice3Time) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][][]time.Time", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][][]time.Time", value, value)
 	}
 	slice := make([][][]NullTime, len(vs))
 	for i := range vs {
@@ -1480,7 +1480,7 @@ func (s *NullSliceMap) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to []NullMap", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to []NullMap", value, value)
 	}
 	slice := make([]NullMap, len(vs))
 	for i := range vs {
@@ -1509,7 +1509,7 @@ func (s *NullSlice2Map) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][]NullMap", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][]NullMap", value, value)
 	}
 	slice := make([][]NullMap, len(vs))
 	for i := range vs {
@@ -1537,7 +1537,7 @@ func (s *NullSlice3Map) Scan(value interface{}) error {
 	}
 	vs, ok := value.([]interface{})
 	if !ok {
-		return fmt.Errorf("presto: cannot convert %v (%T) to [][][]NullMap", value, value)
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][][]NullMap", value, value)
 	}
 	slice := make([][][]NullMap, len(vs))
 	for i := range vs {

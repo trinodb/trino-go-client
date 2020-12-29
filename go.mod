@@ -1,4 +1,4 @@
-module github.com/prestosql/presto-go-client
+module github.com/trinodb/trino-go-client
 
 go 1.14
 

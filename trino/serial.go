@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package presto
+package trino
 
 import (
 	"encoding/json"
@@ -28,15 +28,15 @@ type UnsupportedArgError struct {
 }
 
 func (e UnsupportedArgError) Error() string {
-	return fmt.Sprintf("presto: unsupported arg type: %s", e.t)
+	return fmt.Sprintf("trino: unsupported arg type: %s", e.t)
 }
 
 // Numeric is a string representation of a number, such as "10", "5.5" or in scientific form
 // If another string format is used it will error to serialise
 type Numeric string
 
-// Serial converts any supported value to its equivalent string for as a presto parameter
-// See https://prestosql.io/docs/current/language/types.html
+// Serial converts any supported value to its equivalent string for as a Trino parameter
+// See https://trino.io/docs/current/language/types.html
 func Serial(v interface{}) (string, error) {
 	switch x := v.(type) {
 	case nil:
@@ -92,13 +92,13 @@ func Serial(v interface{}) (string, error) {
 	case []byte:
 		return "", UnsupportedArgError{"[]byte"}
 
-		// time.Time and time.Duration not supported as time and date take several different formats in presto
+		// time.Time and time.Duration not supported as time and date take several different formats in Trino
 	case time.Time:
 		return "", UnsupportedArgError{"time.Time"}
 	case time.Duration:
 		return "", UnsupportedArgError{"time.Duration"}
 
-		// TODO - json.RawMesssage should probably be matched to 'JSON' in presto
+		// TODO - json.RawMesssage should probably be matched to 'JSON' in Trino
 	case json.RawMessage:
 		return "", UnsupportedArgError{"json.RawMessage"}
 	}
@@ -119,11 +119,11 @@ func Serial(v interface{}) (string, error) {
 	}
 
 	if reflect.TypeOf(v).Kind() == reflect.Map {
-		// are presto MAPs indifferent to order? Golang maps are, if presto aren't then the two types can't be compatible
+		// are Trino MAPs indifferent to order? Golang maps are, if Trino aren't then the two types can't be compatible
 		return "", UnsupportedArgError{"map"}
 	}
 
-	// TODO - consider the remaining types in https://prestosql.io/docs/current/language/types.html (Row, IP, ...)
+	// TODO - consider the remaining types in https://trino.io/docs/current/language/types.html (Row, IP, ...)
 
 	return "", UnsupportedArgError{fmt.Sprintf("%T", v)}
 }

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package presto
+package trino
 
 import (
 	"context"
@@ -27,14 +27,14 @@ import (
 
 var (
 	integrationServerFlag = flag.String(
-		"presto_server_dsn",
-		os.Getenv("PRESTO_SERVER_DSN"),
-		"dsn of the presto server used for integration tests; default disabled",
+		"trino_server_dsn",
+		os.Getenv("TRINO_SERVER_DSN"),
+		"dsn of the Trino server used for integration tests; default disabled",
 	)
 	integrationServerQueryTimeout = flag.Duration(
-		"presto_query_timeout",
+		"trino_query_timeout",
 		5*time.Second,
-		"max duration for presto queries to run before giving up",
+		"max duration for Trino queries to run before giving up",
 	)
 )
 
@@ -61,7 +61,7 @@ func integrationOpen(t *testing.T, dsn ...string) *sql.DB {
 	if len(dsn) > 0 {
 		target = dsn[0]
 	}
-	db, err := sql.Open("presto", target)
+	db, err := sql.Open("trino", target)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,13 +69,13 @@ func integrationOpen(t *testing.T, dsn ...string) *sql.DB {
 }
 
 // integration tests based on python tests:
-// https://github.com/prestosql/presto-python-client/tree/master/integration_tests
+// https://github.com/trinodb/trino-python-client/tree/master/integration_tests
 
 func TestIntegrationEnabled(t *testing.T) {
 	dsn := *integrationServerFlag
 	if dsn == "" {
 		example := "http://test@localhost:8080"
-		t.Skip("integration tests not enabled; use e.g. -presto_server_dsn=" + example)
+		t.Skip("integration tests not enabled; use e.g. -trino_server_dsn=" + example)
 	}
 }
 
