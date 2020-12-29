@@ -456,3 +456,37 @@ func TestIntegrationExec(t *testing.T) {
 		t.Fatal("Failed fetching results")
 	}
 }
+
+func TestIntegrationUnsupportedHeader(t *testing.T) {
+	dsn := integrationServerDSN(t)
+	dsn += "?catalog=tpch&schema=sf10"
+	db := integrationOpen(t, dsn)
+	defer db.Close()
+	cases := []struct {
+		query string
+		err   error
+	}{
+		{
+			query: "SET SESSION grouped_execution=true",
+			err:   ErrUnsupportedHeader,
+		},
+		{
+			query: "SET ROLE dummy",
+			err:   ErrUnsupportedHeader,
+		},
+		{
+			query: "SET PATH dummy",
+			err:   errors.New(`trino: query failed (200 OK): "io.prestosql.spi.PrestoException: SET PATH not supported by client"`),
+		},
+		{
+			query: "RESET SESSION grouped_execution",
+			err:   ErrUnsupportedHeader,
+		},
+	}
+	for _, c := range cases {
+		_, err := db.Query(c.query)
+		if err == nil || err.Error() != c.err.Error() {
+			t.Fatal("unexpected error:", err)
+		}
+	}
+}
