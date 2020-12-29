@@ -93,6 +93,9 @@ var (
 
 	// ErrQueryCancelled indicates that a query has been cancelled.
 	ErrQueryCancelled = errors.New("trino: query cancelled")
+
+	// ErrUnsupportedHeader indicates that the server response contains an unsupported header.
+	ErrUnsupportedHeader = errors.New("trino: server response contains an unsupported header")
 )
 
 const (
@@ -105,6 +108,10 @@ const (
 	trinoSessionHeader      = "X-Presto-Session"
 	trinoSetCatalogHeader   = "X-Presto-Set-Catalog"
 	trinoSetSchemaHeader    = "X-Presto-Set-Schema"
+	trinoSetPathHeader      = "X-Presto-Set-Path"
+	trinoSetSessionHeader   = "X-Presto-Set-Session"
+	trinoClearSessionHeader = "X-Presto-Clear-Session"
+	trinoSetRoleHeader      = "X-Presto-Set-Role"
 
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
@@ -112,6 +119,19 @@ const (
 	kerberosRealmConfig      = "KerberosRealm"
 	kerberosConfigPathConfig = "KerberosConfigPath"
 	SSLCertPathConfig        = "SSLCertPath"
+)
+
+var (
+	responseToRequestHeaderMap = map[string]string{
+		trinoSetSchemaHeader:  trinoSchemaHeader,
+		trinoSetCatalogHeader: trinoCatalogHeader,
+	}
+	unsupportedResponseHeaders = []string{
+		trinoSetPathHeader,
+		trinoSetSessionHeader,
+		trinoClearSessionHeader,
+		trinoSetRoleHeader,
+	}
 )
 
 type sqldriver struct{}
@@ -418,13 +438,15 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 			}
 			switch resp.StatusCode {
 			case http.StatusOK:
-				catalog := resp.Header.Get(trinoSetCatalogHeader)
-				if catalog != "" {
-					c.httpHeaders.Set(trinoCatalogHeader, catalog)
+				for src, dst := range responseToRequestHeaderMap {
+					if v := resp.Header.Get(src); v != "" {
+						c.httpHeaders.Set(dst, v)
+					}
 				}
-				schema := resp.Header.Get(trinoSetSchemaHeader)
-				if schema != "" {
-					c.httpHeaders.Set(trinoSchemaHeader, schema)
+				for _, name := range unsupportedResponseHeaders {
+					if v := resp.Header.Get(name); v != "" {
+						return nil, ErrUnsupportedHeader
+					}
 				}
 				return resp, nil
 			case http.StatusServiceUnavailable:

@@ -275,6 +275,23 @@ func TestQueryFailure(t *testing.T) {
 	}
 }
 
+func TestUnsupportedHeader(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(trinoSetRoleHeader, "foo")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+	db, err := sql.Open("trino", ts.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Query("SELECT 1")
+	if err != ErrUnsupportedHeader {
+		t.Fatal("unexpected error:", err)
+	}
+}
+
 func TestSSLCertPath(t *testing.T) {
 	db, err := sql.Open("trino", "https://localhost:9?SSLCertPath=/tmp/invalid_test.cert")
 	if err != nil {
