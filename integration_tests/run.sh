@@ -34,4 +34,4 @@ fi
 
 PKG=../trino
 DSN=http://test@localhost:${LOCAL_PORT}
-go test -v -race -timeout 10s -cover -coverprofile=coverage.out $PKG -trino_server_dsn=$DSN "$@"
+go test -v -race -timeout 30s -cover -coverprofile=coverage.out $PKG -trino_server_dsn=$DSN "$@"
