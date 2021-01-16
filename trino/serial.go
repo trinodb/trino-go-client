@@ -88,7 +88,7 @@ func Serial(v interface{}) (string, error) {
 	case string:
 		return "'" + strings.Replace(x, "'", "''", -1) + "'", nil
 
-		// TODO - []byte should probably be matched to 'VARBINARY' in presto
+		// TODO - []byte should probably be matched to 'VARBINARY' in trino
 	case []byte:
 		return "", UnsupportedArgError{"[]byte"}
 

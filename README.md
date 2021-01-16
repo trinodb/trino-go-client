@@ -75,16 +75,16 @@ Please refer to the [Coordinator Kerberos Authentication](https://trino.io/docs/
 
 It's possible to pass user information to Trino, different from the principal used to authenticate to the coordinator. See the [System Access Control](https://trino.io/docs/current/develop/system-access-control.html) documentation for details.
 
-In order to pass user information in queries to Trino, you have to add a [NamedArg](https://godoc.org/database/sql#NamedArg) to the query parameters where the key is X-Presto-User. 
+In order to pass user information in queries to Trino, you have to add a [NamedArg](https://godoc.org/database/sql#NamedArg) to the query parameters where the key is X-Trino-User.
 This parameter is used by the driver to inform Trino about the user executing the query regardless of the authentication method for the actual connection, and its value is NOT passed to the query.
 
 Example:
 
 ```go
-db.Query("SELECT * FROM foobar WHERE id=?", 1, sql.Named("X-Presto-User", string("Alice")))
+db.Query("SELECT * FROM foobar WHERE id=?", 1, sql.Named("X-Trino-User", string("Alice")))
 ```
 
-The position of the X-Presto-User NamedArg is irrelevant and does not affect the query in any way.
+The position of the X-Trino-User NamedArg is irrelevant and does not affect the query in any way.
 
 ### DSN (Data Source Name)
 

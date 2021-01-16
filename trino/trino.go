@@ -99,19 +99,19 @@ var (
 )
 
 const (
-	preparedStatementHeader = "X-Presto-Prepared-Statement"
+	preparedStatementHeader = "X-Trino-Prepared-Statement"
 	preparedStatementName   = "_trino_go"
-	trinoUserHeader         = "X-Presto-User"
-	trinoSourceHeader       = "X-Presto-Source"
-	trinoCatalogHeader      = "X-Presto-Catalog"
-	trinoSchemaHeader       = "X-Presto-Schema"
-	trinoSessionHeader      = "X-Presto-Session"
-	trinoSetCatalogHeader   = "X-Presto-Set-Catalog"
-	trinoSetSchemaHeader    = "X-Presto-Set-Schema"
-	trinoSetPathHeader      = "X-Presto-Set-Path"
-	trinoSetSessionHeader   = "X-Presto-Set-Session"
-	trinoClearSessionHeader = "X-Presto-Clear-Session"
-	trinoSetRoleHeader      = "X-Presto-Set-Role"
+	trinoUserHeader         = "X-Trino-User"
+	trinoSourceHeader       = "X-Trino-Source"
+	trinoCatalogHeader      = "X-Trino-Catalog"
+	trinoSchemaHeader       = "X-Trino-Schema"
+	trinoSessionHeader      = "X-Trino-Session"
+	trinoSetCatalogHeader   = "X-Trino-Set-Catalog"
+	trinoSetSchemaHeader    = "X-Trino-Set-Schema"
+	trinoSetPathHeader      = "X-Trino-Set-Path"
+	trinoSetSessionHeader   = "X-Trino-Set-Session"
+	trinoClearSessionHeader = "X-Trino-Clear-Session"
+	trinoSetRoleHeader      = "X-Trino-Set-Role"
 
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
@@ -396,7 +396,7 @@ func (c *Conn) newRequest(method, url string, body io.Reader, hs http.Header) (*
 	}
 
 	if c.kerberosEnabled {
-		err = c.kerberosClient.SetSPNEGOHeader(req, "presto/"+req.URL.Hostname())
+		err = c.kerberosClient.SetSPNEGOHeader(req, "trino/"+req.URL.Hostname())
 		if err != nil {
 			return nil, fmt.Errorf("error setting client SPNEGO header: %v", err)
 		}
@@ -907,7 +907,7 @@ func newTypeConverter(typeName string) *typeConverter {
 	}
 }
 
-// parses presto types, e.g. array(varchar(10)) to "array", "varchar"
+// parses Trino types, e.g. array(varchar(10)) to "array", "varchar"
 // TODO: Use queryColumn.TypeSignature instead.
 func parseType(name string) []string {
 	parts := strings.Split(strings.ToLower(name), "(")
@@ -1447,7 +1447,7 @@ func parseNullTimeWithLocation(v string) (NullTime, error) {
 }
 
 // NullTime represents a time.Time value that can be null.
-// The NullTime supports presto's Date, Time and Timestamp data types,
+// The NullTime supports Trino's Date, Time and Timestamp data types,
 // with or without time zone.
 type NullTime struct {
 	Time  time.Time

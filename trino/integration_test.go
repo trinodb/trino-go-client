@@ -477,7 +477,7 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 		},
 		{
 			query: "SET PATH dummy",
-			err:   errors.New(`trino: query failed (200 OK): "io.prestosql.spi.PrestoException: SET PATH not supported by client"`),
+			err:   errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: SET PATH not supported by client"`),
 		},
 		{
 			query: "RESET SESSION grouped_execution",
