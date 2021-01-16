@@ -79,7 +79,7 @@ func TestKerberosConfig(t *testing.T) {
 		SessionProperties:  map[string]string{"query_priority": "1"},
 		KerberosEnabled:    "true",
 		KerberosKeytabPath: "/opt/test.keytab",
-		KerberosPrincipal:  "presto/testhost",
+		KerberosPrincipal:  "trino/testhost",
 		KerberosRealm:      "example.com",
 		KerberosConfigPath: "/etc/krb5.conf",
 		SSLCertPath:        "/tmp/test.cert",
@@ -89,7 +89,7 @@ func TestKerberosConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=presto%2Ftesthost&KerberosRealm=example.com&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3D1&source=trino-go-client"
+	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3D1&source=trino-go-client"
 	if dsn != want {
 		t.Fatal("unexpected dsn:", dsn)
 	}
@@ -218,7 +218,7 @@ func TestQueryForUsername(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	rows, err := db.Query("SELECT current_user", sql.Named("X-Presto-User", string("TestUser")))
+	rows, err := db.Query("SELECT current_user", sql.Named("X-Trino-User", string("TestUser")))
 	if err != nil {
 		t.Fatal("Failed executing query", err.Error())
 	}

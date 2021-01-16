@@ -2,8 +2,7 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 
 LOCAL_PORT=8080
-# TODO update to trino after the release
-IMAGE_NAME=prestosql/presto
+IMAGE_NAME=trinodb/trino
 
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
 
@@ -14,22 +13,22 @@ function test_cleanup() {
 trap test_cleanup EXIT
 
 function test_query() {
-    docker exec -t "$CONTAINER" bin/presto --server localhost:${LOCAL_PORT} --execute "$*"
+    docker exec -t "$CONTAINER" bin/trino --server localhost:${LOCAL_PORT} --execute "$*"
 }
 
-CONTAINER=$(docker run -v "$PWD/etc:/etc/presto" -p ${LOCAL_PORT}:${LOCAL_PORT} --rm -d $IMAGE_NAME)
+CONTAINER=$(docker run -v "$PWD/etc:/etc/trino" -p ${LOCAL_PORT}:${LOCAL_PORT} --rm -d $IMAGE_NAME)
 
 attempts=10
 while [ $attempts -gt 0 ]; do
     attempts=$((attempts - 1))
     ready=$(test_query "SHOW SESSION" | grep task_writer_count)
     [ -n "$ready" ] && break
-    echo "waiting for trino..."
+    echo "waiting for Trino..."
     sleep 2
 done
 
 if [ $attempts -eq 0 ]; then
-    echo "timed out waiting for trino"
+    echo "timed out waiting for Trino"
     exit 1
 fi
 
