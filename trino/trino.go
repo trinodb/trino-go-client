@@ -99,19 +99,20 @@ var (
 )
 
 const (
-	preparedStatementHeader = "X-Trino-Prepared-Statement"
-	preparedStatementName   = "_trino_go"
-	trinoUserHeader         = "X-Trino-User"
-	trinoSourceHeader       = "X-Trino-Source"
-	trinoCatalogHeader      = "X-Trino-Catalog"
-	trinoSchemaHeader       = "X-Trino-Schema"
-	trinoSessionHeader      = "X-Trino-Session"
-	trinoSetCatalogHeader   = "X-Trino-Set-Catalog"
-	trinoSetSchemaHeader    = "X-Trino-Set-Schema"
-	trinoSetPathHeader      = "X-Trino-Set-Path"
-	trinoSetSessionHeader   = "X-Trino-Set-Session"
-	trinoClearSessionHeader = "X-Trino-Clear-Session"
-	trinoSetRoleHeader      = "X-Trino-Set-Role"
+	preparedStatementHeader    = "X-Trino-Prepared-Statement"
+	preparedStatementName      = "_trino_go"
+	trinoUserHeader            = "X-Trino-User"
+	trinoSourceHeader          = "X-Trino-Source"
+	trinoCatalogHeader         = "X-Trino-Catalog"
+	trinoSchemaHeader          = "X-Trino-Schema"
+	trinoSessionHeader         = "X-Trino-Session"
+	trinoSetCatalogHeader      = "X-Trino-Set-Catalog"
+	trinoSetSchemaHeader       = "X-Trino-Set-Schema"
+	trinoSetPathHeader         = "X-Trino-Set-Path"
+	trinoSetSessionHeader      = "X-Trino-Set-Session"
+	trinoClearSessionHeader    = "X-Trino-Clear-Session"
+	trinoSetRoleHeader         = "X-Trino-Set-Role"
+	trinoExtraCredentialHeader = "X-Trino-Extra-Credential"
 
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
@@ -149,6 +150,7 @@ type Config struct {
 	Catalog            string            // Catalog (optional)
 	Schema             string            // Schema (optional)
 	SessionProperties  map[string]string // Session properties (optional)
+	ExtraCredentials   map[string]string // Extra credentials (optional)
 	CustomClientName   string            // Custom client name (optional)
 	KerberosEnabled    string            // KerberosEnabled (optional, default is false)
 	KerberosKeytabPath string            // Kerberos Keytab Path (optional)
@@ -168,6 +170,12 @@ func (c *Config) FormatDSN() (string, error) {
 	if c.SessionProperties != nil {
 		for k, v := range c.SessionProperties {
 			sessionkv = append(sessionkv, k+"="+v)
+		}
+	}
+	var credkv []string
+	if c.ExtraCredentials != nil {
+		for k, v := range c.ExtraCredentials {
+			credkv = append(credkv, k+"="+v)
 		}
 	}
 	source := c.Source
@@ -199,6 +207,7 @@ func (c *Config) FormatDSN() (string, error) {
 		"catalog":            c.Catalog,
 		"schema":             c.Schema,
 		"session_properties": strings.Join(sessionkv, ","),
+		"extra_credentials":  strings.Join(credkv, ","),
 		"custom_client":      c.CustomClientName,
 	} {
 		if v != "" {
@@ -297,11 +306,12 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	for k, v := range map[string]string{
-		trinoUserHeader:    user,
-		trinoSourceHeader:  query.Get("source"),
-		trinoCatalogHeader: query.Get("catalog"),
-		trinoSchemaHeader:  query.Get("schema"),
-		trinoSessionHeader: query.Get("session_properties"),
+		trinoUserHeader:            user,
+		trinoSourceHeader:          query.Get("source"),
+		trinoCatalogHeader:         query.Get("catalog"),
+		trinoSchemaHeader:          query.Get("schema"),
+		trinoSessionHeader:         query.Get("session_properties"),
+		trinoExtraCredentialHeader: query.Get("extra_credentials"),
 	} {
 		if v != "" {
 			c.httpHeaders.Add(k, v)
