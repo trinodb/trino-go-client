@@ -58,6 +58,22 @@ func TestConfigSSLCertPath(t *testing.T) {
 	}
 }
 
+func TestExtraCredentials(t *testing.T) {
+	c := &Config{
+		ServerURI:        "http://foobar@localhost:8080",
+		ExtraCredentials: map[string]string{"token": "mYtOkEn", "otherToken": "oThErToKeN"},
+	}
+
+	dsn, err := c.FormatDSN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "http://foobar@localhost:8080?extra_credentials=token%3DmYtOkEn%2CotherToken%3DoThErToKeN&source=trino-go-client"
+	if dsn != want {
+		t.Fatal("unexpected dsn:", dsn)
+	}
+}
+
 func TestConfigWithoutSSLCertPath(t *testing.T) {
 	c := &Config{
 		ServerURI:         "https://foobar@localhost:8080",
