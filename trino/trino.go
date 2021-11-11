@@ -101,18 +101,19 @@ var (
 const (
 	preparedStatementHeader    = "X-Trino-Prepared-Statement"
 	preparedStatementName      = "_trino_go"
-	trinoUserHeader            = "X-Trino-User"
-	trinoSourceHeader          = "X-Trino-Source"
-	trinoCatalogHeader         = "X-Trino-Catalog"
-	trinoSchemaHeader          = "X-Trino-Schema"
-	trinoSessionHeader         = "X-Trino-Session"
-	trinoSetCatalogHeader      = "X-Trino-Set-Catalog"
-	trinoSetSchemaHeader       = "X-Trino-Set-Schema"
-	trinoSetPathHeader         = "X-Trino-Set-Path"
-	trinoSetSessionHeader      = "X-Trino-Set-Session"
-	trinoClearSessionHeader    = "X-Trino-Clear-Session"
-	trinoSetRoleHeader         = "X-Trino-Set-Role"
-	trinoExtraCredentialHeader = "X-Trino-Extra-Credential"
+	trinoHeaderPrefix = `X-Trino-`
+	trinoUserHeader            = trinoHeaderPrefix+`User`
+	trinoSourceHeader          = trinoHeaderPrefix+`Source`
+	trinoCatalogHeader         = trinoHeaderPrefix+`Catalog`
+	trinoSchemaHeader          = trinoHeaderPrefix+`Schema`
+	trinoSessionHeader         = trinoHeaderPrefix+`Session`
+	trinoSetCatalogHeader      = trinoHeaderPrefix+`Set-Catalog`
+	trinoSetSchemaHeader       = trinoHeaderPrefix+`Set-Schema`
+	trinoSetPathHeader         = trinoHeaderPrefix+`Set-Path`
+	trinoSetSessionHeader      = trinoHeaderPrefix+`Set-Session`
+	trinoClearSessionHeader    = trinoHeaderPrefix+`Clear-Session`
+	trinoSetRoleHeader         = trinoHeaderPrefix+`Set-Role`
+	trinoExtraCredentialHeader = trinoHeaderPrefix+`Extra-Credential`
 
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
@@ -649,7 +650,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			if err != nil {
 				return nil, err
 			}
-			if arg.Name == trinoUserHeader {
+			if strings.HasPrefix(arg.Name, trinoHeaderPrefix) {
 				st.user = arg.Value.(string)
 				hs.Add(trinoUserHeader, st.user)
 			} else {
