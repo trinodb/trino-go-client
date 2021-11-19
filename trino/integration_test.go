@@ -473,7 +473,7 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 		},
 		{
 			query: "SET ROLE dummy",
-			err:   ErrUnsupportedHeader,
+			err:   errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: line 1:1: Role 'dummy' does not exist"`),
 		},
 		{
 			query: "SET PATH dummy",
