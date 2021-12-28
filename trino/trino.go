@@ -66,6 +66,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -202,6 +203,10 @@ func (c *Config) FormatDSN() (string, error) {
 			return "", fmt.Errorf("trino: client configuration error, SSL must be enabled for secure env")
 		}
 	}
+
+	// ensure consistent order of items
+	sort.Strings(sessionkv)
+	sort.Strings(credkv)
 
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
