@@ -19,10 +19,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
-	"strings"
 	"testing"
 	"time"
 )
@@ -32,14 +32,13 @@ func TestConfig(t *testing.T) {
 		ServerURI:         "http://foobar@localhost:8080",
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
+
 	dsn, err := c.FormatDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := "http://foobar@localhost:8080?session_properties=query_priority%3D1&source=trino-go-client"
-	if dsn != want {
-		t.Fatal("unexpected dsn:", dsn)
-	}
+
+	assert.Equal(t, want, dsn)
 }
 
 func TestConfigSSLCertPath(t *testing.T) {
@@ -48,14 +47,13 @@ func TestConfigSSLCertPath(t *testing.T) {
 		SessionProperties: map[string]string{"query_priority": "1"},
 		SSLCertPath:       "cert.pem",
 	}
+
 	dsn, err := c.FormatDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := "https://foobar@localhost:8080?SSLCertPath=cert.pem&session_properties=query_priority%3D1&source=trino-go-client"
-	if dsn != want {
-		t.Fatal("unexpected dsn:", dsn)
-	}
+
+	assert.Equal(t, want, dsn)
 }
 
 func TestExtraCredentials(t *testing.T) {
@@ -65,13 +63,11 @@ func TestExtraCredentials(t *testing.T) {
 	}
 
 	dsn, err := c.FormatDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "http://foobar@localhost:8080?extra_credentials=token%3DmYtOkEn%2CotherToken%3DoThErToKeN&source=trino-go-client"
-	if dsn != want {
-		t.Fatal("unexpected dsn:", dsn)
-	}
+	require.NoError(t, err)
+
+	want := "http://foobar@localhost:8080?extra_credentials=otherToken%3DoThErToKeN%2Ctoken%3DmYtOkEn&source=trino-go-client"
+
+	assert.Equal(t, want, dsn)
 }
 
 func TestConfigWithoutSSLCertPath(t *testing.T) {
@@ -80,13 +76,11 @@ func TestConfigWithoutSSLCertPath(t *testing.T) {
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 	dsn, err := c.FormatDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	want := "https://foobar@localhost:8080?session_properties=query_priority%3D1&source=trino-go-client"
-	if dsn != want {
-		t.Fatal("unexpected dsn:", dsn)
-	}
+
+	assert.Equal(t, want, dsn)
 }
 
 func TestKerberosConfig(t *testing.T) {
@@ -100,15 +94,13 @@ func TestKerberosConfig(t *testing.T) {
 		KerberosConfigPath: "/etc/krb5.conf",
 		SSLCertPath:        "/tmp/test.cert",
 	}
+
 	dsn, err := c.FormatDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3D1&source=trino-go-client"
-	if dsn != want {
-		t.Fatal("unexpected dsn:", dsn)
-	}
+
+	assert.Equal(t, want, dsn)
 }
 
 func TestInvalidKerberosConfig(t *testing.T) {
@@ -116,17 +108,14 @@ func TestInvalidKerberosConfig(t *testing.T) {
 		ServerURI:       "http://foobar@localhost:8090",
 		KerberosEnabled: "true",
 	}
+
 	_, err := c.FormatDSN()
-	if err == nil {
-		t.Fatal("dsn generated from invalid secure url, since kerberos enabled must has SSL enabled")
-	}
+	assert.Error(t, err, "dsn generated from invalid secure url, since kerberos enabled must has SSL enabled")
 }
 
 func TestConfigWithMalformedURL(t *testing.T) {
 	_, err := (&Config{ServerURI: ":("}).FormatDSN()
-	if err == nil {
-		t.Fatal("dsn generated from malformed url")
-	}
+	assert.Error(t, err, "dsn generated from malformed url")
 }
 
 func TestConnErrorDSN(t *testing.T) {
@@ -137,15 +126,17 @@ func TestConnErrorDSN(t *testing.T) {
 		{Name: "malformed", DSN: "://"},
 		{Name: "unknown_client", DSN: "http://localhost?custom_client=unknown"},
 	}
+
 	for _, tc := range testcases {
 		t.Run(tc.Name, func(t *testing.T) {
 			db, err := sql.Open("trino", tc.DSN)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, err = db.Query("SELECT 1"); err == nil {
-				db.Close()
-				t.Fatal("test dsn is supposed to fail:", tc.DSN)
+			require.NoError(t, err)
+
+			_, err = db.Query("SELECT 1")
+			assert.Errorf(t, err,"test dsn is supposed to fail: %s", tc.DSN)
+
+			if err == nil {
+				require.NoError(t, db.Close())
 			}
 		})
 	}
@@ -154,10 +145,9 @@ func TestConnErrorDSN(t *testing.T) {
 func TestRegisterCustomClientReserved(t *testing.T) {
 	for _, tc := range []string{"true", "false"} {
 		t.Run(fmt.Sprintf("%v", tc), func(t *testing.T) {
-			err := RegisterCustomClient(tc, &http.Client{})
-			if err == nil {
-				t.Fatal("client key name supposed to fail:", tc)
-			}
+			require.Errorf(t,
+				RegisterCustomClient(tc, &http.Client{}),
+				"client key name supposed to fail: %s", tc)
 		})
 	}
 }
@@ -177,46 +167,52 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 			},
 		})
 	}))
-	defer ts.Close()
+
+	t.Cleanup(ts.Close)
+
 	db, err := sql.Open("trino", ts.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
 	_, err = db.Query("SELECT 1")
-	if _, ok := err.(*ErrQueryFailed); !ok {
-		t.Fatal("unexpected error:", err)
-	}
+	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
 }
 
 func TestRoundTripCancellation(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
-	defer ts.Close()
+
+	t.Cleanup(ts.Close)
+
 	db, err := sql.Open("trino", ts.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
+	t.Cleanup(cancel)
+
 	_, err = db.QueryContext(ctx, "SELECT 1")
-	if err == nil {
-		t.Fatal("unexpected query with cancelled context succeeded")
-	}
+	assert.Error(t, err, "unexpected query with cancelled context succeeded")
 }
 
 func TestAuthFailure(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
-	defer ts.Close()
+
+	t.Cleanup(ts.Close)
+
 	db, err := sql.Open("trino", ts.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	assert.NoError(t, db.Close())
 }
 
 func TestQueryForUsername(t *testing.T) {
@@ -224,32 +220,27 @@ func TestQueryForUsername(t *testing.T) {
 		ServerURI:         "http://foobar@localhost:8080",
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
+
 	dsn, err := c.FormatDSN()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	db, err := sql.Open("trino", dsn)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
 	rows, err := db.Query("SELECT current_user", sql.Named("X-Trino-User", string("TestUser")))
-	if err != nil {
-		t.Fatal("Failed executing query", err.Error())
-	}
+	require.NoError(t, err, "Failed executing query")
 
 	if rows != nil {
 		for rows.Next() {
 			var ts string
-			err = rows.Scan(&ts)
-			if err != nil {
-				t.Fatal("Failed scanning query result", err.Error())
-			}
+			require.NoError(t, rows.Scan(&ts), "Failed scanning query result")
+
 			want := "TestUser"
-			if ts != want {
-				t.Fatal("Expected value does not equal result value : ", ts, " != ", want)
-			}
+			assert.Equal(t, want, ts, "Expected value does not equal result value")
 		}
 	}
 }
@@ -263,32 +254,36 @@ func TestQueryCancellation(t *testing.T) {
 			},
 		})
 	}))
-	defer ts.Close()
+
+	t.Cleanup(ts.Close)
+
 	db, err := sql.Open("trino", ts.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
 	_, err = db.Query("SELECT 1")
-	if err != ErrQueryCancelled {
-		t.Fatal("unexpected error:", err)
-	}
+	assert.EqualError(t, err, ErrQueryCancelled.Error(), "unexpected error")
 }
 
 func TestQueryFailure(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer ts.Close()
+
+	t.Cleanup(ts.Close)
+
 	db, err := sql.Open("trino", ts.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
 	_, err = db.Query("SELECT 1")
-	if _, ok := err.(*ErrQueryFailed); !ok {
-		t.Fatal("unexpected error:", err)
-	}
+	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
 }
 
 func TestUnsupportedHeader(t *testing.T) {
@@ -296,66 +291,64 @@ func TestUnsupportedHeader(t *testing.T) {
 		w.Header().Set(trinoSetRoleHeader, "foo")
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer ts.Close()
+
+	t.Cleanup(ts.Close)
+
 	db, err := sql.Open("trino", ts.URL)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
 	_, err = db.Query("SELECT 1")
-	if err != ErrUnsupportedHeader {
-		t.Fatal("unexpected error:", err)
-	}
+	assert.EqualError(t, err, ErrUnsupportedHeader.Error(), "unexpected error")
 }
 
 func TestSSLCertPath(t *testing.T) {
 	db, err := sql.Open("trino", "https://localhost:9?SSLCertPath=/tmp/invalid_test.cert")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
 
 	want := "Error loading SSL Cert File"
-	if err := db.Ping(); err == nil {
-		t.Fatal(err)
-	} else if !strings.Contains(err.Error(), want) {
-		t.Fatalf("want: %q, got: %v", want, err)
-	}
+	err = db.Ping()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), want)
 }
 
 func TestWithoutSSLCertPath(t *testing.T) {
 	db, err := sql.Open("trino", "https://localhost:9")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
 
-	if err := db.Ping(); err != nil {
-		t.Fatal(err)
-	}
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	assert.NoError(t, db.Ping())
 }
 
 func TestUnsupportedTransaction(t *testing.T) {
 	db, err := sql.Open("trino", "http://localhost:9")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
 	_, err = db.Begin()
-	if err == nil {
-		t.Fatal("unsupported transaction succeeded with no error")
-	}
+	require.Error(t, err, "unsupported transaction succeeded with no error")
+
 	expected := "operation not supported"
-	if !strings.Contains(err.Error(), expected) {
-		t.Fatalf("expected begin to fail with %s but got %v", expected, err)
-	}
+	assert.Contains(t, err.Error(), expected)
 }
 
 func TestTypeConversion(t *testing.T) {
 	utc, err := time.LoadLocation("UTC")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+
 	testcases := []struct {
 		DataType                   string
 		ResponseUnmarshalledSample interface{}
@@ -418,28 +411,27 @@ func TestTypeConversion(t *testing.T) {
 			ExpectedGoValue:            nil,
 		},
 	}
+
 	for _, tc := range testcases {
 		converter := newTypeConverter(tc.DataType)
 
 		t.Run(tc.DataType+":nil", func(t *testing.T) {
-			if _, err := converter.ConvertValue(nil); err != nil {
-				t.Fatal(err)
-			}
+			_, err := converter.ConvertValue(nil)
+			assert.NoError(t, err)
 		})
 
 		t.Run(tc.DataType+":bogus", func(t *testing.T) {
-			if _, err := converter.ConvertValue(struct{}{}); err == nil {
-				t.Fatal("bogus data scanned with no error")
-			}
+			_, err := converter.ConvertValue(struct{}{})
+			assert.Error(t, err, "bogus data scanned with no error")
 		})
+
 		t.Run(tc.DataType+":sample", func(t *testing.T) {
 			v, err := converter.ConvertValue(tc.ResponseUnmarshalledSample)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(v, tc.ExpectedGoValue) {
-				t.Fatalf("unexpected data from sample:\nhave %+v\nwant %+v", v, tc.ExpectedGoValue)
-			}
+			require.NoError(t, err)
+
+			require.Equal(t,
+				v, tc.ExpectedGoValue,
+				"unexpected data from sample:\nhave %+v\nwant %+v", v, tc.ExpectedGoValue)
 		})
 	}
 }
@@ -457,9 +449,7 @@ func TestSliceTypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{true},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSliceBool)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -468,9 +458,7 @@ func TestSliceTypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{"hello"},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSliceString)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -479,9 +467,7 @@ func TestSliceTypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{json.Number("1")},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSliceInt64)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 
@@ -491,9 +477,7 @@ func TestSliceTypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{json.Number("1.0")},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSliceFloat64)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -502,9 +486,7 @@ func TestSliceTypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{"2017-07-01"},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSliceTime)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -513,32 +495,22 @@ func TestSliceTypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{map[string]interface{}{"hello": "world"}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSliceMap)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.GoType+":nil", func(t *testing.T) {
-			if err := tc.Scanner.Scan(nil); err != nil {
-				t.Error(err)
-			}
+			assert.NoError(t, tc.Scanner.Scan(nil))
 		})
 
 		t.Run(tc.GoType+":bogus", func(t *testing.T) {
-			if err := tc.Scanner.Scan(struct{}{}); err == nil {
-				t.Error("bogus data scanned with no error")
-			}
-			if err := tc.Scanner.Scan([]interface{}{struct{}{}}); err == nil {
-				t.Error("bogus data scanned with no error")
-			}
+			assert.Error(t, tc.Scanner.Scan(struct{}{}))
+			assert.Error(t, tc.Scanner.Scan([]interface{}{struct{}{}}), "bogus data scanned with no error")
 		})
 
 		t.Run(tc.GoType+":sample", func(t *testing.T) {
-			if err := tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample); err != nil {
-				t.Error(err)
-			}
+			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
 			tc.TestScanner(t, tc.Scanner)
 		})
 	}
@@ -557,9 +529,7 @@ func TestSlice2TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{true}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice2Bool)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -568,9 +538,7 @@ func TestSlice2TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{"hello"}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice2String)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -579,9 +547,7 @@ func TestSlice2TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{json.Number("1")}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice2Int64)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -590,9 +556,7 @@ func TestSlice2TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{json.Number("1.0")}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice2Float64)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -601,9 +565,7 @@ func TestSlice2TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{"2017-07-01"}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice2Time)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -612,38 +574,24 @@ func TestSlice2TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{map[string]interface{}{"hello": "world"}}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice2Map)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.GoType+":nil", func(t *testing.T) {
-			if err := tc.Scanner.Scan(nil); err != nil {
-				t.Error(err)
-			}
-			if err := tc.Scanner.Scan([]interface{}{nil}); err != nil {
-				t.Error(err)
-			}
+			assert.NoError(t, tc.Scanner.Scan(nil))
+			assert.NoError(t, tc.Scanner.Scan([]interface{}{nil}))
 		})
 
 		t.Run(tc.GoType+":bogus", func(t *testing.T) {
-			if err := tc.Scanner.Scan(struct{}{}); err == nil {
-				t.Error("bogus data scanned with no error")
-			}
-			if err := tc.Scanner.Scan([]interface{}{struct{}{}}); err == nil {
-				t.Error("bogus data scanned with no error")
-			}
-			if err := tc.Scanner.Scan([]interface{}{[]interface{}{struct{}{}}}); err == nil {
-				t.Error("bogus data scanned with no error")
-			}
+			assert.Error(t, tc.Scanner.Scan(struct{}{}), "bogus data scanned with no error")
+			assert.Error(t, tc.Scanner.Scan([]interface{}{struct{}{}}), "bogus data scanned with no error")
+			assert.Error(t, tc.Scanner.Scan([]interface{}{[]interface{}{struct{}{}}}), "bogus data scanned with no error")
 		})
 
 		t.Run(tc.GoType+":sample", func(t *testing.T) {
-			if err := tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample); err != nil {
-				t.Error(err)
-			}
+			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
 			tc.TestScanner(t, tc.Scanner)
 		})
 	}
@@ -662,9 +610,7 @@ func TestSlice3TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{true}}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice3Bool)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -673,9 +619,7 @@ func TestSlice3TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{"hello"}}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice3String)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -684,9 +628,7 @@ func TestSlice3TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{json.Number("1")}}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice3Int64)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -695,9 +637,7 @@ func TestSlice3TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{json.Number("1.0")}}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice3Float64)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -706,9 +646,7 @@ func TestSlice3TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{"2017-07-01"}}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice3Time)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 		{
@@ -717,38 +655,24 @@ func TestSlice3TypeConversion(t *testing.T) {
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{map[string]interface{}{"hello": "world"}}}},
 			TestScanner: func(t *testing.T, s sql.Scanner) {
 				v, _ := s.(*NullSlice3Map)
-				if !v.Valid {
-					t.Fatal("scanner failed")
-				}
+				assert.True(t, v.Valid, "scanner failed")
 			},
 		},
 	}
 	for _, tc := range testcases {
 		t.Run(tc.GoType+":nil", func(t *testing.T) {
-			if err := tc.Scanner.Scan(nil); err != nil {
-				t.Fatal(err)
-			}
-			if err := tc.Scanner.Scan([]interface{}{[]interface{}{nil}}); err != nil {
-				t.Fatal(err)
-			}
+			assert.NoError(t, tc.Scanner.Scan(nil))
+			assert.NoError(t, tc.Scanner.Scan([]interface{}{[]interface{}{nil}}))
 		})
 
 		t.Run(tc.GoType+":bogus", func(t *testing.T) {
-			if err := tc.Scanner.Scan(struct{}{}); err == nil {
-				t.Error("bogus data scanned with no error")
-			}
-			if err := tc.Scanner.Scan([]interface{}{[]interface{}{struct{}{}}}); err == nil {
-				t.Error("bogus data scanned with no error")
-			}
-			if err := tc.Scanner.Scan([]interface{}{[]interface{}{[]interface{}{struct{}{}}}}); err == nil {
-				t.Error("bogus data scanned with no error")
-			}
+			assert.Error(t, tc.Scanner.Scan(struct{}{}), "bogus data scanned with no error")
+			assert.Error(t, tc.Scanner.Scan([]interface{}{[]interface{}{struct{}{}}}), "bogus data scanned with no error")
+			assert.Error(t, tc.Scanner.Scan([]interface{}{[]interface{}{[]interface{}{struct{}{}}}}), "bogus data scanned with no error")
 		})
 
 		t.Run(tc.GoType+":sample", func(t *testing.T) {
-			if err := tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample); err != nil {
-				t.Error(err)
-			}
+			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
 			tc.TestScanner(t, tc.Scanner)
 		})
 	}
