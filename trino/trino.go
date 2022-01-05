@@ -647,35 +647,38 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 
 func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
 	query := st.query
-	var hs http.Header
+	hs := make(http.Header)
 
-	if len(args) > 0 {
-		hs = make(http.Header)
-		var ss []string
-		for _, arg := range args {
-			s, err := Serial(arg.Value)
-			if err != nil {
-				return nil, err
-			}
+	var preparedStatementParams []string
 
-			if strings.HasPrefix(arg.Name, trinoHeaderPrefix) {
-				headerValue := arg.Value.(string)
-
-				if arg.Name == trinoUserHeader {
-					st.user = headerValue
-				}
-
-				hs.Add(arg.Name, headerValue)
-			} else {
-				if hs.Get(preparedStatementHeader) == "" {
-					hs.Add(preparedStatementHeader, preparedStatementName+"="+url.QueryEscape(st.query))
-				}
-				ss = append(ss, s)
-			}
+	for _, arg := range args {
+		s, err := Serial(arg.Value)
+		if err != nil {
+			return nil, err
 		}
-		if len(ss) > 0 {
-			query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(ss, ", ")
+
+		// named arguments which are not prefixed as trino headers are considered as prepared statement parameters
+		if !strings.HasPrefix(arg.Name, trinoHeaderPrefix) {
+			preparedStatementParams = append(preparedStatementParams, s)
+			continue
 		}
+
+		headerValue := arg.Value.(string)
+
+		if arg.Name == trinoUserHeader {
+			st.user = headerValue
+		}
+
+		hs.Add(arg.Name, headerValue)
+	}
+
+	if len(preparedStatementParams) > 0 {
+		// ensure prepared statement header is set in case corresponding parameters are provided
+		if hs.Get(preparedStatementHeader) == "" {
+			hs.Add(preparedStatementHeader, preparedStatementName+"="+url.QueryEscape(st.query))
+		}
+
+		query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(preparedStatementParams, ", ")
 	}
 
 	req, err := st.conn.newRequest("POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
@@ -689,13 +692,15 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	}
 
 	defer resp.Body.Close()
-	var sr stmtResponse
+
 	d := json.NewDecoder(resp.Body)
 	d.UseNumber()
-	err = d.Decode(&sr)
-	if err != nil {
+
+	var sr stmtResponse
+	if err := d.Decode(&sr); err != nil {
 		return nil, fmt.Errorf("trino: %v", err)
 	}
+
 	return &sr, handleResponseError(resp.StatusCode, sr.Error)
 }
 
@@ -713,8 +718,10 @@ type driverRows struct {
 	rowsAffected int64
 }
 
-var _ driver.Rows = &driverRows{}
-var _ driver.Result = &driverRows{}
+var (
+	_ driver.Rows = &driverRows{}
+	_ driver.Result = &driverRows{}
+)
 
 // Close closes the rows iterator.
 func (qr *driverRows) Close() error {

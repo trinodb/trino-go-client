@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -676,4 +677,43 @@ func TestSlice3TypeConversion(t *testing.T) {
 			tc.TestScanner(t, tc.Scanner)
 		})
 	}
+}
+
+func TestPreparedStatementParameters(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "user", r.Header.Get("X-Trino-User"))
+		assert.Equal(t, "user@user.com", r.Header.Get("X-Trino-Team-Email"))
+		assert.Equal(t, "", r.Header.Get("other_param"))
+
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+
+		t.Cleanup(func() {
+			assert.NoError(t, r.Body.Close())
+		})
+
+		assert.Equal(t, "EXECUTE _trino_go USING 'test'", string(body))
+
+		w.WriteHeader(http.StatusOK)
+
+		_, err = w.Write([]byte("{}"))
+		assert.NoError(t, err)
+	}))
+
+	t.Cleanup(ts.Close)
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	_, err = db.Query("SELECT 1",
+		sql.Named("X-Trino-User", "user"),
+		sql.Named("X-Trino-Team-Email", "user@user.com"),
+		sql.Named("other_param", "test"),
+	)
+
+	assert.NoError(t, err)
 }
