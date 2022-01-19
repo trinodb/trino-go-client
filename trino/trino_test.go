@@ -508,33 +508,33 @@ func TestSliceTypeConversion(t *testing.T) {
 		GoType                          string
 		Scanner                         sql.Scanner
 		TrinoResponseUnmarshalledSample interface{}
-		TestScanner                     func(t *testing.T, s sql.Scanner)
+		TestScanner                     func(t *testing.T, s sql.Scanner, isValid bool)
 	}{
 		{
 			GoType:                          "[]bool",
 			Scanner:                         &NullSliceBool{},
 			TrinoResponseUnmarshalledSample: []interface{}{true},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSliceBool)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[]string",
 			Scanner:                         &NullSliceString{},
 			TrinoResponseUnmarshalledSample: []interface{}{"hello"},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSliceString)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[]int64",
 			Scanner:                         &NullSliceInt64{},
 			TrinoResponseUnmarshalledSample: []interface{}{json.Number("1")},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSliceInt64)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 
@@ -542,27 +542,27 @@ func TestSliceTypeConversion(t *testing.T) {
 			GoType:                          "[]float64",
 			Scanner:                         &NullSliceFloat64{},
 			TrinoResponseUnmarshalledSample: []interface{}{json.Number("1.0")},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSliceFloat64)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[]time.Time",
 			Scanner:                         &NullSliceTime{},
 			TrinoResponseUnmarshalledSample: []interface{}{"2017-07-01"},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSliceTime)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[]map[string]interface{}",
 			Scanner:                         &NullSliceMap{},
 			TrinoResponseUnmarshalledSample: []interface{}{map[string]interface{}{"hello": "world"}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSliceMap)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 	}
@@ -578,7 +578,9 @@ func TestSliceTypeConversion(t *testing.T) {
 
 		t.Run(tc.GoType+":sample", func(t *testing.T) {
 			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
-			tc.TestScanner(t, tc.Scanner)
+			tc.TestScanner(t, tc.Scanner, true)
+			require.NoError(t, tc.Scanner.Scan(nil))
+			tc.TestScanner(t, tc.Scanner, false)
 		})
 	}
 }
@@ -588,60 +590,60 @@ func TestSlice2TypeConversion(t *testing.T) {
 		GoType                          string
 		Scanner                         sql.Scanner
 		TrinoResponseUnmarshalledSample interface{}
-		TestScanner                     func(t *testing.T, s sql.Scanner)
+		TestScanner                     func(t *testing.T, s sql.Scanner, isValid bool)
 	}{
 		{
 			GoType:                          "[][]bool",
 			Scanner:                         &NullSlice2Bool{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{true}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice2Bool)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]string",
 			Scanner:                         &NullSlice2String{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{"hello"}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice2String)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]int64",
 			Scanner:                         &NullSlice2Int64{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{json.Number("1")}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice2Int64)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]float64",
 			Scanner:                         &NullSlice2Float64{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{json.Number("1.0")}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice2Float64)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]time.Time",
 			Scanner:                         &NullSlice2Time{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{"2017-07-01"}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice2Time)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]map[string]interface{}",
 			Scanner:                         &NullSlice2Map{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{map[string]interface{}{"hello": "world"}}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice2Map)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 	}
@@ -659,7 +661,9 @@ func TestSlice2TypeConversion(t *testing.T) {
 
 		t.Run(tc.GoType+":sample", func(t *testing.T) {
 			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
-			tc.TestScanner(t, tc.Scanner)
+			tc.TestScanner(t, tc.Scanner, true)
+			require.NoError(t, tc.Scanner.Scan(nil))
+			tc.TestScanner(t, tc.Scanner, false)
 		})
 	}
 }
@@ -669,60 +673,60 @@ func TestSlice3TypeConversion(t *testing.T) {
 		GoType                          string
 		Scanner                         sql.Scanner
 		TrinoResponseUnmarshalledSample interface{}
-		TestScanner                     func(t *testing.T, s sql.Scanner)
+		TestScanner                     func(t *testing.T, s sql.Scanner, isValid bool)
 	}{
 		{
 			GoType:                          "[][][]bool",
 			Scanner:                         &NullSlice3Bool{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{true}}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice3Bool)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]string",
 			Scanner:                         &NullSlice3String{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{"hello"}}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice3String)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]int64",
 			Scanner:                         &NullSlice3Int64{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{json.Number("1")}}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice3Int64)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]float64",
 			Scanner:                         &NullSlice3Float64{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{json.Number("1.0")}}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice3Float64)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]time.Time",
 			Scanner:                         &NullSlice3Time{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{"2017-07-01"}}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice3Time)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]map[string]interface{}",
 			Scanner:                         &NullSlice3Map{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{map[string]interface{}{"hello": "world"}}}},
-			TestScanner: func(t *testing.T, s sql.Scanner) {
+			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
 				v, _ := s.(*NullSlice3Map)
-				assert.True(t, v.Valid, "scanner failed")
+				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 	}
@@ -740,7 +744,9 @@ func TestSlice3TypeConversion(t *testing.T) {
 
 		t.Run(tc.GoType+":sample", func(t *testing.T) {
 			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
-			tc.TestScanner(t, tc.Scanner)
+			tc.TestScanner(t, tc.Scanner, true)
+			require.NoError(t, tc.Scanner.Scan(nil))
+			tc.TestScanner(t, tc.Scanner, false)
 		})
 	}
 }

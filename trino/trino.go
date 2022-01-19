@@ -1070,6 +1070,7 @@ type NullSliceBool struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSliceBool) Scan(value interface{}) error {
 	if value == nil {
+		s.SliceBool, s.Valid = []sql.NullBool{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1098,6 +1099,7 @@ type NullSlice2Bool struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice2Bool) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice2Bool, s.Valid = [][]sql.NullBool{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1126,6 +1128,7 @@ type NullSlice3Bool struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice3Bool) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice3Bool, s.Valid = [][][]sql.NullBool{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1166,6 +1169,7 @@ type NullSliceString struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSliceString) Scan(value interface{}) error {
 	if value == nil {
+		s.SliceString, s.Valid = []sql.NullString{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1194,6 +1198,7 @@ type NullSlice2String struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice2String) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice2String, s.Valid = [][]sql.NullString{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1222,6 +1227,7 @@ type NullSlice3String struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice3String) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice3String, s.Valid = [][][]sql.NullString{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1267,6 +1273,7 @@ type NullSliceInt64 struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSliceInt64) Scan(value interface{}) error {
 	if value == nil {
+		s.SliceInt64, s.Valid = []sql.NullInt64{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1295,6 +1302,7 @@ type NullSlice2Int64 struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice2Int64) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice2Int64, s.Valid = [][]sql.NullInt64{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1323,6 +1331,7 @@ type NullSlice3Int64 struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice3Int64) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice3Int64, s.Valid = [][][]sql.NullInt64{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1375,6 +1384,7 @@ type NullSliceFloat64 struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSliceFloat64) Scan(value interface{}) error {
 	if value == nil {
+		s.SliceFloat64, s.Valid = []sql.NullFloat64{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1403,6 +1413,7 @@ type NullSlice2Float64 struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice2Float64) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice2Float64, s.Valid = [][]sql.NullFloat64{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1431,6 +1442,7 @@ type NullSlice3Float64 struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice3Float64) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice3Float64, s.Valid = [][][]sql.NullFloat64{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1513,6 +1525,10 @@ type NullTime struct {
 
 // Scan implements the sql.Scanner interface.
 func (s *NullTime) Scan(value interface{}) error {
+	if value == nil {
+		s.Time, s.Valid = time.Time{}, false
+		return nil
+	}
 	switch t := value.(type) {
 	case time.Time:
 		s.Time, s.Valid = t, true
@@ -1531,6 +1547,7 @@ type NullSliceTime struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSliceTime) Scan(value interface{}) error {
 	if value == nil {
+		s.SliceTime, s.Valid = []NullTime{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1559,6 +1576,7 @@ type NullSlice2Time struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice2Time) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice2Time, s.Valid = [][]NullTime{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1587,6 +1605,7 @@ type NullSlice3Time struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice3Time) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice3Time, s.Valid = [][][]NullTime{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1615,6 +1634,7 @@ type NullMap struct {
 // Scan implements the sql.Scanner interface.
 func (m *NullMap) Scan(v interface{}) error {
 	if v == nil {
+		m.Map, m.Valid = map[string]interface{}{}, false
 		return nil
 	}
 	m.Map, m.Valid = v.(map[string]interface{})
@@ -1630,6 +1650,7 @@ type NullSliceMap struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSliceMap) Scan(value interface{}) error {
 	if value == nil {
+		s.SliceMap, s.Valid = []NullMap{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1660,6 +1681,7 @@ type NullSlice2Map struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice2Map) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice2Map, s.Valid = [][]NullMap{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
@@ -1688,6 +1710,7 @@ type NullSlice3Map struct {
 // Scan implements the sql.Scanner interface.
 func (s *NullSlice3Map) Scan(value interface{}) error {
 	if value == nil {
+		s.Slice3Map, s.Valid = [][][]NullMap{}, false
 		return nil
 	}
 	vs, ok := value.([]interface{})
