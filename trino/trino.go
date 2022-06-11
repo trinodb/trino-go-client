@@ -79,7 +79,7 @@ import (
 )
 
 func init() {
-	sql.Register("trino", &sqldriver{})
+	sql.Register("trino", &Driver{})
 }
 
 var (
@@ -101,22 +101,22 @@ var (
 
 const (
 	trinoHeaderPrefix = `X-Trino-`
-	
-	preparedStatementHeader    = trinoHeaderPrefix+"Prepared-Statement"
-	preparedStatementName      = "_trino_go"
 
-	trinoUserHeader            = trinoHeaderPrefix+`User`
-	trinoSourceHeader          = trinoHeaderPrefix+`Source`
-	trinoCatalogHeader         = trinoHeaderPrefix+`Catalog`
-	trinoSchemaHeader          = trinoHeaderPrefix+`Schema`
-	trinoSessionHeader         = trinoHeaderPrefix+`Session`
-	trinoSetCatalogHeader      = trinoHeaderPrefix+`Set-Catalog`
-	trinoSetSchemaHeader       = trinoHeaderPrefix+`Set-Schema`
-	trinoSetPathHeader         = trinoHeaderPrefix+`Set-Path`
-	trinoSetSessionHeader      = trinoHeaderPrefix+`Set-Session`
-	trinoClearSessionHeader    = trinoHeaderPrefix+`Clear-Session`
-	trinoSetRoleHeader         = trinoHeaderPrefix+`Set-Role`
-	trinoExtraCredentialHeader = trinoHeaderPrefix+`Extra-Credential`
+	preparedStatementHeader = trinoHeaderPrefix + "Prepared-Statement"
+	preparedStatementName   = "_trino_go"
+
+	trinoUserHeader            = trinoHeaderPrefix + `User`
+	trinoSourceHeader          = trinoHeaderPrefix + `Source`
+	trinoCatalogHeader         = trinoHeaderPrefix + `Catalog`
+	trinoSchemaHeader          = trinoHeaderPrefix + `Schema`
+	trinoSessionHeader         = trinoHeaderPrefix + `Session`
+	trinoSetCatalogHeader      = trinoHeaderPrefix + `Set-Catalog`
+	trinoSetSchemaHeader       = trinoHeaderPrefix + `Set-Schema`
+	trinoSetPathHeader         = trinoHeaderPrefix + `Set-Path`
+	trinoSetSessionHeader      = trinoHeaderPrefix + `Set-Session`
+	trinoClearSessionHeader    = trinoHeaderPrefix + `Clear-Session`
+	trinoSetRoleHeader         = trinoHeaderPrefix + `Set-Role`
+	trinoExtraCredentialHeader = trinoHeaderPrefix + `Extra-Credential`
 
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
@@ -139,13 +139,13 @@ var (
 	}
 )
 
-type sqldriver struct{}
+type Driver struct{}
 
-func (d *sqldriver) Open(name string) (driver.Conn, error) {
+func (d *Driver) Open(name string) (driver.Conn, error) {
 	return newConn(name)
 }
 
-var _ driver.Driver = &sqldriver{}
+var _ driver.Driver = &Driver{}
 
 // Config is a configuration that can be encoded to a DSN string.
 type Config struct {
