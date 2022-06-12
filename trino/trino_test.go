@@ -19,8 +19,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -237,16 +239,410 @@ func TestQueryForUsername(t *testing.T) {
 
 	rows, err := db.Query("SELECT current_user", sql.Named("X-Trino-User", string("TestUser")))
 	require.NoError(t, err, "Failed executing query")
+	assert.NotNil(t, rows)
 
-	if rows != nil {
-		for rows.Next() {
-			var ts string
-			require.NoError(t, rows.Scan(&ts), "Failed scanning query result")
+	for rows.Next() {
+		var user string
+		require.NoError(t, rows.Scan(&user), "Failed scanning query result")
 
-			want := "TestUser"
-			assert.Equal(t, want, ts, "Expected value does not equal result value")
-		}
+		assert.Equal(t, "TestUser", user, "Expected value does not equal result value")
 	}
+}
+
+func TestQueryColumns(t *testing.T) {
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	rows, err := db.Query(`SELECT
+  true AS bool,
+  cast(123 AS tinyint) AS tinyint,
+  cast(456 AS smallint) AS smallint,
+  cast(678 AS integer) AS integer,
+  cast(1234 AS bigint) AS bigint,
+  cast(1.23 AS real) AS real,
+  cast(1.23 AS double) AS double,
+  cast(1.23 as decimal(10,5)) AS decimal,
+  cast('aaa' as varchar) AS vunbounded,
+  cast('bbb' as varchar(10)) AS vbounded,
+  cast('ccc' AS char) AS cunbounded,
+  cast('ddd' as char(10)) AS cbounded,
+  cast('ddd' as varbinary) AS varbinary,
+  cast('{"aaa": 1}' as json) AS json,
+  current_date AS date,
+  cast(current_time as time) AS time,
+  cast(current_time as time(6)) AS timep,
+  cast(current_time as time with time zone) AS timetz,
+  cast(current_time as timestamp) AS ts,
+  cast(current_time as timestamp(6)) AS tsp,
+  cast(current_time as timestamp with time zone) AS tstz,
+  cast(current_time as timestamp(6) with time zone) AS tsptz,
+  interval '3' month AS ytm,
+  interval '2' day AS dts,
+  array['a', 'b'] AS varray,
+  array[array['a'], array['b']] AS v2array,
+  array[array[array['a'], array['b']]] AS v3array,
+  map(array['a'], array[1]) AS map,
+  array[map(array['a'], array[1]), map(array['b'], array[2])] AS marray,
+  row('a', 1) AS row,
+  ipaddress '10.0.0.1' AS ip`)
+	require.NoError(t, err, "Failed executing query")
+	assert.NotNil(t, rows)
+
+	columns, err := rows.Columns()
+	require.NoError(t, err, "Failed reading result columns")
+
+	assert.Equal(t, 31, len(columns), "Expected 31 result column")
+	expectedNames := []string{
+		"bool",
+		"tinyint",
+		"smallint",
+		"integer",
+		"bigint",
+		"real",
+		"double",
+		"decimal",
+		"vunbounded",
+		"vbounded",
+		"cunbounded",
+		"cbounded",
+		"varbinary",
+		"json",
+		"date",
+		"time",
+		"timep",
+		"timetz",
+		"ts",
+		"tsp",
+		"tstz",
+		"tsptz",
+		"ytm",
+		"dts",
+		"varray",
+		"v2array",
+		"v3array",
+		"map",
+		"marray",
+		"row",
+		"ip",
+	}
+	assert.Equal(t, expectedNames, columns)
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err, "Failed reading result column types")
+
+	assert.Equal(t, 31, len(columnTypes), "Expected 31 result column type")
+
+	type columnType struct {
+		typeName  string
+		hasScale  bool
+		precision int64
+		scale     int64
+		hasLength bool
+		length    int64
+		scanType  reflect.Type
+	}
+	expectedTypes := []columnType{
+		{
+			"BOOLEAN",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullBool{}),
+		},
+		{
+			"TINYINT",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullInt32{}),
+		},
+		{
+			"SMALLINT",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullInt32{}),
+		},
+		{
+			"INTEGER",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullInt32{}),
+		},
+		{
+			"BIGINT",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullInt64{}),
+		},
+		{
+			"REAL",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullFloat64{}),
+		},
+		{
+			"DOUBLE",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullFloat64{}),
+		},
+		{
+			"DECIMAL",
+			true,
+			10,
+			5,
+			false,
+			0,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"VARCHAR",
+			false,
+			0,
+			0,
+			true,
+			math.MaxInt32,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"VARCHAR",
+			false,
+			0,
+			0,
+			true,
+			10,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"CHAR",
+			false,
+			0,
+			0,
+			true,
+			1,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"CHAR",
+			false,
+			0,
+			0,
+			true,
+			10,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"VARBINARY",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"JSON",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"DATE",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIME",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIME",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIME WITH TIME ZONE",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP WITH TIME ZONE",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP WITH TIME ZONE",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"INTERVAL YEAR TO MONTH",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"INTERVAL DAY TO SECOND",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullString{}),
+		},
+		{
+			"ARRAY(VARCHAR(1))",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(NullSliceString{}),
+		},
+		{
+			"ARRAY(ARRAY(VARCHAR(1)))",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(NullSlice2String{}),
+		},
+		{
+			"ARRAY(ARRAY(ARRAY(VARCHAR(1))))",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(NullSlice3String{}),
+		},
+		{
+			"MAP(VARCHAR(1), INTEGER)",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(NullMap{}),
+		},
+		{
+			"ARRAY(MAP(VARCHAR(1), INTEGER))",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(NullSliceMap{}),
+		},
+		{
+			"ROW(VARCHAR(1), INTEGER)",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(new(interface{})).Elem(),
+		},
+		{
+			"IPADDRESS",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullString{}),
+		},
+	}
+	actualTypes := make([]columnType, 31)
+	for i, column := range columnTypes {
+		actualTypes[i].typeName = column.DatabaseTypeName()
+		actualTypes[i].precision, actualTypes[i].scale, actualTypes[i].hasScale = column.DecimalSize()
+		actualTypes[i].length, actualTypes[i].hasLength = column.Length()
+		actualTypes[i].scanType = column.ScanType()
+	}
+
+	assert.Equal(t, actualTypes, expectedTypes)
 }
 
 func TestQueryCancellation(t *testing.T) {
@@ -402,68 +798,164 @@ func TestTypeConversion(t *testing.T) {
 
 	testcases := []struct {
 		DataType                   string
+		RawType                    string
+		Arguments                  []typeArgument
 		ResponseUnmarshalledSample interface{}
 		ExpectedGoValue            interface{}
 	}{
 		{
 			DataType:                   "boolean",
+			RawType:                    "boolean",
 			ResponseUnmarshalledSample: true,
 			ExpectedGoValue:            true,
 		},
 		{
 			DataType:                   "varchar(1)",
+			RawType:                    "varchar",
 			ResponseUnmarshalledSample: "hello",
 			ExpectedGoValue:            "hello",
 		},
 		{
 			DataType:                   "bigint",
+			RawType:                    "bigint",
 			ResponseUnmarshalledSample: json.Number("1234516165077230279"),
 			ExpectedGoValue:            int64(1234516165077230279),
 		},
 		{
 			DataType:                   "double",
+			RawType:                    "double",
 			ResponseUnmarshalledSample: json.Number("1.0"),
 			ExpectedGoValue:            float64(1),
 		},
 		{
 			DataType:                   "date",
+			RawType:                    "date",
 			ResponseUnmarshalledSample: "2017-07-10",
 			ExpectedGoValue:            time.Date(2017, 7, 10, 0, 0, 0, 0, time.Local),
 		},
 		{
 			DataType:                   "time",
+			RawType:                    "time",
 			ResponseUnmarshalledSample: "01:02:03.000",
 			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.Local),
 		},
 		{
 			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
 			ResponseUnmarshalledSample: "01:02:03.000 UTC",
 			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, utc),
 		},
 		{
 			DataType:                   "timestamp",
+			RawType:                    "timestamp",
 			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000",
 			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.Local),
 		},
 		{
 			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
 			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 UTC",
 			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, utc),
 		},
 		{
-			DataType:                   "map",
+			DataType: "map(varchar,varchar)",
+			RawType:  "map",
+			Arguments: []typeArgument{
+				{
+					Kind: "NAMED_TYPE",
+					namedTypeSignature: namedTypeSignature{
+						TypeSignature: typeSignature{
+							RawType: "varchar",
+						},
+					},
+				},
+				{
+					Kind: "NAMED_TYPE",
+					namedTypeSignature: namedTypeSignature{
+						TypeSignature: typeSignature{
+							RawType: "varchar",
+						},
+					},
+				},
+			},
 			ResponseUnmarshalledSample: nil,
 			ExpectedGoValue:            nil,
 		},
 		{
 			// arrays return data as-is for slice scanners
-			DataType:                   "array",
+			DataType: "array(varchar)",
+			RawType:  "array",
+			Arguments: []typeArgument{
+				{
+					Kind: "NAMED_TYPE",
+					namedTypeSignature: namedTypeSignature{
+						TypeSignature: typeSignature{
+							RawType: "varchar",
+						},
+					},
+				},
+			},
 			ResponseUnmarshalledSample: nil,
 			ExpectedGoValue:            nil,
 		},
 		{
 			// rows return data as-is for slice scanners
 			DataType: "row(int, varchar(1), timestamp, array(varchar(1)))",
+			RawType:  "row",
+			Arguments: []typeArgument{
+				{
+					Kind: "NAMED_TYPE",
+					namedTypeSignature: namedTypeSignature{
+						TypeSignature: typeSignature{
+							RawType: "integer",
+						},
+					},
+				},
+				{
+					Kind: "NAMED_TYPE",
+					namedTypeSignature: namedTypeSignature{
+						TypeSignature: typeSignature{
+							RawType: "varchar",
+							Arguments: []typeArgument{
+								{
+									Kind: "LONG",
+									long: 1,
+								},
+							},
+						},
+					},
+				},
+				{
+					Kind: "NAMED_TYPE",
+					namedTypeSignature: namedTypeSignature{
+						TypeSignature: typeSignature{
+							RawType: "timestamp",
+						},
+					},
+				},
+				{
+					Kind: "NAMED_TYPE",
+					namedTypeSignature: namedTypeSignature{
+						TypeSignature: typeSignature{
+							RawType: "array",
+							Arguments: []typeArgument{
+								{
+									Kind: "TYPE",
+									typeSignature: typeSignature{
+										RawType: "varchar",
+										Arguments: []typeArgument{
+											{
+												Kind: "LONG",
+												long: 1,
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			ResponseUnmarshalledSample: []interface{}{
 				json.Number("1"),
 				"a",
@@ -480,7 +972,8 @@ func TestTypeConversion(t *testing.T) {
 	}
 
 	for _, tc := range testcases {
-		converter := newTypeConverter(tc.DataType)
+		converter, err := newTypeConverter(tc.DataType, typeSignature{RawType: tc.RawType, Arguments: tc.Arguments})
+		assert.NoError(t, err)
 
 		t.Run(tc.DataType+":nil", func(t *testing.T) {
 			_, err := converter.ConvertValue(nil)
