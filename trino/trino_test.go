@@ -287,6 +287,50 @@ func TestQueryFailure(t *testing.T) {
 	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
 }
 
+func TestSession(t *testing.T) {
+	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := &Config{
+		ServerURI:         "http://foobar@localhost:8080?custom_client=uncompressed",
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	_, err = db.Exec("SET SESSION join_distribution_type='BROADCAST'")
+	require.NoError(t, err, "Failed executing query")
+
+	row := db.QueryRow("SHOW SESSION LIKE 'join_distribution_type'")
+	var name string
+	var value string
+	var defaultValue string
+	var typeName string
+	var description string
+	err = row.Scan(&name, &value, &defaultValue, &typeName, &description)
+	require.NoError(t, err, "Failed executing query")
+
+	assert.Equal(t, "BROADCAST", value)
+
+	_, err = db.Exec("RESET SESSION join_distribution_type")
+	require.NoError(t, err, "Failed executing query")
+
+	row = db.QueryRow("SHOW SESSION LIKE 'join_distribution_type'")
+	err = row.Scan(&name, &value, &defaultValue, &typeName, &description)
+	require.NoError(t, err, "Failed executing query")
+
+	assert.Equal(t, "AUTOMATIC", value)
+}
+
 func TestUnsupportedHeader(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(trinoSetRoleHeader, "foo")
