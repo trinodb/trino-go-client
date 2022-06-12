@@ -332,8 +332,12 @@ func TestIntegrationSessionProperties(t *testing.T) {
 }
 
 func TestIntegrationTypeConversion(t *testing.T) {
+	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	dsn := *integrationServerFlag
-	dsn += "?session_properties=parse_decimal_literals_as_double=true"
+	dsn += "?session_properties=parse_decimal_literals_as_double=true&custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
 	var (
 		goTime            time.Time
@@ -351,8 +355,9 @@ func TestIntegrationTypeConversion(t *testing.T) {
 		nullFloat64Slice3 NullSlice3Float64
 		goMap             map[string]interface{}
 		nullMap           NullMap
+		goRow             []interface{}
 	)
-	err := db.QueryRow(`
+	err = db.QueryRow(`
 		SELECT
 			TIMESTAMP '2017-07-10 01:02:03.004 UTC',
 			CAST(NULL AS TIMESTAMP),
@@ -368,7 +373,8 @@ func TestIntegrationTypeConversion(t *testing.T) {
 			ARRAY[ARRAY[1.1, 1.1, 1.1], NULL],
 			ARRAY[ARRAY[ARRAY[1.1, 1.1, 1.1], NULL], NULL],
 			MAP(ARRAY['a', 'b'], ARRAY['c', 'd']),
-			CAST(NULL AS MAP(ARRAY(INTEGER), ARRAY(INTEGER)))
+			CAST(NULL AS MAP(ARRAY(INTEGER), ARRAY(INTEGER))),
+			ROW(1, 'a', CAST('2017-07-10 01:02:03.004 UTC' AS TIMESTAMP(6) WITH TIME ZONE), ARRAY['c'])
 	`).Scan(
 		&goTime,
 		&nullTime,
@@ -385,6 +391,7 @@ func TestIntegrationTypeConversion(t *testing.T) {
 		&nullFloat64Slice3,
 		&goMap,
 		&nullMap,
+		&goRow,
 	)
 	if err != nil {
 		t.Fatal(err)
