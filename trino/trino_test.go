@@ -19,12 +19,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfig(t *testing.T) {
@@ -133,7 +134,7 @@ func TestConnErrorDSN(t *testing.T) {
 			require.NoError(t, err)
 
 			_, err = db.Query("SELECT 1")
-			assert.Errorf(t, err,"test dsn is supposed to fail: %s", tc.DSN)
+			assert.Errorf(t, err, "test dsn is supposed to fail: %s", tc.DSN)
 
 			if err == nil {
 				require.NoError(t, db.Close())
