@@ -118,6 +118,9 @@ const (
 	trinoSetRoleHeader         = trinoHeaderPrefix + `Set-Role`
 	trinoExtraCredentialHeader = trinoHeaderPrefix + `Extra-Credential`
 
+	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
+	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
+
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
 	kerberosPrincipalConfig  = "KerberosPrincipal"
@@ -133,8 +136,6 @@ var (
 	}
 	unsupportedResponseHeaders = []string{
 		trinoSetPathHeader,
-		trinoSetSessionHeader,
-		trinoClearSessionHeader,
 		trinoSetRoleHeader,
 	}
 )
@@ -462,6 +463,30 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 						c.httpHeaders.Set(dst, v)
 					}
 				}
+				if v := resp.Header.Get(trinoAddedPrepareHeader); v != "" {
+					c.httpHeaders.Add(preparedStatementHeader, v)
+				}
+				if v := resp.Header.Get(trinoDeallocatedPrepareHeader); v != "" {
+					values := c.httpHeaders.Values(preparedStatementHeader)
+					c.httpHeaders.Del(preparedStatementHeader)
+					for _, v2 := range values {
+						if !strings.HasPrefix(v2, v+"=") {
+							c.httpHeaders.Add(preparedStatementHeader, v2)
+						}
+					}
+				}
+				if v := resp.Header.Get(trinoSetSessionHeader); v != "" {
+					c.httpHeaders.Add(trinoSessionHeader, v)
+				}
+				if v := resp.Header.Get(trinoClearSessionHeader); v != "" {
+					values := c.httpHeaders.Values(trinoSessionHeader)
+					c.httpHeaders.Del(trinoSessionHeader)
+					for _, v2 := range values {
+						if !strings.HasPrefix(v2, v+"=") {
+							c.httpHeaders.Add(trinoSessionHeader, v2)
+						}
+					}
+				}
 				for _, name := range unsupportedResponseHeaders {
 					if v := resp.Header.Get(name); v != "" {
 						return nil, ErrUnsupportedHeader
@@ -668,6 +693,9 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				hs.Add(arg.Name, headerValue)
 			} else {
 				if hs.Get(preparedStatementHeader) == "" {
+					for _, v := range st.conn.httpHeaders.Values(preparedStatementHeader) {
+						hs.Add(preparedStatementHeader, v)
+					}
 					hs.Add(preparedStatementHeader, preparedStatementName+"="+url.QueryEscape(st.query))
 				}
 				ss = append(ss, s)

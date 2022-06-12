@@ -468,20 +468,12 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 		err   error
 	}{
 		{
-			query: "SET SESSION optimize_hash_generation=true",
-			err:   ErrUnsupportedHeader,
-		},
-		{
 			query: "SET ROLE dummy",
 			err:   errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: line 1:1: Role 'dummy' does not exist"`),
 		},
 		{
 			query: "SET PATH dummy",
 			err:   errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: SET PATH not supported by client"`),
-		},
-		{
-			query: "RESET SESSION optimize_hash_generation",
-			err:   ErrUnsupportedHeader,
 		},
 	}
 	for _, c := range cases {
