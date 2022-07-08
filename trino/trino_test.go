@@ -461,6 +461,22 @@ func TestTypeConversion(t *testing.T) {
 			ResponseUnmarshalledSample: nil,
 			ExpectedGoValue:            nil,
 		},
+		{
+			// rows return data as-is for slice scanners
+			DataType: "row(int, varchar(1), timestamp, array(varchar(1)))",
+			ResponseUnmarshalledSample: []interface{}{
+				json.Number("1"),
+				"a",
+				"2017-07-10 01:02:03.000 UTC",
+				[]interface{}{"b"},
+			},
+			ExpectedGoValue: []interface{}{
+				json.Number("1"),
+				"a",
+				"2017-07-10 01:02:03.000 UTC",
+				[]interface{}{"b"},
+			},
+		},
 	}
 
 	for _, tc := range testcases {
