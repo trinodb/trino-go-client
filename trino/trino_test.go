@@ -19,12 +19,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestConfig(t *testing.T) {
@@ -133,7 +134,7 @@ func TestConnErrorDSN(t *testing.T) {
 			require.NoError(t, err)
 
 			_, err = db.Query("SELECT 1")
-			assert.Errorf(t, err,"test dsn is supposed to fail: %s", tc.DSN)
+			assert.Errorf(t, err, "test dsn is supposed to fail: %s", tc.DSN)
 
 			if err == nil {
 				require.NoError(t, db.Close())
@@ -409,6 +410,22 @@ func TestTypeConversion(t *testing.T) {
 			DataType:                   "array",
 			ResponseUnmarshalledSample: nil,
 			ExpectedGoValue:            nil,
+		},
+		{
+			// rows return data as-is for slice scanners
+			DataType: "row(int, varchar(1), timestamp, array(varchar(1)))",
+			ResponseUnmarshalledSample: []interface{}{
+				json.Number("1"),
+				"a",
+				"2017-07-10 01:02:03.000 UTC",
+				[]interface{}{"b"},
+			},
+			ExpectedGoValue: []interface{}{
+				json.Number("1"),
+				"a",
+				"2017-07-10 01:02:03.000 UTC",
+				[]interface{}{"b"},
+			},
 		},
 	}
 

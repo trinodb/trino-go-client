@@ -991,6 +991,11 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return v, nil
+	case "row":
+		if err := validateSlice(v); err != nil {
+			return nil, err
+		}
+		return v, nil
 	default:
 		return nil, fmt.Errorf("type not supported: %q", c.typeName)
 	}
