@@ -111,14 +111,14 @@ func TestIntegrationSelectQueryIterator(t *testing.T) {
 			t.Fatal(err)
 		}
 		if col.NodeID != "test" {
-			t.Fatal("node_id != test")
+			t.Errorf("Expected node_id == test but got %s", col.NodeID)
 		}
 	}
 	if err = rows.Err(); err != nil {
 		t.Fatal(err)
 	}
 	if count < 1 {
-		t.Fatal("no rows returned")
+		t.Error("no rows returned")
 	}
 }
 
@@ -361,7 +361,7 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 		name          string
 		query         string
 		args          []interface{}
-		expectedError bool
+		expectedError error
 		expectedRows  int
 	}{
 		{
@@ -380,13 +380,13 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 			name:          "invalid string as bigint",
 			query:         "SELECT * FROM tpch.sf1.customer WHERE custkey=? LIMIT 2",
 			args:          []interface{}{"1"},
-			expectedError: true,
+			expectedError: errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: line 1:46: Cannot apply operator: bigint = varchar(1)"`),
 		},
 		{
 			name:          "valid string as date",
 			query:         "SELECT * FROM tpch.sf1.lineitem WHERE shipdate=? LIMIT 2",
 			args:          []interface{}{"1995-01-27"},
-			expectedError: true,
+			expectedError: errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: line 1:47: Cannot apply operator: date = varchar(10)"`),
 		},
 	}
 
@@ -399,16 +399,22 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 
 			rows, err := db.Query(scenario.query, scenario.args...)
 			if err != nil {
-				if scenario.expectedError {
+				if scenario.expectedError == nil {
+					t.Errorf("Unexpected err: %s", err)
 					return
 				}
-				t.Fatal(err)
+				if err.Error() == scenario.expectedError.Error() {
+					return
+				}
+				t.Errorf("Expected err to be %s but got %s", scenario.expectedError, err)
 			}
-			defer rows.Close()
 
-			if scenario.expectedError {
-				t.Fatal("missing expected error")
+			if scenario.expectedError != nil {
+				t.Error("missing expected error")
+				return
 			}
+
+			defer rows.Close()
 
 			var count int
 			for rows.Next() {
@@ -418,7 +424,7 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 				t.Fatal(err)
 			}
 			if count != scenario.expectedRows {
-				t.Fatalf("expecting %d rows, got %d", scenario.expectedRows, count)
+				t.Errorf("expecting %d rows, got %d", scenario.expectedRows, count)
 			}
 		})
 	}
