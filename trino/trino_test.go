@@ -217,8 +217,11 @@ func TestAuthFailure(t *testing.T) {
 }
 
 func TestQueryForUsername(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
 	c := &Config{
-		ServerURI:         "http://foobar@localhost:8080",
+		ServerURI:         *integrationServerFlag,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
@@ -288,12 +291,15 @@ func TestQueryFailure(t *testing.T) {
 }
 
 func TestSession(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
 	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	c := &Config{
-		ServerURI:         "http://foobar@localhost:8080?custom_client=uncompressed",
+		ServerURI:         *integrationServerFlag + "?custom_client=uncompressed",
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 

@@ -31,6 +31,9 @@ import (
 )
 
 func TestIntegrationTLS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
 	proxyServer := newTLSReverseProxy(t)
 	defer proxyServer.Close()
 	RegisterCustomClient("test_tls", proxyServer.Client())
@@ -40,6 +43,9 @@ func TestIntegrationTLS(t *testing.T) {
 }
 
 func TestIntegrationInsecureTLS(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
 	proxyServer := newTLSReverseProxy(t)
 	defer proxyServer.Close()
 	RegisterCustomClient("test_insecure_tls", &http.Client{
@@ -74,7 +80,7 @@ func testSimpleQuery(t *testing.T, dsn string) {
 
 // newTLSReverseProxy creates a TLS integration test server.
 func newTLSReverseProxy(t *testing.T) *httptest.Server {
-	dsn := integrationServerDSN(t)
+	dsn := *integrationServerFlag
 	serverURL, _ := url.Parse(dsn)
 	cproxyURL := make(chan string, 1)
 	handler := newReverseProxyHandler(serverURL, cproxyURL)

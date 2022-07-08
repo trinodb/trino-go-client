@@ -19,46 +19,103 @@ import (
 	"database/sql"
 	"errors"
 	"flag"
+	"log"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	dt "github.com/ory/dockertest/v3"
 )
 
 var (
+	pool     *dt.Pool
+	resource *dt.Resource
+
 	integrationServerFlag = flag.String(
 		"trino_server_dsn",
 		os.Getenv("TRINO_SERVER_DSN"),
-		"dsn of the Trino server used for integration tests; default disabled",
+		"dsn of the Trino server used for integration tests instead of starting a Docker container",
 	)
 	integrationServerQueryTimeout = flag.Duration(
 		"trino_query_timeout",
 		5*time.Second,
 		"max duration for Trino queries to run before giving up",
 	)
+	noCleanup = flag.Bool(
+		"no_cleanup",
+		false,
+		"do not delete containers on exit",
+	)
 )
 
-func init() {
-	// explicitly init testing module so flags are registered before call to flag.Parse
-	testing.Init()
+func TestMain(m *testing.M) {
 	flag.Parse()
 	DefaultQueryTimeout = *integrationServerQueryTimeout
 	DefaultCancelQueryTimeout = *integrationServerQueryTimeout
-}
 
-// integrationServerDSN returns the URL of the integration test server.
-func integrationServerDSN(t *testing.T) string {
-	if dsn := *integrationServerFlag; dsn != "" {
-		return dsn
+	var err error
+	if *integrationServerFlag == "" && !testing.Short() {
+		pool, err = dt.NewPool("")
+		if err != nil {
+			log.Fatalf("Could not connect to docker: %s", err)
+		}
+		pool.MaxWait = 1 * time.Minute
+
+		wd, err := os.Getwd()
+		if err != nil {
+			log.Fatalf("Failed to get working directory: %s", err)
+		}
+		name := "trino-go-client-tests"
+		var ok bool
+		resource, ok = pool.ContainerByName(name)
+
+		if !ok {
+			resource, err = pool.RunWithOptions(&dt.RunOptions{
+				Name:       name,
+				Repository: "trinodb/trino",
+				Tag:        "latest",
+				Mounts:     []string{wd + "/etc:/etc/trino"},
+			})
+			if err != nil {
+				log.Fatalf("Could not start resource: %s", err)
+			}
+		}
+
+		if err := pool.Retry(func() error {
+			c, err := pool.Client.InspectContainer(resource.Container.ID)
+			if err != nil {
+				return err
+			}
+			if c.State.Health.Status != "healthy" {
+				return errors.New("Not ready")
+			}
+			return nil
+		}); err != nil {
+			log.Fatalf("Timed out waiting for container to get ready: %s", err)
+		}
+		*integrationServerFlag = "http://test@localhost:" + resource.GetPort("8080/tcp")
 	}
-	t.Skip()
-	return ""
+
+	code := m.Run()
+
+	if !*noCleanup && pool != nil && resource != nil {
+		// You can't defer this because os.Exit doesn't care for defer
+		if err := pool.Purge(resource); err != nil {
+			log.Fatalf("Could not purge resource: %s", err)
+		}
+	}
+
+	os.Exit(code)
 }
 
 // integrationOpen opens a connection to the integration test server.
 func integrationOpen(t *testing.T, dsn ...string) *sql.DB {
-	target := integrationServerDSN(t)
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
+	target := *integrationServerFlag
 	if len(dsn) > 0 {
 		target = dsn[0]
 	}
@@ -71,14 +128,6 @@ func integrationOpen(t *testing.T, dsn ...string) *sql.DB {
 
 // integration tests based on python tests:
 // https://github.com/trinodb/trino-python-client/tree/master/integration_tests
-
-func TestIntegrationEnabled(t *testing.T) {
-	dsn := *integrationServerFlag
-	if dsn == "" {
-		example := "http://test@localhost:8080"
-		t.Skip("integration tests not enabled; use e.g. -trino_server_dsn=" + example)
-	}
-}
 
 type nodesRow struct {
 	NodeID      string
@@ -244,7 +293,7 @@ handleErr:
 }
 
 func TestIntegrationSessionProperties(t *testing.T) {
-	dsn := integrationServerDSN(t)
+	dsn := *integrationServerFlag
 	dsn += "?session_properties=query_max_run_time=10m,query_priority=2"
 	db := integrationOpen(t, dsn)
 	defer db.Close()
@@ -283,7 +332,7 @@ func TestIntegrationSessionProperties(t *testing.T) {
 }
 
 func TestIntegrationTypeConversion(t *testing.T) {
-	dsn := integrationServerDSN(t)
+	dsn := *integrationServerFlag
 	dsn += "?session_properties=parse_decimal_literals_as_double=true"
 	db := integrationOpen(t, dsn)
 	var (
@@ -465,7 +514,7 @@ func TestIntegrationExec(t *testing.T) {
 }
 
 func TestIntegrationUnsupportedHeader(t *testing.T) {
-	dsn := integrationServerDSN(t)
+	dsn := *integrationServerFlag
 	dsn += "?catalog=tpch&schema=sf10"
 	db := integrationOpen(t, dsn)
 	defer db.Close()
@@ -495,7 +544,7 @@ func TestIntegrationQueryContextCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dsn := integrationServerDSN(t)
+	dsn := *integrationServerFlag
 	dsn += "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
 	defer db.Close()
