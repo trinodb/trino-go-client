@@ -14,8 +14,8 @@ A [Trino](https://trino.io) client for the [Go](https://golang.org) programming 
 * Support custom HTTP client (tunable conn pools, timeouts, TLS)
 * Supports conversion from Trino to native Go data types
   * `string`, `sql.NullString`
-  * `int64`, `trino.NullInt64`
-  * `float64`, `trino.NullFloat64`
+  * `int64`, `sql.NullInt64`
+  * `float64`, `sql.NullFloat64`
   * `map`, `trino.NullMap`
   * `time.Time`, `trino.NullTime`
   * Up to 3-dimensional arrays to Go slices, of any supported type
@@ -187,6 +187,41 @@ http://user@localhost:8080?source=hello&catalog=default&schema=foobar
 ```
 https://user@localhost:8443?session_properties=query_max_run_time=10m,query_priority=2
 ```
+
+## Data types
+
+The driver supports most Trino data types, except:
+* time and timestamps with precision - all time types are returned as `time.Time`
+* `DECIMAL` - returned as string
+* `IPADDRESS` - returned as string
+* `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string
+* `UUID` - returned as string
+
+Data types like `HyperLogLog`, `SetDigest`, `QDigest`, and `TDigest` are not supported and cannot be returned from a query.
+
+For reading nullable columns, use:
+* `trino.NullTime`
+* `trino.NullMap` - which stores a map of `map[string]interface{}`
+or similar structs from the `database/sql` package, like `sql.NullInt64`
+
+To read query results containing arrays or maps, pass one of the following structs to the `Scan()` function:
+
+* `trino.NullSliceBool`
+* `trino.NullSliceString`
+* `trino.NullSliceInt64`
+* `trino.NullSliceFloat64`
+* `trino.NullSliceTime`
+* `trino.NullSliceMap`
+
+For two or three dimensional arrays, use `trino.NullSlice2Bool` and `trino.NullSlice3Bool` or equivalents for other data types.
+
+To read `ROW` values, implement the `sql.Scanner` interface in a struct. Its `Scan()` function
+will receive a `[]interface{}` slice, with values of the following types:
+* `bool`
+* `json.Number` for any numeric Trino types
+* `[]interface{}` for Trino arrays
+* `map[string]interface{}` for Trino maps
+* `string` for other Trino types, as character, date, time, or timestamp
 
 ## License
 
