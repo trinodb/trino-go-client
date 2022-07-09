@@ -468,7 +468,7 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 		err   error
 	}{
 		{
-			query: "SET SESSION grouped_execution=true",
+			query: "SET SESSION optimize_hash_generation=true",
 			err:   ErrUnsupportedHeader,
 		},
 		{
@@ -480,7 +480,7 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 			err:   errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: SET PATH not supported by client"`),
 		},
 		{
-			query: "RESET SESSION grouped_execution",
+			query: "RESET SESSION optimize_hash_generation",
 			err:   ErrUnsupportedHeader,
 		},
 	}
