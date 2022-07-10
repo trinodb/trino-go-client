@@ -65,6 +65,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -544,9 +545,10 @@ type driverStmt struct {
 }
 
 var (
-	_ driver.Stmt             = &driverStmt{}
-	_ driver.StmtQueryContext = &driverStmt{}
-	_ driver.StmtExecContext  = &driverStmt{}
+	_ driver.Stmt              = &driverStmt{}
+	_ driver.StmtQueryContext  = &driverStmt{}
+	_ driver.StmtExecContext   = &driverStmt{}
+	_ driver.NamedValueChecker = &driverStmt{}
 )
 
 func (st *driverStmt) Close() error {
@@ -581,6 +583,13 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
+	if reflect.TypeOf(arg.Value).Kind() == reflect.Slice {
+		return nil
+	}
+	return driver.ErrSkip
 }
 
 type stmtResponse struct {

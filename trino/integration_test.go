@@ -391,6 +391,47 @@ func TestIntegrationTypeConversion(t *testing.T) {
 	}
 }
 
+func TestIntegrationArgsConversion(t *testing.T) {
+	dsn := *integrationServerFlag
+	dsn += "?session_properties=parse_decimal_literals_as_double=true"
+	db := integrationOpen(t, dsn)
+	value := 0
+	err := db.QueryRow(`
+		SELECT 1 FROM (VALUES (
+			CAST(1 AS TINYINT),
+			CAST(1 AS SMALLINT),
+			CAST(1 AS INTEGER),
+			CAST(1 AS BIGINT),
+			CAST(1 AS REAL),
+			CAST(1 AS DOUBLE),
+			TIMESTAMP '2017-07-10 01:02:03.004 UTC',
+			CAST('string' AS VARCHAR),
+			ARRAY['A', 'B']
+			)) AS t(col_tiny, col_small, col_int, col_big, col_real, col_double, col_ts, col_varchar, col_array )
+			WHERE 1=1
+			AND col_tiny = ?
+			AND col_small = ?
+			AND col_int = ?
+			AND col_big = ?
+			AND col_real = cast(? as real)
+			AND col_double = cast(? as double)
+			AND col_ts = cast(? as timestamp)
+			AND col_varchar = ?
+			AND col_array = ?`,
+		int16(1),
+		int16(1),
+		int32(1),
+		int64(1),
+		Numeric("1"),
+		Numeric("1"),
+		"2017-07-10 01:02:03.004 UTC",
+		"string",
+		[]string{"A", "B"}).Scan(&value)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIntegrationNoResults(t *testing.T) {
 	db := integrationOpen(t)
 	rows, err := db.Query("SELECT 1 LIMIT 0")

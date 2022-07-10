@@ -190,7 +190,30 @@ https://user@localhost:8443?session_properties=query_max_run_time=10m,query_prio
 
 ## Data types
 
-The driver supports most Trino data types, except:
+### Query arguments
+
+When passing arguments to queries, the driver supports the following Go data types:
+* integers
+* `bool`
+* `string`
+* slices
+
+It's not yet possible to pass:
+* `nil`
+* `float32` or `float64`
+* `byte`
+* `time.Time` or `time.Duration`
+* `json.RawMessage`
+* maps
+
+To use the unsupported types, pass them as strings and use casts in the query, like so:
+```sql
+SELECT * FROM table WHERE col_double = cast(? AS DOUBLE) OR col_timestamp = CAST(? AS TIMESTAMP)
+```
+
+### Response rows
+
+When reading response rows, the driver supports most Trino data types, except:
 * time and timestamps with precision - all time types are returned as `time.Time`
 * `DECIMAL` - returned as string
 * `IPADDRESS` - returned as string
