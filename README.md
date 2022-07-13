@@ -249,3 +249,7 @@ will receive a `[]interface{}` slice, with values of the following types:
 ## License
 
 As described in the [LICENSE](./LICENSE) file.
+
+## Contributing
+
+For contributing, development, and release guidelines, see [CONTRIBUTING.md](./CONTRIBUTING.md).
