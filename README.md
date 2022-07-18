@@ -197,6 +197,7 @@ When passing arguments to queries, the driver supports the following Go data typ
 * `bool`
 * `string`
 * slices
+* `trino.Numeric` - a string representation of a number
 
 It's not yet possible to pass:
 * `nil`

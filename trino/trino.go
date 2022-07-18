@@ -586,6 +586,10 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 }
 
 func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
+	_, ok := arg.Value.(Numeric)
+	if ok {
+		return nil
+	}
 	if reflect.TypeOf(arg.Value).Kind() == reflect.Slice {
 		return nil
 	}
