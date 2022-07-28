@@ -15,6 +15,7 @@
 package trino
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -23,6 +24,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime/debug"
 	"sort"
 	"testing"
 	"time"
@@ -780,6 +782,50 @@ func TestQueryFailure(t *testing.T) {
 
 	_, err = db.Query("SELECT 1")
 	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
+}
+
+// This test ensures that the fetch method is not generating stack overflow errors.
+// === RUN   TestFetchNoStackOverflow
+// runtime: goroutine stack exceeds 1000000000-byte limit
+// runtime: sp=0x14037b00390 stack=[0x14037b00000, 0x14057b00000]
+// fatal error: stack overflow
+func TestFetchNoStackOverflow(t *testing.T) {
+	previousSetting := debug.SetMaxStack(50 * 1024)
+	defer debug.SetMaxStack(previousSetting)
+	count := 0
+	var buf *bytes.Buffer
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if count <= 50 {
+			if buf == nil {
+				buf = new(bytes.Buffer)
+				json.NewEncoder(buf).Encode(&stmtResponse{
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf.Bytes())
+			count++
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(&stmtResponse{
+			Error: stmtError{
+				ErrorName: "TEST",
+			},
+		})
+	}))
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	_, err = db.Query("SELECT 1")
+	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
+
 }
 
 func TestSession(t *testing.T) {
