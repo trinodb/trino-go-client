@@ -1024,34 +1024,36 @@ func (qr *driverRows) fetch(allowEOF bool) error {
 		return nil
 	}
 
-	var qresp queryResponse
-	err := qr.executeFetchRequest(&qresp)
-	if err != nil {
-		return err
-	}
-
-	qr.rowindex = 0
-	qr.data = qresp.Data
-	qr.nextURI = qresp.NextURI
-
-	if len(qr.data) == 0 {
-		qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
-		if qr.nextURI != "" {
-			return qr.fetch(allowEOF)
-		}
-		if allowEOF {
-			qr.err = io.EOF
-			return qr.err
-		}
-	}
-	if qr.columns == nil && len(qresp.Columns) > 0 {
-		err = qr.initColumns(&qresp)
+	for qr.nextURI != "" {
+		var qresp queryResponse
+		err := qr.executeFetchRequest(&qresp)
 		if err != nil {
 			return err
 		}
+
+		qr.rowindex = 0
+		qr.data = qresp.Data
+		qr.nextURI = qresp.NextURI
+		qr.rowsAffected = qresp.UpdateCount
+		qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
+
+		if len(qr.data) == 0 {
+			if qr.nextURI != "" {
+				continue
+			}
+			if allowEOF {
+				qr.err = io.EOF
+				return qr.err
+			}
+		}
+		if qr.columns == nil && len(qresp.Columns) > 0 {
+			err = qr.initColumns(&qresp)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	qr.rowsAffected = qresp.UpdateCount
-	qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
 	return nil
 }
 
