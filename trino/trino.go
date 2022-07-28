@@ -1045,12 +1045,6 @@ func (qr *driverRows) fetch(allowEOF bool) error {
 		}
 	}
 	if qr.columns == nil && len(qresp.Columns) > 0 {
-		for i := range qresp.Columns {
-			err = unmarshalArguments(&(qresp.Columns[i].TypeSignature))
-			if err != nil {
-				return fmt.Errorf("error decoding column type signature: %w", err)
-			}
-		}
 		err = qr.initColumns(&qresp)
 		if err != nil {
 			return err
@@ -1116,9 +1110,15 @@ func unmarshalArguments(signature *typeSignature) error {
 }
 
 func (qr *driverRows) initColumns(qresp *queryResponse) error {
+	var err error
+	for i := range qresp.Columns {
+		err = unmarshalArguments(&(qresp.Columns[i].TypeSignature))
+		if err != nil {
+			return fmt.Errorf("error decoding column type signature: %w", err)
+		}
+	}
 	qr.columns = make([]string, len(qresp.Columns))
 	qr.coltype = make([]*typeConverter, len(qresp.Columns))
-	var err error
 	for i, col := range qresp.Columns {
 		qr.columns[i] = col.Name
 		qr.coltype[i], err = newTypeConverter(col.Type, col.TypeSignature)
