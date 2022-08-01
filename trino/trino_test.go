@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sort"
 	"testing"
 	"time"
 
@@ -246,6 +247,101 @@ func TestQueryForUsername(t *testing.T) {
 		require.NoError(t, rows.Scan(&user), "Failed scanning query result")
 
 		assert.Equal(t, "TestUser", user, "Expected value does not equal result value")
+	}
+}
+
+type TestQueryProgressCallback struct {
+	statusMap map[time.Time]string
+}
+
+func (qpc *TestQueryProgressCallback) Update(qpi QueryProgressInfo) {
+	qpc.statusMap[time.Now()] = qpi.QueryStats.State
+}
+
+func TestQueryProgressWithCallback(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	callback := &TestQueryProgressCallback{}
+
+	_, err = db.Query("SELECT 2", sql.Named("X-Trino-Progress-Callback", callback))
+	assert.EqualError(t, err, ErrInvalidProgressCallbackHeader.Error(), "unexpected error")
+}
+
+func TestQueryProgressWithCallbackPeriod(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	statusMap := make(map[time.Time]string)
+	progressUpdater := &TestQueryProgressCallback{
+		statusMap: statusMap,
+	}
+	progressUpdaterPeriod, err := time.ParseDuration("1ms")
+
+	rows, err := db.Query("SELECT 2",
+		sql.Named("X-Trino-Progress-Callback", progressUpdater),
+		sql.Named("X-Trino-Progress-Callback-Period", progressUpdaterPeriod),
+	)
+	require.NoError(t, err, "Failed executing query")
+	assert.NotNil(t, rows)
+
+	for rows.Next() {
+		var ts string
+		require.NoError(t, rows.Scan(&ts), "Failed scanning query result")
+
+		assert.Equal(t, "2", ts, "Expected value does not equal result value")
+	}
+
+	if err = rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if err = rows.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// sort time in order to calculate interval
+	var keys []time.Time
+	for k := range statusMap {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return keys[i].Before(keys[j])
+	})
+
+	for i, k := range keys {
+		if i > 0 {
+			assert.GreaterOrEqual(t, k.Sub(keys[i-1]), progressUpdaterPeriod)
+		}
 	}
 }
 
