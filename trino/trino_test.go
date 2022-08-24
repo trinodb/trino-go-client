@@ -800,6 +800,7 @@ func TestFetchNoStackOverflow(t *testing.T) {
 			if buf == nil {
 				buf = new(bytes.Buffer)
 				json.NewEncoder(buf).Encode(&stmtResponse{
+					ID:      "fake-query",
 					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
 				})
 			}
