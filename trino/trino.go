@@ -43,12 +43,11 @@
 //
 // The driver should be used via the database/sql package:
 //
-//  import "database/sql"
-//  import _ "github.com/trinodb/trino-go-client/trino"
+//	import "database/sql"
+//	import _ "github.com/trinodb/trino-go-client/trino"
 //
-//  dsn := "http://user@localhost:8080?catalog=default&schema=test"
-//  db, err := sql.Open("trino", dsn)
-//
+//	dsn := "http://user@localhost:8080?catalog=default&schema=test"
+//	db, err := sql.Open("trino", dsn)
 package trino
 
 import (
@@ -123,6 +122,7 @@ const (
 	trinoClearSessionHeader    = trinoHeaderPrefix + `Clear-Session`
 	trinoSetRoleHeader         = trinoHeaderPrefix + `Set-Role`
 	trinoExtraCredentialHeader = trinoHeaderPrefix + `Extra-Credential`
+	trinoAuthorization         = `Authorization`
 
 	trinoProgressCallbackParam       = trinoHeaderPrefix + `Progress-Callback`
 	trinoProgressCallbackPeriodParam = trinoHeaderPrefix + `Progress-Callback-Period`
@@ -172,6 +172,7 @@ type Config struct {
 	KerberosRealm      string            // The Kerberos Realm (optional)
 	KerberosConfigPath string            // The krb5 config path (optional)
 	SSLCertPath        string            // The SSL cert path for TLS verification (optional)
+	BearerToken        string            // The bearer token for the access token authorization.
 }
 
 // FormatDSN returns a DSN string from the configuration.
@@ -227,6 +228,7 @@ func (c *Config) FormatDSN() (string, error) {
 		"session_properties": strings.Join(sessionkv, ","),
 		"extra_credentials":  strings.Join(credkv, ","),
 		"custom_client":      c.CustomClientName,
+		"bearer_token":       c.BearerToken,
 	} {
 		if v != "" {
 			query[k] = []string{v}
@@ -332,6 +334,7 @@ func newConn(dsn string) (*Conn, error) {
 		trinoSchemaHeader:          query.Get("schema"),
 		trinoSessionHeader:         query.Get("session_properties"),
 		trinoExtraCredentialHeader: query.Get("extra_credentials"),
+		trinoAuthorization:         query.Get("bearer_token"),
 	} {
 		if v != "" {
 			c.httpHeaders.Add(k, v)
@@ -372,7 +375,6 @@ var customClientRegistry = struct {
 //	}
 //	trino.RegisterCustomClient("foobar", foobarClient)
 //	db, err := sql.Open("trino", "https://user@localhost:8080?custom_client=foobar")
-//
 func RegisterCustomClient(key string, client *http.Client) error {
 	if _, err := strconv.ParseBool(key); err == nil {
 		return fmt.Errorf("trino: custom client key %q is reserved", key)

@@ -57,7 +57,7 @@ db, err := sql.Open("trino", dsn)
 
 ### Authentication
 
-Both HTTP Basic and Kerberos authentication are supported.
+Both HTTP Basic, Access Tokens and Kerberos authentication are supported.
 
 #### HTTP Basic authentication
 
@@ -70,6 +70,10 @@ HTTP Basic authentication **is only supported on encrypted connections over HTTP
 This driver supports Kerberos authentication by setting up the Kerberos fields in the [Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config) struct.
 
 Please refer to the [Coordinator Kerberos Authentication](https://trino.io/docs/current/security/server.html) for server-side configuration.
+
+#### Access Token authentication
+
+This driver supports access token authentication by setting it in the [Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config) struct.
 
 #### System access control and per-query user information
 
