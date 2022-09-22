@@ -1385,3 +1385,29 @@ func TestSlice3TypeConversion(t *testing.T) {
 		})
 	}
 }
+
+func BenchmarkQuery(b *testing.B) {
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(b, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(b, err)
+
+	b.Cleanup(func() {
+		assert.NoError(b, db.Close())
+	})
+
+	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
+	for n := 0; n < b.N; n++ {
+		rows, err := db.Query(q)
+		require.NoError(b, err)
+		for rows.Next() {
+		}
+		rows.Close()
+	}
+}
