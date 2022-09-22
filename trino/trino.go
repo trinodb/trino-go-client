@@ -43,12 +43,11 @@
 //
 // The driver should be used via the database/sql package:
 //
-//  import "database/sql"
-//  import _ "github.com/trinodb/trino-go-client/trino"
+//	import "database/sql"
+//	import _ "github.com/trinodb/trino-go-client/trino"
 //
-//  dsn := "http://user@localhost:8080?catalog=default&schema=test"
-//  db, err := sql.Open("trino", dsn)
-//
+//	dsn := "http://user@localhost:8080?catalog=default&schema=test"
+//	db, err := sql.Open("trino", dsn)
 package trino
 
 import (
@@ -372,7 +371,6 @@ var customClientRegistry = struct {
 //	}
 //	trino.RegisterCustomClient("foobar", foobarClient)
 //	db, err := sql.Open("trino", "https://user@localhost:8080?custom_client=foobar")
-//
 func RegisterCustomClient(key string, client *http.Client) error {
 	if _, err := strconv.ParseBool(key); err == nil {
 		return fmt.Errorf("trino: custom client key %q is reserved", key)
