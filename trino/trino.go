@@ -1070,8 +1070,12 @@ type queryColumn struct {
 type queryData []interface{}
 
 type namedTypeSignature struct {
-	FieldName     string        `json:"fieldName"`
+	FieldName     rowFieldName  `json:"fieldName"`
 	TypeSignature typeSignature `json:"typeSignature"`
+}
+
+type rowFieldName struct {
+	Name string `json:"name"`
 }
 
 type typeSignature struct {
