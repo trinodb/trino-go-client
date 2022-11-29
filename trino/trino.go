@@ -1869,6 +1869,12 @@ var timeLayouts = []string{
 	"2006-01-02 15:04:05.000",
 }
 
+// Layout for time and timestamp WITH time zone.
+var timeLayoutsTZ = []string{
+	"15:04:05.000 -07:00",
+	"2006-01-02 15:04:05.000 -07:00",
+}
+
 func scanNullTime(v interface{}) (NullTime, error) {
 	if v == nil {
 		return NullTime{}, nil
@@ -1880,6 +1886,19 @@ func scanNullTime(v interface{}) (NullTime, error) {
 	vparts := strings.Split(vv, " ")
 	if len(vparts) > 1 && !unicode.IsDigit(rune(vparts[len(vparts)-1][0])) {
 		return parseNullTimeWithLocation(vv)
+	}
+	// Time literals may not have spaces before the timezone.
+	if strings.ContainsRune(vv, '+') {
+		return parseNullTimeWithLocation(strings.Replace(vv, "+", " +", 1))
+	}
+	hyphenCount := strings.Count(vv, "-")
+	// We need to ensure we don't treat the hyphens in dates as the minus offset sign.
+	// So if there's only one hyphen or more than 2, we have a negative offset.
+	if hyphenCount == 1 || hyphenCount > 2 {
+		// We add a space before the last hyphen to parse properly.
+		i := strings.LastIndex(vv, "-")
+		timestamp := vv[:i] + strings.Replace(vv[i:], "-", " -", 1)
+		return parseNullTimeWithLocation(timestamp)
 	}
 	return parseNullTime(vv)
 }
@@ -1902,11 +1921,24 @@ func parseNullTimeWithLocation(v string) (NullTime, error) {
 		return NullTime{}, fmt.Errorf("cannot convert %v (%T) to time+zone", v, v)
 	}
 	stamp, location := v[:idx], v[idx+1:]
+	var t time.Time
+	var err error
+	// Try offset timezones.
+	if strings.HasPrefix(location, "+") || strings.HasPrefix(location, "-") {
+		for _, layout := range timeLayoutsTZ {
+			t, err = time.Parse(layout, v)
+			if err == nil {
+				return NullTime{Valid: true, Time: t}, nil
+			}
+		}
+		return NullTime{}, err
+	}
 	loc, err := time.LoadLocation(location)
+	// Not a named location.
 	if err != nil {
 		return NullTime{}, fmt.Errorf("cannot load timezone %q: %v", location, err)
 	}
-	var t time.Time
+
 	for _, layout := range timeLayouts {
 		t, err = time.ParseInLocation(layout, stamp, loc)
 		if err == nil {

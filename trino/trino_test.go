@@ -1000,6 +1000,30 @@ func TestTypeConversion(t *testing.T) {
 			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, utc),
 		},
 		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.000 +03:00",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.000+03:00",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.000 -05:00",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.000-05:00",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
+		},
+		{
 			DataType:                   "timestamp",
 			RawType:                    "timestamp",
 			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000",
@@ -1010,6 +1034,30 @@ func TestTypeConversion(t *testing.T) {
 			RawType:                    "timestamp with time zone",
 			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 UTC",
 			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, utc),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 +03:00",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000+03:00",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 -04:00",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000-04:00",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
 		},
 		{
 			DataType: "map(varchar,varchar)",
