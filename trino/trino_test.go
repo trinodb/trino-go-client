@@ -395,14 +395,15 @@ func TestQueryColumns(t *testing.T) {
   array[map(array['a'], array[1]), map(array['b'], array[2])] AS marray,
   row('a', 1) AS row,
   cast(row('a', 1.23) AS row(x varchar, y double)) AS named_row,
-  ipaddress '10.0.0.1' AS ip`)
+  ipaddress '10.0.0.1' AS ip,
+  uuid '12151fd2-7586-11e9-8f9e-2a86e4085a59' AS uuid`)
 	require.NoError(t, err, "Failed executing query")
 	assert.NotNil(t, rows)
 
 	columns, err := rows.Columns()
 	require.NoError(t, err, "Failed reading result columns")
 
-	assert.Equal(t, 32, len(columns), "Expected 32 result column")
+	assert.Equal(t, 33, len(columns), "Expected 33 result column")
 	expectedNames := []string{
 		"bool",
 		"tinyint",
@@ -436,13 +437,14 @@ func TestQueryColumns(t *testing.T) {
 		"row",
 		"named_row",
 		"ip",
+		"uuid",
 	}
 	assert.Equal(t, expectedNames, columns)
 
 	columnTypes, err := rows.ColumnTypes()
 	require.NoError(t, err, "Failed reading result column types")
 
-	assert.Equal(t, 32, len(columnTypes), "Expected 32 result column type")
+	assert.Equal(t, 33, len(columnTypes), "Expected 33 result column type")
 
 	type columnType struct {
 		typeName  string
@@ -742,8 +744,17 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			reflect.TypeOf(sql.NullString{}),
 		},
+		{
+			"UUID",
+			false,
+			0,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullString{}),
+		},
 	}
-	actualTypes := make([]columnType, 32)
+	actualTypes := make([]columnType, 33)
 	for i, column := range columnTypes {
 		actualTypes[i].typeName = column.DatabaseTypeName()
 		actualTypes[i].precision, actualTypes[i].scale, actualTypes[i].hasScale = column.DecimalSize()
