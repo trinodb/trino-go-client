@@ -1301,7 +1301,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 	switch typeNames[0] {
 	case "boolean":
 		v = sql.NullBool{}
-	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "unknown":
+	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 		v = sql.NullString{}
 	case "tinyint", "smallint":
 		v = sql.NullInt32{}
@@ -1322,7 +1322,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		switch typeNames[1] {
 		case "boolean":
 			v = NullSliceBool{}
-		case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "unknown":
+		case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 			v = NullSliceString{}
 		case "tinyint", "smallint", "integer", "bigint":
 			v = NullSliceInt64{}
@@ -1339,7 +1339,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 			switch typeNames[2] {
 			case "boolean":
 				v = NullSlice2Bool{}
-			case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "unknown":
+			case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 				v = NullSlice2String{}
 			case "tinyint", "smallint", "integer", "bigint":
 				v = NullSlice2Int64{}
@@ -1356,7 +1356,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				switch typeNames[3] {
 				case "boolean":
 					v = NullSlice3Bool{}
-				case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "unknown":
+				case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 					v = NullSlice3String{}
 				case "tinyint", "smallint", "integer", "bigint":
 					v = NullSlice3Int64{}
@@ -1386,7 +1386,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bool, err
-	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "unknown":
+	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 		vv, err := scanNullString(v)
 		if !vv.Valid {
 			return nil, err
