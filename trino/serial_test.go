@@ -14,9 +14,16 @@
 
 package trino
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
 
 func TestSerial(t *testing.T) {
+	paris, err := time.LoadLocation("Europe/Paris")
+	require.NoError(t, err)
 	scenarios := []struct {
 		name           string
 		value          interface{}
@@ -112,6 +119,46 @@ func TestSerial(t *testing.T) {
 			name:           "bool false",
 			value:          false,
 			expectedSerial: "false",
+		},
+		{
+			name:           "date",
+			value:          Date(2017, 7, 10),
+			expectedSerial: "DATE '2017-07-10'",
+		},
+		{
+			name:           "time without timezone",
+			value:          Time(11, 34, 25, 123456),
+			expectedSerial: "TIME '11:34:25.000123456'",
+		},
+		{
+			name:           "time with timezone",
+			value:          TimeTz(11, 34, 25, 123456, time.FixedZone("test zone", +2*3600)),
+			expectedSerial: "TIME '11:34:25.000123456 +02:00'",
+		},
+		{
+			name:           "time with timezone",
+			value:          TimeTz(11, 34, 25, 123456, nil),
+			expectedSerial: "TIME '11:34:25.000123456 Z'",
+		},
+		{
+			name:           "timestamp without timezone",
+			value:          Timestamp(2017, 7, 10, 11, 34, 25, 123456),
+			expectedSerial: "TIMESTAMP '2017-07-10 11:34:25.000123456'",
+		},
+		{
+			name:           "timestamp with time zone in Fixed Zone",
+			value:          time.Date(2017, 7, 10, 11, 34, 25, 123456, time.FixedZone("test zone", +2*3600)),
+			expectedSerial: "TIMESTAMP '2017-07-10 11:34:25.000123456 +02:00'",
+		},
+		{
+			name:           "timestamp with time zone in Named Zone",
+			value:          time.Date(2017, 7, 10, 11, 34, 25, 123456, paris),
+			expectedSerial: "TIMESTAMP '2017-07-10 11:34:25.000123456 +02:00'",
+		},
+		{
+			name:           "timestamp with time zone in UTC",
+			value:          time.Date(2017, 7, 10, 11, 34, 25, 123456, time.UTC),
+			expectedSerial: "TIMESTAMP '2017-07-10 11:34:25.000123456 Z'",
 		},
 		{
 			name:          "nil",

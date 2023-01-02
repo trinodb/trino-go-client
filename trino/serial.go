@@ -35,6 +35,65 @@ func (e UnsupportedArgError) Error() string {
 // If another string format is used it will error to serialise
 type Numeric string
 
+// trinoDate represents a Date type in Trino.
+type trinoDate struct {
+	year  int
+	month time.Month
+	day   int
+}
+
+// Date creates a representation of a Trino Date type.
+func Date(year int, month time.Month, day int) trinoDate {
+	return trinoDate{year, month, day}
+}
+
+// trinoTime represents a Time type in Trino.
+type trinoTime struct {
+	hour       int
+	minute     int
+	second     int
+	nanosecond int
+}
+
+// Time creates a representation of a Trino Time type. To represent time with precision higher than nanoseconds, pass the value as a string and use a cast in the query.
+func Time(hour int,
+	minute int,
+	second int,
+	nanosecond int) trinoTime {
+	return trinoTime{hour, minute, second, nanosecond}
+}
+
+// trinoTimeTz represents a Time(9) With Timezone type in Trino.
+type trinoTimeTz time.Time
+
+// TimeTz creates a representation of a Trino Time(9) With Timezone type.
+func TimeTz(hour int,
+	minute int,
+	second int,
+	nanosecond int,
+	location *time.Location) trinoTimeTz {
+	// When reading a time, a nil location indicates UTC.
+	// However, passing nil to time.Date() panics.
+	if location == nil {
+		location = time.UTC
+	}
+	return trinoTimeTz(time.Date(0, 0, 0, hour, minute, second, nanosecond, location))
+}
+
+// Timestamp indicates we want a TimeStamp type WITHOUT a time zone in Trino from a Golang time.
+type trinoTimestamp time.Time
+
+// Timestamp creates a representation of a Trino Timestamp(9) type.
+func Timestamp(year int,
+	month time.Month,
+	day int,
+	hour int,
+	minute int,
+	second int,
+	nanosecond int) trinoTimestamp {
+	return trinoTimestamp(time.Date(year, month, day, hour, minute, second, nanosecond, time.UTC))
+}
+
 // Serial converts any supported value to its equivalent string for as a Trino parameter
 // See https://trino.io/docs/current/language/types.html
 func Serial(v interface{}) (string, error) {
@@ -92,9 +151,17 @@ func Serial(v interface{}) (string, error) {
 	case []byte:
 		return "", UnsupportedArgError{"[]byte"}
 
-		// time.Time and time.Duration not supported as time and date take several different formats in Trino
+	case trinoDate:
+		return fmt.Sprintf("DATE '%04d-%02d-%02d'", x.year, x.month, x.day), nil
+	case trinoTime:
+		return fmt.Sprintf("TIME '%02d:%02d:%02d.%09d'", x.hour, x.minute, x.second, x.nanosecond), nil
+	case trinoTimeTz:
+		return "TIME " + time.Time(x).Format("'15:04:05.999999999 Z07:00'"), nil
+	case trinoTimestamp:
+		return "TIMESTAMP " + time.Time(x).Format("'2006-01-02 15:04:05.999999999'"), nil
 	case time.Time:
-		return "", UnsupportedArgError{"time.Time"}
+		return "TIMESTAMP " + time.Time(x).Format("'2006-01-02 15:04:05.999999999 Z07:00'"), nil
+
 	case time.Duration:
 		return "", UnsupportedArgError{"time.Duration"}
 

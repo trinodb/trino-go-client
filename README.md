@@ -198,12 +198,17 @@ When passing arguments to queries, the driver supports the following Go data typ
 * `string`
 * slices
 * `trino.Numeric` - a string representation of a number
+* `time.Time` - passed to Trino as a timestamp with a time zone
+* the result of `trino.Date(year, month, day)` - passed to Trino as a date
+* the result of `trino.Time(hour, minute, second, nanosecond)` - passed to Trino as a time without a time zone
+* the result of `trino.TimeTz(hour, minute, second, nanosecond, location)` - passed to Trino as a time with a time zone
+* the result of `trino.Timestamp(year, month, day, hour, minute, second, nanosecond)` - passed to Trino as a timestamp without a time zone
 
 It's not yet possible to pass:
 * `nil`
 * `float32` or `float64`
 * `byte`
-* `time.Time` or `time.Duration`
+* `time.Duration`
 * `json.RawMessage`
 * maps
 
@@ -215,7 +220,11 @@ SELECT * FROM table WHERE col_double = cast(? AS DOUBLE) OR col_timestamp = CAST
 ### Response rows
 
 When reading response rows, the driver supports most Trino data types, except:
-* time and timestamps with precision - all time types are returned as `time.Time`
+* time and timestamps with precision - all time types are returned as `time.Time`.
+  All precisions up to nanoseconds (`TIMESTAMP(9)` or `TIME(9)`) are supported (since
+  this is the maximum precision Golang's `time.Time` supports). If a query returns columns
+  defined with a greater precision, use `CAST` to reduce the returned precision, or convert the
+  value to a string that then can be parsed manually.
 * `DECIMAL` - returned as string
 * `IPADDRESS` - returned as string
 * `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string

@@ -624,20 +624,24 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 }
 
 func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
-	_, ok := arg.Value.(Numeric)
-	if ok {
+	switch arg.Value.(type) {
+	case Numeric, trinoDate, trinoTime, trinoTimeTz, trinoTimestamp:
 		return nil
-	}
-	if reflect.TypeOf(arg.Value).Kind() == reflect.Slice {
-		return nil
+	default:
+		{
+			if reflect.TypeOf(arg.Value).Kind() == reflect.Slice {
+				return nil
+			}
+
+			if arg.Name == trinoProgressCallbackParam {
+				return nil
+			}
+			if arg.Name == trinoProgressCallbackPeriodParam {
+				return nil
+			}
+		}
 	}
 
-	if arg.Name == trinoProgressCallbackParam {
-		return nil
-	}
-	if arg.Name == trinoProgressCallbackPeriodParam {
-		return nil
-	}
 	return driver.ErrSkip
 }
 
@@ -733,10 +737,11 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 
 func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
 	query := st.query
-	var hs http.Header
+	hs := make(http.Header)
+	// Ensure the server returns timestamps preserving their precision, without truncating them to timestamp(3).
+	hs.Add("X-Trino-Client-Capabilities", "PARAMETRIC_DATETIME")
 
 	if len(args) > 0 {
-		hs = make(http.Header)
 		var ss []string
 		for _, arg := range args {
 			if arg.Name == trinoProgressCallbackParam {
@@ -1279,7 +1284,15 @@ func newTypeConverter(typeName string, signature typeSignature) (*typeConverter,
 			}
 			result.scale = newOptionalInt64(signature.Arguments[1].long)
 		}
+	case "time", "time with time zone", "timestamp", "timestamp with time zone":
+		if len(signature.Arguments) > 0 {
+			if signature.Arguments[0].Kind != KIND_LONG {
+				return nil, ErrInvalidResponseType
+			}
+			result.precision = newOptionalInt64(signature.Arguments[0].long)
+		}
 	}
+
 	return result, nil
 }
 
@@ -1863,16 +1876,21 @@ func (s *NullSlice3Float64) Scan(value interface{}) error {
 	return nil
 }
 
+// Layout for time and timestamp WITHOUT time zone.
+// Trino can support up to 12 digits sub second precision, but Go only 9.
+// (Requires X-Trino-Client-Capabilities: PARAMETRIC_DATETIME)
 var timeLayouts = []string{
 	"2006-01-02",
-	"15:04:05.000",
-	"2006-01-02 15:04:05.000",
+	"15:04:05.999999999",
+	"2006-01-02 15:04:05.999999999",
 }
 
 // Layout for time and timestamp WITH time zone.
+// Trino can support up to 12 digits sub second precision, but Go only 9.
+// (Requires X-Trino-Client-Capabilities: PARAMETRIC_DATETIME)
 var timeLayoutsTZ = []string{
-	"15:04:05.000 -07:00",
-	"2006-01-02 15:04:05.000 -07:00",
+	"15:04:05.999999999 -07:00",
+	"2006-01-02 15:04:05.999999999 -07:00",
 }
 
 func scanNullTime(v interface{}) (NullTime, error) {
