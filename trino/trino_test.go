@@ -593,8 +593,8 @@ func TestQueryColumns(t *testing.T) {
 		},
 		{
 			"TIME",
-			false,
-			0,
+			true,
+			3,
 			0,
 			false,
 			0,
@@ -602,8 +602,8 @@ func TestQueryColumns(t *testing.T) {
 		},
 		{
 			"TIME",
-			false,
-			0,
+			true,
+			6,
 			0,
 			false,
 			0,
@@ -611,17 +611,8 @@ func TestQueryColumns(t *testing.T) {
 		},
 		{
 			"TIME WITH TIME ZONE",
-			false,
-			0,
-			0,
-			false,
-			0,
-			reflect.TypeOf(sql.NullTime{}),
-		},
-		{
-			"TIMESTAMP",
-			false,
-			0,
+			true,
+			3,
 			0,
 			false,
 			0,
@@ -629,8 +620,17 @@ func TestQueryColumns(t *testing.T) {
 		},
 		{
 			"TIMESTAMP",
+			true,
+			3,
+			0,
 			false,
 			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP",
+			true,
+			6,
 			0,
 			false,
 			0,
@@ -638,8 +638,8 @@ func TestQueryColumns(t *testing.T) {
 		},
 		{
 			"TIMESTAMP WITH TIME ZONE",
-			false,
-			0,
+			true,
+			3,
 			0,
 			false,
 			0,
@@ -647,8 +647,8 @@ func TestQueryColumns(t *testing.T) {
 		},
 		{
 			"TIMESTAMP WITH TIME ZONE",
-			false,
-			0,
+			true,
+			6,
 			0,
 			false,
 			0,
@@ -763,6 +763,212 @@ func TestQueryColumns(t *testing.T) {
 	}
 
 	assert.Equal(t, actualTypes, expectedTypes)
+}
+
+func TestMaxTrinoPrecisionDateTime(t *testing.T) {
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	rows, err := db.Query(`SELECT
+  TIME '15:55:23.383345123456' AS timep,
+  TIME '15:55:23.383345123456 +08:00' AS timeptz,
+  TIMESTAMP '2020-06-10 15:55:23.383345123456' AS tsp,
+  TIMESTAMP '2020-06-10 15:55:23.383345123456 UTC' AS tsptz`)
+	require.NoError(t, err, "Failed executing query")
+	assert.NotNil(t, rows)
+
+	columns, err := rows.Columns()
+	require.NoError(t, err, "Failed reading result columns")
+
+	assert.Equal(t, 4, len(columns), "Expected 4 result column")
+	expectedNames := []string{
+		"timep",
+		"timeptz",
+		"tsp",
+		"tsptz",
+	}
+	assert.Equal(t, expectedNames, columns)
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err, "Failed reading result column types")
+
+	assert.Equal(t, 4, len(columnTypes), "Expected 4 result column type")
+
+	type columnType struct {
+		typeName  string
+		hasScale  bool
+		precision int64
+		scale     int64
+		hasLength bool
+		length    int64
+		scanType  reflect.Type
+	}
+	expectedTypes := []columnType{
+		{
+			"TIME",
+			true,
+			12,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIME WITH TIME ZONE",
+			true,
+			12,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP",
+			true,
+			12,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP WITH TIME ZONE",
+			true,
+			12,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+	}
+	actualTypes := make([]columnType, 4)
+	for i, column := range columnTypes {
+		actualTypes[i].typeName = column.DatabaseTypeName()
+		actualTypes[i].precision, actualTypes[i].scale, actualTypes[i].hasScale = column.DecimalSize()
+		actualTypes[i].length, actualTypes[i].hasLength = column.Length()
+		actualTypes[i].scanType = column.ScanType()
+	}
+
+	assert.Equal(t, actualTypes, expectedTypes)
+
+	assert.False(t, rows.Next())
+	assert.Equal(t, "parsing time \"15:55:23.383345123456\" as \"2006-01-02 15:04:05.999999999\": cannot parse \"5:23.383345123456\" as \"2006\"", rows.Err().Error())
+
+}
+
+func TestMaxGoPrecisionDateTime(t *testing.T) {
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	rows, err := db.Query(`SELECT
+  cast(current_time as time(9)) AS timep,
+  cast(current_time as time(9) with time zone) AS timeptz,
+  cast(current_time as timestamp(9)) AS tsp,
+  cast(current_time as timestamp(9) with time zone) AS tsptz`)
+	require.NoError(t, err, "Failed executing query")
+	assert.NotNil(t, rows)
+
+	columns, err := rows.Columns()
+	require.NoError(t, err, "Failed reading result columns")
+
+	assert.Equal(t, 4, len(columns), "Expected 4 result column")
+	expectedNames := []string{
+		"timep",
+		"timeptz",
+		"tsp",
+		"tsptz",
+	}
+	assert.Equal(t, expectedNames, columns)
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err, "Failed reading result column types")
+
+	assert.Equal(t, 4, len(columnTypes), "Expected 4 result column type")
+
+	type columnType struct {
+		typeName  string
+		hasScale  bool
+		precision int64
+		scale     int64
+		hasLength bool
+		length    int64
+		scanType  reflect.Type
+	}
+	expectedTypes := []columnType{
+		{
+			"TIME",
+			true,
+			9,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIME WITH TIME ZONE",
+			true,
+			9,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP",
+			true,
+			9,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+		{
+			"TIMESTAMP WITH TIME ZONE",
+			true,
+			9,
+			0,
+			false,
+			0,
+			reflect.TypeOf(sql.NullTime{}),
+		},
+	}
+	actualTypes := make([]columnType, 4)
+	for i, column := range columnTypes {
+		actualTypes[i].typeName = column.DatabaseTypeName()
+		actualTypes[i].precision, actualTypes[i].scale, actualTypes[i].hasScale = column.DecimalSize()
+		actualTypes[i].length, actualTypes[i].hasLength = column.Length()
+		actualTypes[i].scanType = column.ScanType()
+	}
+
+	assert.Equal(t, actualTypes, expectedTypes)
+
+	assert.True(t, rows.Next())
+	require.NoError(t, rows.Err())
+
 }
 
 func TestQueryCancellation(t *testing.T) {
@@ -960,6 +1166,8 @@ func TestUnsupportedTransaction(t *testing.T) {
 func TestTypeConversion(t *testing.T) {
 	utc, err := time.LoadLocation("UTC")
 	require.NoError(t, err)
+	paris, err := time.LoadLocation("Europe/Paris")
+	require.NoError(t, err)
 
 	testcases := []struct {
 		DataType                   string
@@ -1035,6 +1243,48 @@ func TestTypeConversion(t *testing.T) {
 			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
 		},
 		{
+			DataType:                   "time",
+			RawType:                    "time",
+			ResponseUnmarshalledSample: "01:02:03.123456789",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.Local),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.123456789 UTC",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, utc),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.123456789 +03:00",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.123456789+03:00",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.123456789 -05:00",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.123456789-05:00",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
+		},
+		{
+			DataType:                   "time with time zone",
+			RawType:                    "time with time zone",
+			ResponseUnmarshalledSample: "01:02:03.123456789 Europe/Paris",
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, paris),
+		},
+		{
 			DataType:                   "timestamp",
 			RawType:                    "timestamp",
 			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000",
@@ -1069,6 +1319,48 @@ func TestTypeConversion(t *testing.T) {
 			RawType:                    "timestamp with time zone",
 			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000-04:00",
 			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
+		},
+		{
+			DataType:                   "timestamp",
+			RawType:                    "timestamp",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.Local),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 UTC",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, utc),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 +03:00",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789+03:00",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 -04:00",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789-04:00",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
+		},
+		{
+			DataType:                   "timestamp with time zone",
+			RawType:                    "timestamp with time zone",
+			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 Europe/Paris",
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, paris),
 		},
 		{
 			DataType: "map(varchar,varchar)",

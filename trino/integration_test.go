@@ -422,7 +422,7 @@ func TestIntegrationArgsConversion(t *testing.T) {
 			AND col_big = ?
 			AND col_real = cast(? as real)
 			AND col_double = cast(? as double)
-			AND col_ts = cast(? as timestamp)
+			AND col_ts = ?
 			AND col_varchar = ?
 			AND col_array = ?`,
 		int16(1),
@@ -431,7 +431,7 @@ func TestIntegrationArgsConversion(t *testing.T) {
 		int64(1),
 		Numeric("1"),
 		Numeric("1"),
-		"2017-07-10 01:02:03.004 UTC",
+		time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC),
 		"string",
 		[]string{"A", "B"}).Scan(&value)
 	if err != nil {
