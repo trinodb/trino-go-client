@@ -1139,7 +1139,11 @@ func (qr *driverRows) fetch() error {
 				return nil
 			}
 		case err = <-qr.stmt.errors:
-			if err == context.Canceled {
+			if err == nil {
+				// Channel was closed, which means the statement
+				// or rows were closed.
+				err = io.EOF
+			} else if err == context.Canceled {
 				qr.Close()
 			}
 			qr.err = err
