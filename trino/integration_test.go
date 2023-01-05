@@ -17,8 +17,10 @@ package trino
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"errors"
 	"flag"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -524,6 +526,36 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 				t.Errorf("expecting %d rows, got %d", scenario.expectedRows, count)
 			}
 		})
+	}
+}
+
+func TestIntegrationQueryNextAfterClose(t *testing.T) {
+	// NOTE: This is testing invalid behaviour. It ensures that we don't
+	// panic if we call driverRows.Next after we closed the driverStmt.
+
+	ctx := context.Background()
+	conn, err := (&Driver{}).Open(*integrationServerFlag)
+	defer conn.Close()
+
+	stmt, err := conn.(driver.ConnPrepareContext).PrepareContext(ctx, "SELECT 1")
+	if err != nil {
+		t.Fatalf("Failed preparing query: %v", err)
+	}
+
+	rows, err := stmt.(driver.StmtQueryContext).QueryContext(ctx, []driver.NamedValue{})
+	if err != nil {
+		t.Fatalf("Failed running query: %v", err)
+	}
+	defer rows.Close()
+
+	stmt.Close() // NOTE: the important bit.
+
+	var result driver.Value
+	if err := rows.Next([]driver.Value{result}); err != nil {
+		t.Fatalf("unexpected result: %+v, no error was expected", err)
+	}
+	if err := rows.Next([]driver.Value{result}); err != io.EOF {
+		t.Fatalf("unexpected result: %+v, expected io.EOF", err)
 	}
 }
 
