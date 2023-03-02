@@ -23,7 +23,7 @@ A [Trino](https://trino.io) client for the [Go](https://golang.org) programming 
 ## Requirements
 
 * Go 1.17 or newer
-* Trino 0.16x or newer
+* Trino 372 or newer
 
 ## Installation
 

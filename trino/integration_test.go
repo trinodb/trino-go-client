@@ -35,6 +35,11 @@ var (
 	pool     *dt.Pool
 	resource *dt.Resource
 
+	trinoImageTagFlag = flag.String(
+		"trino_image_tag",
+		os.Getenv("TRINO_IMAGE_TAG"),
+		"Docker image tag used for the Trino server container",
+	)
 	integrationServerFlag = flag.String(
 		"trino_server_dsn",
 		os.Getenv("TRINO_SERVER_DSN"),
@@ -74,10 +79,13 @@ func TestMain(m *testing.M) {
 		resource, ok = pool.ContainerByName(name)
 
 		if !ok {
+			if *trinoImageTagFlag == "" {
+				*trinoImageTagFlag = "latest"
+			}
 			resource, err = pool.RunWithOptions(&dt.RunOptions{
 				Name:       name,
 				Repository: "trinodb/trino",
-				Tag:        "latest",
+				Tag:        *trinoImageTagFlag,
 				Mounts:     []string{wd + "/etc:/etc/trino"},
 			})
 			if err != nil {
