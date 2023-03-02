@@ -220,11 +220,12 @@ SELECT * FROM table WHERE col_double = cast(? AS DOUBLE) OR col_timestamp = CAST
 ### Response rows
 
 When reading response rows, the driver supports most Trino data types, except:
-* time and timestamps with precision - all time types are returned as `time.Time`.
-  All precisions up to nanoseconds (`TIMESTAMP(9)` or `TIME(9)`) are supported (since
-  this is the maximum precision Golang's `time.Time` supports). If a query returns columns
-  defined with a greater precision, use `CAST` to reduce the returned precision, or convert the
-  value to a string that then can be parsed manually.
+* time and timestamps with precision - all time types are returned as
+  `time.Time`. All precisions up to nanoseconds (`TIMESTAMP(9)` or `TIME(9)`)
+  are supported (since this is the maximum precision Golang's `time.Time`
+  supports). If a query returns columns defined with a greater precision,
+  values will be trimmed to 9 decimal digits. Use `CAST` to reduce the returned
+  precision, or convert the value to a string that then can be parsed manually.
 * `DECIMAL` - returned as string
 * `IPADDRESS` - returned as string
 * `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string
