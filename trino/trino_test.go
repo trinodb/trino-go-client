@@ -864,8 +864,7 @@ func TestMaxTrinoPrecisionDateTime(t *testing.T) {
 	assert.Equal(t, actualTypes, expectedTypes)
 
 	assert.False(t, rows.Next())
-	assert.Equal(t, "parsing time \"15:55:23.383345123456\" as \"2006-01-02 15:04:05.999999999\": cannot parse \"5:23.383345123456\" as \"2006\"", rows.Err().Error())
-
+	assert.EqualError(t, rows.Err(), "parsing time \"15:55:23.383345123456\" as \"2006-01-02 15:04:05.999999999\": cannot parse \"5:23.383345123456\" as \"2006\"")
 }
 
 func TestMaxGoPrecisionDateTime(t *testing.T) {
