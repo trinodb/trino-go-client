@@ -62,6 +62,21 @@ func TestConfigSSLCertPath(t *testing.T) {
 	assert.Equal(t, want, dsn)
 }
 
+func TestConfigSSLCert(t *testing.T) {
+	c := &Config{
+		ServerURI:         "https://foobar@localhost:8080",
+		SessionProperties: map[string]string{"query_priority": "1"},
+		SSLCert:           "cert.pem",
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	want := "https://foobar@localhost:8080?SSLCert=cert.pem&session_properties=query_priority%3D1&source=trino-go-client"
+
+	assert.Equal(t, want, dsn)
+}
+
 func TestExtraCredentials(t *testing.T) {
 	c := &Config{
 		ServerURI:        "http://foobar@localhost:8080",

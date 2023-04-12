@@ -135,6 +135,7 @@ const (
 	kerberosRealmConfig      = "KerberosRealm"
 	kerberosConfigPathConfig = "KerberosConfigPath"
 	SSLCertPathConfig        = "SSLCertPath"
+	SSLCertConfig            = "SSLCert"
 )
 
 var (
@@ -171,6 +172,7 @@ type Config struct {
 	KerberosRealm      string            // The Kerberos Realm (optional)
 	KerberosConfigPath string            // The krb5 config path (optional)
 	SSLCertPath        string            // The SSL cert path for TLS verification (optional)
+	SSLCert            string            // The SSL cert for TLS verification (optional)
 }
 
 // FormatDSN returns a DSN string from the configuration.
@@ -203,6 +205,10 @@ func (c *Config) FormatDSN() (string, error) {
 
 	if isSSL && c.SSLCertPath != "" {
 		query.Add(SSLCertPathConfig, c.SSLCertPath)
+	}
+
+	if isSSL && c.SSLCert != "" {
+		query.Add(SSLCertConfig, c.SSLCert)
 	}
 
 	if KerberosEnabled {
@@ -290,11 +296,17 @@ func newConn(dsn string) (*Conn, error) {
 		if httpClient == nil {
 			return nil, fmt.Errorf("trino: custom client not registered: %q", clientKey)
 		}
-	} else if certPath := query.Get(SSLCertPathConfig); certPath != "" && serverURL.Scheme == "https" {
-		cert, err := ioutil.ReadFile(certPath)
-		if err != nil {
-			return nil, fmt.Errorf("trino: Error loading SSL Cert File: %v", err)
+	} else if serverURL.Scheme == "https" {
+
+		cert := []byte(query.Get(SSLCertConfig))
+
+		if certPath := query.Get(SSLCertPathConfig); certPath != "" {
+			cert, err = ioutil.ReadFile(certPath)
+			if err != nil {
+				return nil, fmt.Errorf("trino: Error loading SSL Cert File: %v", err)
+			}
 		}
+
 		certPool := x509.NewCertPool()
 		certPool.AppendCertsFromPEM(cert)
 
