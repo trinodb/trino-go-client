@@ -571,7 +571,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullVarbinary{}),
+			reflect.TypeOf(NullBytes{}),
 		},
 		{
 			"JSON",

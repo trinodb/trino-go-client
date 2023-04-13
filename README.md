@@ -18,7 +18,7 @@ A [Trino](https://trino.io) client for the [Go](https://golang.org) programming 
   * `float64`, `sql.NullFloat64`
   * `map`, `trino.NullMap`
   * `time.Time`, `trino.NullTime`
-  * `[]byte`, `trino.NullVarbinary`
+  * `[]byte`, `trino.NullBytes`
   * Up to 3-dimensional arrays to Go slices, of any supported type
 
 ## Requirements
@@ -249,7 +249,7 @@ To read query results containing arrays or maps, pass one of the following struc
 * `trino.NullSliceFloat64`
 * `trino.NullSliceTime`
 * `trino.NullSliceMap`
-* `trino.NullSliceVarbinary`
+* `trino.NullSliceBytes`
 
 For two or three dimensional arrays, use `trino.NullSlice2Bool` and `trino.NullSlice3Bool` or equivalents for other data types.
 
