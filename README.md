@@ -196,7 +196,7 @@ When passing arguments to queries, the driver supports the following Go data typ
 * integers
 * `bool`
 * `string`
-* `bytes`
+* `[]byte`
 * slices
 * `trino.Numeric` - a string representation of a number
 * `time.Time` - passed to Trino as a timestamp with a time zone
@@ -256,10 +256,7 @@ will receive a `[]interface{}` slice, with values of the following types:
 * `json.Number` for any numeric Trino types
 * `[]interface{}` for Trino arrays
 * `map[string]interface{}` for Trino maps
-* `string` for other Trino types, as character, date, time, varbinary or timestamp
-
-**It should be noted that varbinary will be encoded using base64**
-
+* `string` for other Trino types, as character, date, time, or timestamp
 
 ## License
 
