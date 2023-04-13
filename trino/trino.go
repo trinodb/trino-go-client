@@ -56,6 +56,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1318,8 +1319,10 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 	switch typeNames[0] {
 	case "boolean":
 		v = sql.NullBool{}
-	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 		v = sql.NullString{}
+	case "varbinary":
+		v = NullVarbinary{}
 	case "tinyint", "smallint":
 		v = sql.NullInt32{}
 	case "integer":
@@ -1339,8 +1342,10 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		switch typeNames[1] {
 		case "boolean":
 			v = NullSliceBool{}
-		case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+		case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 			v = NullSliceString{}
+		case "varbinary":
+			v = NullSliceVarbinary{}
 		case "tinyint", "smallint", "integer", "bigint":
 			v = NullSliceInt64{}
 		case "real", "double":
@@ -1356,8 +1361,10 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 			switch typeNames[2] {
 			case "boolean":
 				v = NullSlice2Bool{}
-			case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+			case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 				v = NullSlice2String{}
+			case "varbinary":
+				v = NullSlice2Varbinary{}
 			case "tinyint", "smallint", "integer", "bigint":
 				v = NullSlice2Int64{}
 			case "real", "double":
@@ -1373,8 +1380,10 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				switch typeNames[3] {
 				case "boolean":
 					v = NullSlice3Bool{}
-				case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+				case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 					v = NullSlice3String{}
+				case "varbinary":
+					v = NullSlice3Varbinary{}
 				case "tinyint", "smallint", "integer", "bigint":
 					v = NullSlice3Int64{}
 				case "real", "double":
@@ -1403,12 +1412,18 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bool, err
-	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 		vv, err := scanNullString(v)
 		if !vv.Valid {
 			return nil, err
 		}
 		return vv.String, err
+	case "varbinary":
+		vv, err := scanNullVarbinary(v)
+		if !vv.Valid {
+			return nil, err
+		}
+		return vv.Bytes, err
 	case "tinyint", "smallint", "integer", "bigint":
 		vv, err := scanNullInt64(v)
 		if !vv.Valid {
@@ -2183,6 +2198,166 @@ func (s *NullSlice3Map) Scan(value interface{}) error {
 	s.Slice3Map = slice
 	s.Valid = true
 	return nil
+}
+
+func scanNullVarbinary(v interface{}) (NullVarbinary, error) {
+	if v == nil {
+		return NullVarbinary{}, nil
+	}
+	vv, ok := v.([]byte)
+	if !ok {
+		return NullVarbinary{},
+			fmt.Errorf("cannot convert %v (%T) to bool", v, v)
+	}
+	return NullVarbinary{Valid: true, Bytes: vv}, nil
+}
+
+// NullVarbinary represents a []byte that can be null.
+// The NullVarbinary supports Trino's Varbinary type.
+type NullVarbinary struct {
+	Bytes []byte
+	Valid bool
+}
+
+// Scan implements the sql.Scanner interface.
+func (b *NullVarbinary) Scan(value interface{}) error {
+	if value == nil {
+		b.Bytes, b.Valid = []byte{}, false
+		return nil
+	}
+	b.Valid = true
+
+	var err error
+	switch v := value.(type) {
+	case string:
+		b.Bytes, err = base64.StdEncoding.DecodeString(v)
+	default:
+		err = fmt.Errorf("unsupported type: %T", value)
+	}
+
+	return err
+}
+
+// Value implements the driver.Valuer interface.
+func (b NullVarbinary) Value() (driver.Value, error) {
+	if !b.Valid {
+		return nil, nil
+	}
+	return b.Bytes, nil
+}
+
+// NullSliceVarbinary represents a slice of NullVarbinary that may be null.
+type NullSliceVarbinary struct {
+	SliceVarbinary []NullVarbinary
+	Valid          bool
+}
+
+// Scan implements the sql.Scanner interface.
+func (b *NullSliceVarbinary) Scan(value interface{}) error {
+	if value == nil {
+		b.SliceVarbinary, b.Valid = []NullVarbinary{}, false
+		return nil
+	}
+
+	vs, ok := value.([]interface{})
+	if !ok {
+		return fmt.Errorf("trino: cannot convert %v (%T) to []NullVarbinary", value, value)
+	}
+	slice := make([]NullVarbinary, len(vs))
+	for i := range vs {
+		var s NullVarbinary
+		if err := s.Scan(vs[i]); err != nil {
+			return err
+		}
+		slice[i] = s
+	}
+	b.SliceVarbinary = slice
+	b.Valid = true
+	return nil
+}
+
+// Value implements the driver.Valuer interface.
+func (n NullSliceVarbinary) Value() (driver.Value, error) {
+	if !n.Valid {
+		return nil, nil
+	}
+	return n.SliceVarbinary, nil
+}
+
+// NullSlice2Varbinary represents a two-dimensional slice of NullVarbinary that may be null.
+type NullSlice2Varbinary struct {
+	Slice2Varbinary [][]NullVarbinary
+	Valid           bool
+}
+
+// Scan implements the sql.Scanner interface.
+func (b *NullSlice2Varbinary) Scan(value interface{}) error {
+	if value == nil {
+		b.Slice2Varbinary, b.Valid = [][]NullVarbinary{}, false
+		return nil
+	}
+
+	vs, ok := value.([]interface{})
+	if !ok {
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][]NullVarbinary", value, value)
+	}
+	slice := make([][]NullVarbinary, len(vs))
+	for i := range vs {
+		var s NullSliceVarbinary
+		if err := s.Scan(vs[i]); err != nil {
+			return err
+		}
+		slice[i] = s.SliceVarbinary
+	}
+	b.Slice2Varbinary = slice
+	b.Valid = true
+	return nil
+}
+
+// Value implements the driver.Valuer interface.
+func (n NullSlice2Varbinary) Value() (driver.Value, error) {
+	if !n.Valid {
+		return nil, nil
+	}
+	return n.Slice2Varbinary, nil
+}
+
+// NullSlice3Varbinary represents a three-dimensional slice of NullVarbinary that may be null.
+type NullSlice3Varbinary struct {
+	Slice3Varbinary [][][]NullVarbinary
+	Valid           bool
+}
+
+// Scan implements the sql.Scanner interface.
+func (b *NullSlice3Varbinary) Scan(value interface{}) error {
+	if value == nil {
+		b.Slice3Varbinary, b.Valid = [][][]NullVarbinary{}, false
+		return nil
+	}
+
+	vs, ok := value.([]interface{})
+	if !ok {
+		return fmt.Errorf("trino: cannot convert %v (%T) to [][][]NullVarbinary", value, value)
+	}
+	slice := make([][][]NullVarbinary, len(vs))
+	for i := range vs {
+		var s NullSlice2Varbinary
+		if err := s.Scan(vs[i]); err != nil {
+			return err
+		}
+		slice[i] = s.Slice2Varbinary
+	}
+	b.Slice3Varbinary = slice
+	b.Valid = true
+	return nil
+}
+
+// Value implements the driver.Valuer interface.
+func (n NullSlice3Varbinary) Value() (driver.Value, error) {
+	if !n.Valid {
+		return nil, nil
+	}
+	return n.Slice3Varbinary, nil
 }
 
 type QueryProgressInfo struct {

@@ -15,6 +15,7 @@
 package trino
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"fmt"
 	"reflect"
@@ -97,6 +98,14 @@ func Timestamp(year int,
 // Serial converts any supported value to its equivalent string for as a Trino parameter
 // See https://trino.io/docs/current/language/types.html
 func Serial(v interface{}) (string, error) {
+	if valuer, ok := v.(driver.Valuer); ok {
+		var err error
+		v, err = valuer.Value()
+		if err != nil {
+			return "", err
+		}
+	}
+
 	switch x := v.(type) {
 	case nil:
 		return "", UnsupportedArgError{"<nil>"}

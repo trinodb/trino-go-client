@@ -15,11 +15,20 @@
 package trino
 
 import (
+	"database/sql/driver"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+type Value struct {
+	v driver.Value
+}
+
+func (v Value) Value() (driver.Value, error) {
+	return v.v, nil
+}
 
 func TestSerial(t *testing.T) {
 	paris, err := time.LoadLocation("Europe/Paris")
@@ -192,6 +201,24 @@ func TestSerial(t *testing.T) {
 
 		t.Run(scenario.name, func(t *testing.T) {
 			s, err := Serial(scenario.value)
+			if err != nil {
+				if scenario.expectedError {
+					return
+				}
+				t.Fatal(err)
+			}
+
+			if scenario.expectedError {
+				t.Fatal("missing an expected error")
+			}
+
+			if scenario.expectedSerial != s {
+				t.Fatalf("mismatched serial, got %q expected %q", s, scenario.expectedSerial)
+			}
+		})
+
+		t.Run(scenario.name+" with valuer", func(t *testing.T) {
+			s, err := Serial(Value{scenario.value})
 			if err != nil {
 				if scenario.expectedError {
 					return

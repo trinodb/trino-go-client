@@ -18,6 +18,7 @@ A [Trino](https://trino.io) client for the [Go](https://golang.org) programming 
   * `float64`, `sql.NullFloat64`
   * `map`, `trino.NullMap`
   * `time.Time`, `trino.NullTime`
+  * `[]byte`, `trino.NullVarbinary`
   * Up to 3-dimensional arrays to Go slices, of any supported type
 
 ## Requirements
@@ -204,6 +205,8 @@ When passing arguments to queries, the driver supports the following Go data typ
 * the result of `trino.TimeTz(hour, minute, second, nanosecond, location)` - passed to Trino as a time with a time zone
 * the result of `trino.Timestamp(year, month, day, hour, minute, second, nanosecond)` - passed to Trino as a timestamp without a time zone
 
+We can also implement driver.Valuer interface to return data of types above.
+
 It's not yet possible to pass:
 * `nil`
 * `float32` or `float64`
@@ -246,6 +249,7 @@ To read query results containing arrays or maps, pass one of the following struc
 * `trino.NullSliceFloat64`
 * `trino.NullSliceTime`
 * `trino.NullSliceMap`
+* `trino.NullSliceVarbinary`
 
 For two or three dimensional arrays, use `trino.NullSlice2Bool` and `trino.NullSlice3Bool` or equivalents for other data types.
 
@@ -255,7 +259,9 @@ will receive a `[]interface{}` slice, with values of the following types:
 * `json.Number` for any numeric Trino types
 * `[]interface{}` for Trino arrays
 * `map[string]interface{}` for Trino maps
-* `string` for other Trino types, as character, date, time, or timestamp
+* `string` for other Trino types, as character, date, time, varbinary or timestamp
+
+**It should be noted that varbinary will be encoded using base64**
 
 ## License
 
