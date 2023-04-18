@@ -2204,12 +2204,13 @@ func scanNullSliceByte(v interface{}) (NullSliceByte, error) {
 	if v == nil {
 		return NullSliceByte{}, nil
 	}
-	vv, ok := v.([]byte)
-	if !ok {
-		return NullSliceByte{},
-			fmt.Errorf("cannot convert %v (%T) to bool", v, v)
+
+	sliceByte := NullSliceByte{}
+	err := sliceByte.Scan(v)
+	if err != nil {
+		return NullSliceByte{}, err
 	}
-	return NullSliceByte{Valid: true, SliceByte: vv}, nil
+	return sliceByte, nil
 }
 
 // NullSliceByte represents a []byte that can be null.
@@ -2231,6 +2232,8 @@ func (b *NullSliceByte) Scan(value interface{}) error {
 	switch v := value.(type) {
 	case string:
 		b.SliceByte, err = base64.StdEncoding.DecodeString(v)
+	case []byte:
+		b.SliceByte, err = base64.StdEncoding.DecodeString(string(v))
 	default:
 		err = fmt.Errorf("unsupported type: %T", value)
 	}
