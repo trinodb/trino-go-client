@@ -203,11 +203,28 @@ func (c *Config) FormatDSN() (string, error) {
 	KerberosEnabled, _ := strconv.ParseBool(c.KerberosEnabled)
 	isSSL := serverURL.Scheme == "https"
 
-	if isSSL && c.SSLCertPath != "" {
+	if c.CustomClientName != "" {
+		if c.SSLCert != "" || c.SSLCertPath != "" {
+			return "", fmt.Errorf("trino: client configuration error, a custom client cannot be specific together with a custom SSL certificate")
+		}
+	}
+	if c.SSLCertPath != "" {
+		if !isSSL {
+			return "", fmt.Errorf("trino: client configuration error, SSL must be enabled to specify a custom SSL certificate file")
+		}
+		if c.SSLCert != "" {
+			return "", fmt.Errorf("trino: client configuration error, a custom SSL certificate file cannot be specified together with a certificate string")
+		}
 		query.Add(SSLCertPathConfig, c.SSLCertPath)
 	}
 
-	if isSSL && c.SSLCert != "" {
+	if c.SSLCert != "" {
+		if !isSSL {
+			return "", fmt.Errorf("trino: client configuration error, SSL must be enabled to specify a custom SSL certificate")
+		}
+		if c.SSLCertPath != "" {
+			return "", fmt.Errorf("trino: client configuration error, a custom SSL certificate string cannot be specified together with a certificate file")
+		}
 		query.Add(SSLCertConfig, c.SSLCert)
 	}
 
