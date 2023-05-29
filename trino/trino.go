@@ -324,15 +324,17 @@ func newConn(dsn string) (*Conn, error) {
 			}
 		}
 
-		certPool := x509.NewCertPool()
-		certPool.AppendCertsFromPEM(cert)
+		if len(cert) != 0 {
+			certPool := x509.NewCertPool()
+			certPool.AppendCertsFromPEM(cert)
 
-		httpClient = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{
-					RootCAs: certPool,
+			httpClient = &http.Client{
+				Transport: &http.Transport{
+					TLSClientConfig: &tls.Config{
+						RootCAs: certPool,
+					},
 				},
-			},
+			}
 		}
 	}
 
