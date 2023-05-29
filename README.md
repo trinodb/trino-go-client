@@ -1,6 +1,8 @@
-# Trino client
+# Trino Go client
 
-A [Trino](https://trino.io) client for the [Go](https://golang.org) programming language.
+A [Trino](https://trino.io) client for the [Go](https://golang.org) programming
+language. It enables you to send SQL statements from your Go application to
+Trino, and receive the resulting data.
 
 [![Build Status](https://github.com/trinodb/trino-go-client/workflows/ci/badge.svg)](https://github.com/trinodb/trino-go-client/actions?query=workflow%3Aci+event%3Apush+branch%3Amaster)
 [![GoDoc](https://godoc.org/github.com/trinodb/trino-go-client?status.svg)](https://godoc.org/github.com/trinodb/trino-go-client)
@@ -259,7 +261,15 @@ will receive a `[]interface{}` slice, with values of the following types:
 
 ## License
 
-As described in the [LICENSE](./LICENSE) file.
+Apache License V2.0, as described in the [LICENSE](./LICENSE) file.
+
+## Build
+
+You can build the client code locally and run tests with the following command:
+
+```
+go test -v -race -timeout 2m ./...
+```
 
 ## Contributing
 
