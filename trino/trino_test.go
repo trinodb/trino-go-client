@@ -12,10 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package trino
+package trino_test
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -32,10 +31,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 func TestConfig(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         "http://foobar@localhost:8080",
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -49,7 +49,7 @@ func TestConfig(t *testing.T) {
 }
 
 func TestConfigSSLCertPath(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         "https://foobar@localhost:8080",
 		SessionProperties: map[string]string{"query_priority": "1"},
 		SSLCertPath:       "cert.pem",
@@ -96,7 +96,7 @@ XoCNjMecchWbpHGCPwMFH1k2smxu7bKk/RJNuWSVn1IPUceJnOBHZGj92aJGZpjr
 8j39T3dK9F2r5rHwjZpeEIhyhbLw6pYKif+lBgAWJD3waG0ycwURA02/POHN4CpT
 FKu5ZAlRfb2aYegr49DHhzoVAdInWQmP+5EZEUD1
 -----END CERTIFICATE-----`
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         "https://foobar@localhost:8080",
 		SessionProperties: map[string]string{"query_priority": "1"},
 		SSLCert:           sslCert,
@@ -111,7 +111,7 @@ FKu5ZAlRfb2aYegr49DHhzoVAdInWQmP+5EZEUD1
 }
 
 func TestExtraCredentials(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:        "http://foobar@localhost:8080",
 		ExtraCredentials: map[string]string{"token": "mYtOkEn", "otherToken": "oThErToKeN"},
 	}
@@ -125,7 +125,7 @@ func TestExtraCredentials(t *testing.T) {
 }
 
 func TestConfigWithoutSSLCertPath(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         "https://foobar@localhost:8080",
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -138,7 +138,7 @@ func TestConfigWithoutSSLCertPath(t *testing.T) {
 }
 
 func TestKerberosConfig(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:          "https://foobar@localhost:8090",
 		SessionProperties:  map[string]string{"query_priority": "1"},
 		KerberosEnabled:    "true",
@@ -158,7 +158,7 @@ func TestKerberosConfig(t *testing.T) {
 }
 
 func TestInvalidKerberosConfig(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:       "http://foobar@localhost:8090",
 		KerberosEnabled: "true",
 	}
@@ -168,7 +168,7 @@ func TestInvalidKerberosConfig(t *testing.T) {
 }
 
 func TestConfigWithMalformedURL(t *testing.T) {
-	_, err := (&Config{ServerURI: ":("}).FormatDSN()
+	_, err := (&trino.Config{ServerURI: ":("}).FormatDSN()
 	assert.Error(t, err, "dsn generated from malformed url")
 }
 
@@ -200,7 +200,7 @@ func TestRegisterCustomClientReserved(t *testing.T) {
 	for _, tc := range []string{"true", "false"} {
 		t.Run(fmt.Sprintf("%v", tc), func(t *testing.T) {
 			require.Errorf(t,
-				RegisterCustomClient(tc, &http.Client{}),
+				trino.RegisterCustomClient(tc, &http.Client{}),
 				"client key name supposed to fail: %s", tc)
 		})
 	}
@@ -215,11 +215,7 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&stmtResponse{
-			Error: stmtError{
-				ErrorName: "TEST",
-			},
-		})
+		w.Write([]byte(`{"error":{"errorName":"TEST"}}`))
 	}))
 
 	t.Cleanup(ts.Close)
@@ -232,7 +228,7 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 	})
 
 	_, err = db.Query("SELECT 1")
-	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
+	assert.IsTypef(t, new(trino.ErrQueryFailed), err, "unexpected error: %w", err)
 }
 
 func TestRoundTripCancellation(t *testing.T) {
@@ -273,7 +269,7 @@ func TestQueryForUsername(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
 	}
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         *integrationServerFlag,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -304,7 +300,7 @@ type TestQueryProgressCallback struct {
 	statusMap map[time.Time]string
 }
 
-func (qpc *TestQueryProgressCallback) Update(qpi QueryProgressInfo) {
+func (qpc *TestQueryProgressCallback) Update(qpi trino.QueryProgressInfo) {
 	qpc.statusMap[time.Now()] = qpi.QueryStats.State
 }
 
@@ -312,7 +308,7 @@ func TestQueryProgressWithCallback(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
 	}
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         *integrationServerFlag,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -330,14 +326,14 @@ func TestQueryProgressWithCallback(t *testing.T) {
 	callback := &TestQueryProgressCallback{}
 
 	_, err = db.Query("SELECT 2", sql.Named("X-Trino-Progress-Callback", callback))
-	assert.EqualError(t, err, ErrInvalidProgressCallbackHeader.Error(), "unexpected error")
+	assert.EqualError(t, err, trino.ErrInvalidProgressCallbackHeader.Error(), "unexpected error")
 }
 
 func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
 	}
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         *integrationServerFlag,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -396,7 +392,7 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 }
 
 func TestQueryColumns(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         *integrationServerFlag,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -727,7 +723,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullSliceString{}),
+			reflect.TypeOf(trino.NullSliceString{}),
 		},
 		{
 			"ARRAY(ARRAY(VARCHAR(1)))",
@@ -736,7 +732,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullSlice2String{}),
+			reflect.TypeOf(trino.NullSlice2String{}),
 		},
 		{
 			"ARRAY(ARRAY(ARRAY(VARCHAR(1))))",
@@ -745,7 +741,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullSlice3String{}),
+			reflect.TypeOf(trino.NullSlice3String{}),
 		},
 		{
 			"MAP(VARCHAR(1), INTEGER)",
@@ -754,7 +750,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullMap{}),
+			reflect.TypeOf(trino.NullMap{}),
 		},
 		{
 			"ARRAY(MAP(VARCHAR(1), INTEGER))",
@@ -763,7 +759,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullSliceMap{}),
+			reflect.TypeOf(trino.NullSliceMap{}),
 		},
 		{
 			"ROW(VARCHAR(1), INTEGER)",
@@ -814,7 +810,7 @@ func TestQueryColumns(t *testing.T) {
 }
 
 func TestMaxGoPrecisionDateTime(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         *integrationServerFlag,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -919,11 +915,7 @@ func TestMaxGoPrecisionDateTime(t *testing.T) {
 func TestQueryCancellation(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&stmtResponse{
-			Error: stmtError{
-				ErrorName: "USER_CANCELLED",
-			},
-		})
+		w.Write([]byte(`{"error":{"errorName":"USER_CANCELLED"}}`))
 	}))
 
 	t.Cleanup(ts.Close)
@@ -936,7 +928,7 @@ func TestQueryCancellation(t *testing.T) {
 	})
 
 	_, err = db.Query("SELECT 1")
-	assert.EqualError(t, err, ErrQueryCancelled.Error(), "unexpected error")
+	assert.EqualError(t, err, trino.ErrQueryCancelled.Error(), "unexpected error")
 }
 
 func TestQueryFailure(t *testing.T) {
@@ -954,7 +946,7 @@ func TestQueryFailure(t *testing.T) {
 	})
 
 	_, err = db.Query("SELECT 1")
-	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
+	assert.IsTypef(t, new(trino.ErrQueryFailed), err, "unexpected error: %w", err)
 }
 
 // This test ensures that the fetch method is not generating stack overflow errors.
@@ -966,28 +958,20 @@ func TestFetchNoStackOverflow(t *testing.T) {
 	previousSetting := debug.SetMaxStack(50 * 1024)
 	defer debug.SetMaxStack(previousSetting)
 	count := 0
-	var buf *bytes.Buffer
+	var buf []byte
 	var ts *httptest.Server
 	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if count <= 50 {
 			if buf == nil {
-				buf = new(bytes.Buffer)
-				json.NewEncoder(buf).Encode(&stmtResponse{
-					ID:      "fake-query",
-					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-				})
+				buf = []byte(`{"id":"fake-query", "nextUri": "` + ts.URL + `/v1/statement/20210817_140827_00000_arvdv/1"}`)
 			}
 			w.WriteHeader(http.StatusOK)
-			w.Write(buf.Bytes())
+			w.Write(buf)
 			count++
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&stmtResponse{
-			Error: stmtError{
-				ErrorName: "TEST",
-			},
-		})
+		w.Write([]byte(`{"error":{"errorName":"TEST"}}`))
 	}))
 
 	db, err := sql.Open("trino", ts.URL)
@@ -998,7 +982,7 @@ func TestFetchNoStackOverflow(t *testing.T) {
 	})
 
 	_, err = db.Query("SELECT 1")
-	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
+	assert.IsTypef(t, new(trino.ErrQueryFailed), err, "unexpected error: %w", err)
 
 }
 
@@ -1006,11 +990,11 @@ func TestSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
 	}
-	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	err := trino.RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         *integrationServerFlag + "?custom_client=uncompressed",
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -1051,7 +1035,7 @@ func TestSession(t *testing.T) {
 
 func TestUnsupportedHeader(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(trinoSetRoleHeader, "foo")
+		w.Header().Set("X-Trino-Set-Role", "foo")
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -1065,7 +1049,7 @@ func TestUnsupportedHeader(t *testing.T) {
 	})
 
 	_, err = db.Query("SELECT 1")
-	assert.EqualError(t, err, ErrUnsupportedHeader.Error(), "unexpected error")
+	assert.EqualError(t, err, trino.ErrUnsupportedHeader.Error(), "unexpected error")
 }
 
 func TestSSLCertPath(t *testing.T) {
@@ -1108,344 +1092,6 @@ func TestUnsupportedTransaction(t *testing.T) {
 	assert.Contains(t, err.Error(), expected)
 }
 
-func TestTypeConversion(t *testing.T) {
-	utc, err := time.LoadLocation("UTC")
-	require.NoError(t, err)
-	paris, err := time.LoadLocation("Europe/Paris")
-	require.NoError(t, err)
-
-	testcases := []struct {
-		DataType                   string
-		RawType                    string
-		Arguments                  []typeArgument
-		ResponseUnmarshalledSample interface{}
-		ExpectedGoValue            interface{}
-	}{
-		{
-			DataType:                   "boolean",
-			RawType:                    "boolean",
-			ResponseUnmarshalledSample: true,
-			ExpectedGoValue:            true,
-		},
-		{
-			DataType:                   "varchar(1)",
-			RawType:                    "varchar",
-			ResponseUnmarshalledSample: "hello",
-			ExpectedGoValue:            "hello",
-		},
-		{
-			DataType:                   "bigint",
-			RawType:                    "bigint",
-			ResponseUnmarshalledSample: json.Number("1234516165077230279"),
-			ExpectedGoValue:            int64(1234516165077230279),
-		},
-		{
-			DataType:                   "double",
-			RawType:                    "double",
-			ResponseUnmarshalledSample: json.Number("1.0"),
-			ExpectedGoValue:            float64(1),
-		},
-		{
-			DataType:                   "date",
-			RawType:                    "date",
-			ResponseUnmarshalledSample: "2017-07-10",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 0, 0, 0, 0, time.Local),
-		},
-		{
-			DataType:                   "time",
-			RawType:                    "time",
-			ResponseUnmarshalledSample: "01:02:03.000",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.Local),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000 UTC",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, utc),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000 +03:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000+03:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000 -05:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000-05:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
-		},
-		{
-			DataType:                   "time",
-			RawType:                    "time",
-			ResponseUnmarshalledSample: "01:02:03.123456789",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.Local),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789 UTC",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, utc),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789 +03:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789+03:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789 -05:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789-05:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
-		},
-		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789 Europe/Paris",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, paris),
-		},
-		{
-			DataType:                   "timestamp",
-			RawType:                    "timestamp",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.Local),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 UTC",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, utc),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 +03:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000+03:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 -04:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000-04:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
-		},
-		{
-			DataType:                   "timestamp",
-			RawType:                    "timestamp",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.Local),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 UTC",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, utc),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 +03:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789+03:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 -04:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789-04:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
-		},
-		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 Europe/Paris",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, paris),
-		},
-		{
-			DataType: "map(varchar,varchar)",
-			RawType:  "map",
-			Arguments: []typeArgument{
-				{
-					Kind: "NAMED_TYPE",
-					namedTypeSignature: namedTypeSignature{
-						TypeSignature: typeSignature{
-							RawType: "varchar",
-						},
-					},
-				},
-				{
-					Kind: "NAMED_TYPE",
-					namedTypeSignature: namedTypeSignature{
-						TypeSignature: typeSignature{
-							RawType: "varchar",
-						},
-					},
-				},
-			},
-			ResponseUnmarshalledSample: nil,
-			ExpectedGoValue:            nil,
-		},
-		{
-			// arrays return data as-is for slice scanners
-			DataType: "array(varchar)",
-			RawType:  "array",
-			Arguments: []typeArgument{
-				{
-					Kind: "NAMED_TYPE",
-					namedTypeSignature: namedTypeSignature{
-						TypeSignature: typeSignature{
-							RawType: "varchar",
-						},
-					},
-				},
-			},
-			ResponseUnmarshalledSample: nil,
-			ExpectedGoValue:            nil,
-		},
-		{
-			// rows return data as-is for slice scanners
-			DataType: "row(int, varchar(1), timestamp, array(varchar(1)))",
-			RawType:  "row",
-			Arguments: []typeArgument{
-				{
-					Kind: "NAMED_TYPE",
-					namedTypeSignature: namedTypeSignature{
-						TypeSignature: typeSignature{
-							RawType: "integer",
-						},
-					},
-				},
-				{
-					Kind: "NAMED_TYPE",
-					namedTypeSignature: namedTypeSignature{
-						TypeSignature: typeSignature{
-							RawType: "varchar",
-							Arguments: []typeArgument{
-								{
-									Kind: "LONG",
-									long: 1,
-								},
-							},
-						},
-					},
-				},
-				{
-					Kind: "NAMED_TYPE",
-					namedTypeSignature: namedTypeSignature{
-						TypeSignature: typeSignature{
-							RawType: "timestamp",
-						},
-					},
-				},
-				{
-					Kind: "NAMED_TYPE",
-					namedTypeSignature: namedTypeSignature{
-						TypeSignature: typeSignature{
-							RawType: "array",
-							Arguments: []typeArgument{
-								{
-									Kind: "TYPE",
-									typeSignature: typeSignature{
-										RawType: "varchar",
-										Arguments: []typeArgument{
-											{
-												Kind: "LONG",
-												long: 1,
-											},
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-			ResponseUnmarshalledSample: []interface{}{
-				json.Number("1"),
-				"a",
-				"2017-07-10 01:02:03.000 UTC",
-				[]interface{}{"b"},
-			},
-			ExpectedGoValue: []interface{}{
-				json.Number("1"),
-				"a",
-				"2017-07-10 01:02:03.000 UTC",
-				[]interface{}{"b"},
-			},
-		},
-	}
-
-	for _, tc := range testcases {
-		converter, err := newTypeConverter(tc.DataType, typeSignature{RawType: tc.RawType, Arguments: tc.Arguments})
-		assert.NoError(t, err)
-
-		t.Run(tc.DataType+":nil", func(t *testing.T) {
-			_, err := converter.ConvertValue(nil)
-			assert.NoError(t, err)
-		})
-
-		t.Run(tc.DataType+":bogus", func(t *testing.T) {
-			_, err := converter.ConvertValue(struct{}{})
-			assert.Error(t, err, "bogus data scanned with no error")
-		})
-
-		t.Run(tc.DataType+":sample", func(t *testing.T) {
-			v, err := converter.ConvertValue(tc.ResponseUnmarshalledSample)
-			require.NoError(t, err)
-
-			require.Equal(t,
-				v, tc.ExpectedGoValue,
-				"unexpected data from sample:\nhave %+v\nwant %+v", v, tc.ExpectedGoValue)
-		})
-	}
-}
-
 func TestSliceTypeConversion(t *testing.T) {
 	testcases := []struct {
 		GoType                          string
@@ -1455,56 +1101,56 @@ func TestSliceTypeConversion(t *testing.T) {
 	}{
 		{
 			GoType:                          "[]bool",
-			Scanner:                         &NullSliceBool{},
+			Scanner:                         &trino.NullSliceBool{},
 			TrinoResponseUnmarshalledSample: []interface{}{true},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceBool)
+				v, _ := s.(*trino.NullSliceBool)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[]string",
-			Scanner:                         &NullSliceString{},
+			Scanner:                         &trino.NullSliceString{},
 			TrinoResponseUnmarshalledSample: []interface{}{"hello"},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceString)
+				v, _ := s.(*trino.NullSliceString)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[]int64",
-			Scanner:                         &NullSliceInt64{},
+			Scanner:                         &trino.NullSliceInt64{},
 			TrinoResponseUnmarshalledSample: []interface{}{json.Number("1")},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceInt64)
+				v, _ := s.(*trino.NullSliceInt64)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 
 		{
 			GoType:                          "[]float64",
-			Scanner:                         &NullSliceFloat64{},
+			Scanner:                         &trino.NullSliceFloat64{},
 			TrinoResponseUnmarshalledSample: []interface{}{json.Number("1.0")},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceFloat64)
+				v, _ := s.(*trino.NullSliceFloat64)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[]time.Time",
-			Scanner:                         &NullSliceTime{},
+			Scanner:                         &trino.NullSliceTime{},
 			TrinoResponseUnmarshalledSample: []interface{}{"2017-07-01"},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceTime)
+				v, _ := s.(*trino.NullSliceTime)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[]map[string]interface{}",
-			Scanner:                         &NullSliceMap{},
+			Scanner:                         &trino.NullSliceMap{},
 			TrinoResponseUnmarshalledSample: []interface{}{map[string]interface{}{"hello": "world"}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceMap)
+				v, _ := s.(*trino.NullSliceMap)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
@@ -1537,55 +1183,55 @@ func TestSlice2TypeConversion(t *testing.T) {
 	}{
 		{
 			GoType:                          "[][]bool",
-			Scanner:                         &NullSlice2Bool{},
+			Scanner:                         &trino.NullSlice2Bool{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{true}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Bool)
+				v, _ := s.(*trino.NullSlice2Bool)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]string",
-			Scanner:                         &NullSlice2String{},
+			Scanner:                         &trino.NullSlice2String{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{"hello"}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2String)
+				v, _ := s.(*trino.NullSlice2String)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]int64",
-			Scanner:                         &NullSlice2Int64{},
+			Scanner:                         &trino.NullSlice2Int64{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{json.Number("1")}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Int64)
+				v, _ := s.(*trino.NullSlice2Int64)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]float64",
-			Scanner:                         &NullSlice2Float64{},
+			Scanner:                         &trino.NullSlice2Float64{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{json.Number("1.0")}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Float64)
+				v, _ := s.(*trino.NullSlice2Float64)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]time.Time",
-			Scanner:                         &NullSlice2Time{},
+			Scanner:                         &trino.NullSlice2Time{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{"2017-07-01"}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Time)
+				v, _ := s.(*trino.NullSlice2Time)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][]map[string]interface{}",
-			Scanner:                         &NullSlice2Map{},
+			Scanner:                         &trino.NullSlice2Map{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{map[string]interface{}{"hello": "world"}}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Map)
+				v, _ := s.(*trino.NullSlice2Map)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
@@ -1620,55 +1266,55 @@ func TestSlice3TypeConversion(t *testing.T) {
 	}{
 		{
 			GoType:                          "[][][]bool",
-			Scanner:                         &NullSlice3Bool{},
+			Scanner:                         &trino.NullSlice3Bool{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{true}}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Bool)
+				v, _ := s.(*trino.NullSlice3Bool)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]string",
-			Scanner:                         &NullSlice3String{},
+			Scanner:                         &trino.NullSlice3String{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{"hello"}}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3String)
+				v, _ := s.(*trino.NullSlice3String)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]int64",
-			Scanner:                         &NullSlice3Int64{},
+			Scanner:                         &trino.NullSlice3Int64{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{json.Number("1")}}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Int64)
+				v, _ := s.(*trino.NullSlice3Int64)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]float64",
-			Scanner:                         &NullSlice3Float64{},
+			Scanner:                         &trino.NullSlice3Float64{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{json.Number("1.0")}}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Float64)
+				v, _ := s.(*trino.NullSlice3Float64)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]time.Time",
-			Scanner:                         &NullSlice3Time{},
+			Scanner:                         &trino.NullSlice3Time{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{"2017-07-01"}}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Time)
+				v, _ := s.(*trino.NullSlice3Time)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
 		{
 			GoType:                          "[][][]map[string]interface{}",
-			Scanner:                         &NullSlice3Map{},
+			Scanner:                         &trino.NullSlice3Map{},
 			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{map[string]interface{}{"hello": "world"}}}},
 			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Map)
+				v, _ := s.(*trino.NullSlice3Map)
 				assert.Equal(t, isValid, v.Valid, "scanner failed")
 			},
 		},
@@ -1695,7 +1341,7 @@ func TestSlice3TypeConversion(t *testing.T) {
 }
 
 func BenchmarkQuery(b *testing.B) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         *integrationServerFlag,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}

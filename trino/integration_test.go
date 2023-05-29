@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package trino
+package trino_test
 
 import (
 	"context"
@@ -29,6 +29,7 @@ import (
 	"time"
 
 	dt "github.com/ory/dockertest/v3"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 var (
@@ -59,8 +60,8 @@ var (
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-	DefaultQueryTimeout = *integrationServerQueryTimeout
-	DefaultCancelQueryTimeout = *integrationServerQueryTimeout
+	trino.DefaultQueryTimeout = *integrationServerQueryTimeout
+	trino.DefaultCancelQueryTimeout = *integrationServerQueryTimeout
 
 	var err error
 	if *integrationServerFlag == "" && !testing.Short() {
@@ -206,7 +207,7 @@ func TestIntegrationSelectFailedQuery(t *testing.T) {
 		rows.Close()
 		t.Fatal("query to invalid catalog succeeded")
 	}
-	_, ok := err.(*ErrQueryFailed)
+	_, ok := err.(*trino.ErrQueryFailed)
 	if !ok {
 		t.Fatal("unexpected error:", err)
 	}
@@ -342,7 +343,7 @@ func TestIntegrationSessionProperties(t *testing.T) {
 }
 
 func TestIntegrationTypeConversion(t *testing.T) {
-	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	err := trino.RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,20 +352,20 @@ func TestIntegrationTypeConversion(t *testing.T) {
 	db := integrationOpen(t, dsn)
 	var (
 		goTime            time.Time
-		nullTime          NullTime
+		nullTime          trino.NullTime
 		goString          string
 		nullString        sql.NullString
-		nullStringSlice   NullSliceString
-		nullStringSlice2  NullSlice2String
-		nullStringSlice3  NullSlice3String
-		nullInt64Slice    NullSliceInt64
-		nullInt64Slice2   NullSlice2Int64
-		nullInt64Slice3   NullSlice3Int64
-		nullFloat64Slice  NullSliceFloat64
-		nullFloat64Slice2 NullSlice2Float64
-		nullFloat64Slice3 NullSlice3Float64
+		nullStringSlice   trino.NullSliceString
+		nullStringSlice2  trino.NullSlice2String
+		nullStringSlice3  trino.NullSlice3String
+		nullInt64Slice    trino.NullSliceInt64
+		nullInt64Slice2   trino.NullSlice2Int64
+		nullInt64Slice3   trino.NullSlice3Int64
+		nullFloat64Slice  trino.NullSliceFloat64
+		nullFloat64Slice2 trino.NullSlice2Float64
+		nullFloat64Slice3 trino.NullSlice3Float64
 		goMap             map[string]interface{}
-		nullMap           NullMap
+		nullMap           trino.NullMap
 		goRow             []interface{}
 	)
 	err = db.QueryRow(`
@@ -439,8 +440,8 @@ func TestIntegrationArgsConversion(t *testing.T) {
 		int16(1),
 		int32(1),
 		int64(1),
-		Numeric("1"),
-		Numeric("1"),
+		trino.Numeric("1"),
+		trino.Numeric("1"),
 		time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC),
 		"string",
 		[]string{"A", "B"}).Scan(&value)
@@ -542,7 +543,7 @@ func TestIntegrationQueryNextAfterClose(t *testing.T) {
 	// panic if we call driverRows.Next after we closed the driverStmt.
 
 	ctx := context.Background()
-	conn, err := (&Driver{}).Open(*integrationServerFlag)
+	conn, err := (&trino.Driver{}).Open(*integrationServerFlag)
 	defer conn.Close()
 
 	stmt, err := conn.(driver.ConnPrepareContext).PrepareContext(ctx, "SELECT 1")
@@ -628,7 +629,7 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 }
 
 func TestIntegrationQueryContextCancellation(t *testing.T) {
-	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	err := trino.RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
 	if err != nil {
 		t.Fatal(err)
 	}

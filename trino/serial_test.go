@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package trino
+package trino_test
 
 import (
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 func TestSerial(t *testing.T) {
@@ -102,12 +103,12 @@ func TestSerial(t *testing.T) {
 		},
 		{
 			name:           "valid Numeric",
-			value:          Numeric("10"),
+			value:          trino.Numeric("10"),
 			expectedSerial: "10",
 		},
 		{
 			name:          "invalid Numeric",
-			value:         Numeric("not-a-number"),
+			value:         trino.Numeric("not-a-number"),
 			expectedError: true,
 		},
 		{
@@ -122,27 +123,27 @@ func TestSerial(t *testing.T) {
 		},
 		{
 			name:           "date",
-			value:          Date(2017, 7, 10),
+			value:          trino.Date(2017, 7, 10),
 			expectedSerial: "DATE '2017-07-10'",
 		},
 		{
 			name:           "time without timezone",
-			value:          Time(11, 34, 25, 123456),
+			value:          trino.Time(11, 34, 25, 123456),
 			expectedSerial: "TIME '11:34:25.000123456'",
 		},
 		{
 			name:           "time with timezone",
-			value:          TimeTz(11, 34, 25, 123456, time.FixedZone("test zone", +2*3600)),
+			value:          trino.TimeTz(11, 34, 25, 123456, time.FixedZone("test zone", +2*3600)),
 			expectedSerial: "TIME '11:34:25.000123456 +02:00'",
 		},
 		{
 			name:           "time with timezone",
-			value:          TimeTz(11, 34, 25, 123456, nil),
+			value:          trino.TimeTz(11, 34, 25, 123456, nil),
 			expectedSerial: "TIME '11:34:25.000123456 Z'",
 		},
 		{
 			name:           "timestamp without timezone",
-			value:          Timestamp(2017, 7, 10, 11, 34, 25, 123456),
+			value:          trino.Timestamp(2017, 7, 10, 11, 34, 25, 123456),
 			expectedSerial: "TIMESTAMP '2017-07-10 11:34:25.000123456'",
 		},
 		{
@@ -191,7 +192,7 @@ func TestSerial(t *testing.T) {
 		scenario := scenarios[i]
 
 		t.Run(scenario.name, func(t *testing.T) {
-			s, err := Serial(scenario.value)
+			s, err := trino.Serial(scenario.value)
 			if err != nil {
 				if scenario.expectedError {
 					return

@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//go:build go1.9
 // +build go1.9
 
-package trino
+package trino_test
 
 import (
 	"bytes"
@@ -28,6 +29,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 func TestIntegrationTLS(t *testing.T) {
@@ -36,8 +39,8 @@ func TestIntegrationTLS(t *testing.T) {
 	}
 	proxyServer := newTLSReverseProxy(t)
 	defer proxyServer.Close()
-	RegisterCustomClient("test_tls", proxyServer.Client())
-	defer DeregisterCustomClient("test_tls")
+	trino.RegisterCustomClient("test_tls", proxyServer.Client())
+	defer trino.DeregisterCustomClient("test_tls")
 	dsn := proxyServer.URL + "?custom_client=test_tls"
 	testSimpleQuery(t, dsn)
 }
@@ -48,14 +51,14 @@ func TestIntegrationInsecureTLS(t *testing.T) {
 	}
 	proxyServer := newTLSReverseProxy(t)
 	defer proxyServer.Close()
-	RegisterCustomClient("test_insecure_tls", &http.Client{
+	trino.RegisterCustomClient("test_insecure_tls", &http.Client{
 		Transport: &http.Transport{
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
 		},
 	})
-	defer DeregisterCustomClient("test_insecure_tls")
+	defer trino.DeregisterCustomClient("test_insecure_tls")
 	dsn := proxyServer.URL + "?custom_client=test_insecure_tls"
 	testSimpleQuery(t, dsn)
 }
