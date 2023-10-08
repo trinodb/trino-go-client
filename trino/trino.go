@@ -1808,7 +1808,7 @@ func scanNullFloat64(v interface{}) (sql.NullFloat64, error) {
 	if ok {
 		vFloat, err := vNumber.Float64()
 		if err != nil {
-			return sql.NullFloat64{}, fmt.Errorf("cannot convert %v (%T) to float64", vNumber, vNumber)
+			return sql.NullFloat64{}, fmt.Errorf("cannot convert %v (%T) to float64: %w", vNumber, vNumber, err)
 		}
 		return sql.NullFloat64{Valid: true, Float64: vFloat}, nil
 	}
@@ -1820,7 +1820,15 @@ func scanNullFloat64(v interface{}) (sql.NullFloat64, error) {
 	case "-Infinity":
 		return sql.NullFloat64{Valid: true, Float64: math.Inf(-1)}, nil
 	default:
-		return sql.NullFloat64{}, fmt.Errorf("cannot convert %v (%T) to float64", v, v)
+		vString, ok := v.(string)
+		if !ok {
+			return sql.NullFloat64{}, fmt.Errorf("cannot convert %v (%T) to float64", v, v)
+		}
+		vFloat, err := strconv.ParseFloat(vString, 64)
+		if err != nil {
+			return sql.NullFloat64{}, fmt.Errorf("cannot convert %v (%T) to float64: %w", v, v, err)
+		}
+		return sql.NullFloat64{Valid: true, Float64: vFloat}, nil
 	}
 }
 
