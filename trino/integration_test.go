@@ -347,7 +347,7 @@ func TestIntegrationTypeConversion(t *testing.T) {
 		t.Fatal(err)
 	}
 	dsn := *integrationServerFlag
-	dsn += "?session_properties=parse_decimal_literals_as_double=true&custom_client=uncompressed"
+	dsn += "?custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
 	var (
 		goTime            time.Time
@@ -410,7 +410,6 @@ func TestIntegrationTypeConversion(t *testing.T) {
 
 func TestIntegrationArgsConversion(t *testing.T) {
 	dsn := *integrationServerFlag
-	dsn += "?session_properties=parse_decimal_literals_as_double=true"
 	db := integrationOpen(t, dsn)
 	value := 0
 	err := db.QueryRow(`
