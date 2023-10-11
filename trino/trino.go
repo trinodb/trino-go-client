@@ -129,6 +129,8 @@ const (
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
 
+	passthroughHeaderPrefix = `X-Header-`
+
 	KerberosEnabledConfig    = "KerberosEnabled"
 	kerberosKeytabPathConfig = "KerberosKeytabPath"
 	kerberosPrincipalConfig  = "KerberosPrincipal"
@@ -147,6 +149,10 @@ var (
 		trinoSetPathHeader,
 		trinoSetRoleHeader,
 	}
+)
+
+const (
+	headersKey = "headers"
 )
 
 type Driver struct{}
@@ -769,6 +775,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
 	query := st.query
 	hs := make(http.Header)
+	passthroughHs := make(http.Header)
 	// Ensure the server returns timestamps preserving their precision, without truncating them to timestamp(3).
 	hs.Add("X-Trino-Client-Capabilities", "PARAMETRIC_DATETIME")
 
@@ -789,14 +796,19 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				return nil, err
 			}
 
-			if strings.HasPrefix(arg.Name, trinoHeaderPrefix) {
+			isPassthroughHeader := strings.HasPrefix(arg.Name, passthroughHeaderPrefix)
+			if isPassthroughHeader || strings.HasPrefix(arg.Name, trinoHeaderPrefix) {
+				headerName := arg.Name
 				headerValue := arg.Value.(string)
 
 				if arg.Name == trinoUserHeader {
 					st.user = headerValue
+				} else if isPassthroughHeader {
+					headerName = strings.TrimPrefix(headerName, passthroughHeaderPrefix)
+					passthroughHs.Add(headerName, headerValue)
 				}
 
-				hs.Add(arg.Name, headerValue)
+				hs.Add(headerName, headerValue)
 			} else {
 				if hs.Get(preparedStatementHeader) == "" {
 					for _, v := range st.conn.httpHeaders.Values(preparedStatementHeader) {
@@ -814,6 +826,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(ss, ", ")
 		}
 	}
+	context.WithValue(ctx, headersKey, passthroughHs)
 
 	req, err := st.conn.newRequest("POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
 	if err != nil {
@@ -847,7 +860,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				if nextURI == "" {
 					return
 				}
-				hs := make(http.Header)
+				hs := passthroughHs.Clone()
 				hs.Add(trinoUserHeader, st.user)
 				req, err := st.conn.newRequest("GET", nextURI, nil, hs)
 				if err != nil {
@@ -977,7 +990,13 @@ func (qr *driverRows) Close() error {
 		return nil
 	}
 	qr.err = io.EOF
-	hs := make(http.Header)
+	var hs http.Header
+	passthroughHs := qr.ctx.Value(headersKey)
+	if passthroughHs == nil {
+		hs = make(http.Header)
+	} else {
+		hs = passthroughHs.(http.Header)
+	}
 	if qr.stmt.user != "" {
 		hs.Add(trinoUserHeader, qr.stmt.user)
 	}

@@ -269,6 +269,31 @@ func TestAuthFailure(t *testing.T) {
 	assert.NoError(t, db.Close())
 }
 
+func TestPassthroughHeader(t *testing.T) {
+	headerValue := "secret"
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeader := r.Header.Get("Authorization")
+		assert.Equal(t, headerValue, authHeader)
+		json.NewEncoder(w).Encode(&stmtResponse{
+			Error: stmtError{
+				ErrorName: "TEST",
+			},
+		})
+	}))
+
+	t.Cleanup(ts.Close)
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	_, err = db.Query("SELECT 1", sql.Named("X-Header-Authorization", headerValue))
+	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
+}
+
 func TestQueryForUsername(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")

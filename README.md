@@ -88,6 +88,17 @@ db.Query("SELECT * FROM foobar WHERE id=?", 1, sql.Named("X-Trino-User", string(
 
 The position of the X-Trino-User NamedArg is irrelevant and does not affect the query in any way.
 
+#### Custom request headers
+
+It is also possible to pass custom headers to the Trino request. You must pass a [NamedArg](https://godoc.org/database/sql#NamedArg) to the query parameters where the key begins with `X-Header-`.
+The `X-Header-` prefix will be stripped from the header name.
+
+Example (set `Authorization` header):
+
+```go
+db.Query("SELECT * FROM foobar WHERE id=?", 1, sql.Named("X-Header-Authorization", "Bearer xyz"))
+```
+
 ### DSN (Data Source Name)
 
 The Data Source Name is a URL with a mandatory username, and optional query string parameters that are supported by this driver, in the following format:
