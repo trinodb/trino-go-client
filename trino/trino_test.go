@@ -1739,10 +1739,13 @@ func TestExec(t *testing.T) {
 		assert.NoError(t, db.Close())
 	})
 
-	result, err := db.Exec("CREATE TABLE memory.default.test (id INTEGER, name VARCHAR)")
+	result, err := db.Exec("CREATE TABLE memory.default.test (id INTEGER, name VARCHAR, optional VARCHAR)")
 	require.NoError(t, err, "Failed executing CREATE TABLE query")
 
-	result, err = db.Exec("INSERT INTO memory.default.test (id, name) VALUES (?, ?), (?, ?), (?, ?)", 123, "abc", 456, "def", 789, "ghi")
+	result, err = db.Exec("INSERT INTO memory.default.test (id, name, optional) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)",
+		123, "abc", nil,
+		456, "def", "present",
+		789, "ghi", nil)
 	require.NoError(t, err, "Failed executing INSERT query")
 	_, err = result.LastInsertId()
 	assert.Error(t, err, "trino: operation not supported")
@@ -1755,16 +1758,28 @@ func TestExec(t *testing.T) {
 
 	expectedIds := []int{123, 456, 789}
 	expectedNames := []string{"abc", "def", "ghi"}
+	expectedOptionals := []sql.NullString{
+		sql.NullString{Valid: false},
+		sql.NullString{String: "present", Valid: true},
+		sql.NullString{Valid: false},
+	}
 	actualIds := []int{}
 	actualNames := []string{}
+	actualOptionals := []sql.NullString{}
 	for rows.Next() {
 		var id int
 		var name string
-		require.NoError(t, rows.Scan(&id, &name), "Failed scanning query result")
+		var optional sql.NullString
+		require.NoError(t, rows.Scan(&id, &name, &optional), "Failed scanning query result")
 		actualIds = append(actualIds, id)
 		actualNames = append(actualNames, name)
+		actualOptionals = append(actualOptionals, optional)
 
 	}
 	assert.Equal(t, expectedIds, actualIds)
 	assert.Equal(t, expectedNames, actualNames)
+	assert.Equal(t, expectedOptionals, actualOptionals)
+
+	_, err = db.Exec("DROP TABLE memory.default.test")
+	require.NoError(t, err, "Failed executing DROP TABLE query")
 }
