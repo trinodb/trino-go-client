@@ -1719,3 +1719,52 @@ func BenchmarkQuery(b *testing.B) {
 		rows.Close()
 	}
 }
+
+func TestExec(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	result, err := db.Exec("CREATE TABLE memory.default.test (id INTEGER, name VARCHAR)")
+	require.NoError(t, err, "Failed executing CREATE TABLE query")
+
+	result, err = db.Exec("INSERT INTO memory.default.test (id, name) VALUES (?, ?), (?, ?), (?, ?)", 123, "abc", 456, "def", 789, "ghi")
+	require.NoError(t, err, "Failed executing INSERT query")
+	_, err = result.LastInsertId()
+	assert.Error(t, err, "trino: operation not supported")
+	numRows, err := result.RowsAffected()
+	require.NoError(t, err, "Failed checking rows affected")
+	assert.Equal(t, numRows, int64(3))
+
+	rows, err := db.Query("SELECT * FROM memory.default.test")
+	require.NoError(t, err, "Failed executing DELETE query")
+
+	expectedIds := []int{123, 456, 789}
+	expectedNames := []string{"abc", "def", "ghi"}
+	actualIds := []int{}
+	actualNames := []string{}
+	for rows.Next() {
+		var id int
+		var name string
+		require.NoError(t, rows.Scan(&id, &name), "Failed scanning query result")
+		actualIds = append(actualIds, id)
+		actualNames = append(actualNames, name)
+
+	}
+	assert.Equal(t, expectedIds, actualIds)
+	assert.Equal(t, expectedNames, actualNames)
+}
