@@ -99,7 +99,7 @@ func Timestamp(year int,
 func Serial(v interface{}) (string, error) {
 	switch x := v.(type) {
 	case nil:
-		return "", UnsupportedArgError{"<nil>"}
+		return "NULL", nil
 
 	// numbers convertible to int
 	case int8:

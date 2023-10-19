@@ -161,9 +161,9 @@ func TestSerial(t *testing.T) {
 			expectedSerial: "TIMESTAMP '2017-07-10 11:34:25.000123456 Z'",
 		},
 		{
-			name:          "nil",
-			value:         nil,
-			expectedError: true,
+			name:           "nil",
+			value:          nil,
+			expectedSerial: "NULL",
 		},
 		{
 			name:          "slice typed nil",

@@ -656,6 +656,8 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 
 func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
 	switch arg.Value.(type) {
+	case nil:
+		return nil
 	case Numeric, trinoDate, trinoTime, trinoTimeTz, trinoTimestamp:
 		return nil
 	default:
