@@ -43,8 +43,6 @@ Make sure you have Git installed and in your $PATH.
 
 This Trino client is an implementation of Go's `database/sql/driver` interface. In order to use it, you need to import the package and use the  [`database/sql`](https://golang.org/pkg/database/sql/) API then.
 
-Only read operations are supported, such as SHOW and SELECT.
-
 Use `trino` as `driverName` and a valid [DSN](#dsn-data-source-name) as the `dataSourceName`.
 
 Example:
@@ -207,7 +205,6 @@ When passing arguments to queries, the driver supports the following Go data typ
 * the result of `trino.Timestamp(year, month, day, hour, minute, second, nanosecond)` - passed to Trino as a timestamp without a time zone
 
 It's not yet possible to pass:
-* `nil`
 * `float32` or `float64`
 * `byte`
 * `time.Duration`
