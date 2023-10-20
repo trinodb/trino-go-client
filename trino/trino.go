@@ -122,6 +122,7 @@ const (
 	trinoClearSessionHeader    = trinoHeaderPrefix + `Clear-Session`
 	trinoSetRoleHeader         = trinoHeaderPrefix + `Set-Role`
 	trinoExtraCredentialHeader = trinoHeaderPrefix + `Extra-Credential`
+	trinoTimeZoneHeader        = trinoHeaderPrefix + `Time-Zone`
 
 	trinoProgressCallbackParam       = trinoHeaderPrefix + `Progress-Callback`
 	trinoProgressCallbackPeriodParam = trinoHeaderPrefix + `Progress-Callback-Period`
@@ -173,6 +174,7 @@ type Config struct {
 	KerberosConfigPath string            // The krb5 config path (optional)
 	SSLCertPath        string            // The SSL cert path for TLS verification (optional)
 	SSLCert            string            // The SSL cert for TLS verification (optional)
+	TimeZone           string            // The timezone for query processing (optional)
 }
 
 // FormatDSN returns a DSN string from the configuration.
@@ -249,6 +251,7 @@ func (c *Config) FormatDSN() (string, error) {
 		"session_properties": strings.Join(sessionkv, ","),
 		"extra_credentials":  strings.Join(credkv, ","),
 		"custom_client":      c.CustomClientName,
+		"time_zone":          c.TimeZone,
 	} {
 		if v != "" {
 			query[k] = []string{v}
@@ -362,6 +365,7 @@ func newConn(dsn string) (*Conn, error) {
 		trinoSchemaHeader:          query.Get("schema"),
 		trinoSessionHeader:         query.Get("session_properties"),
 		trinoExtraCredentialHeader: query.Get("extra_credentials"),
+		trinoTimeZoneHeader:        query.Get("time_zone"),
 	} {
 		if v != "" {
 			c.httpHeaders.Add(k, v)
