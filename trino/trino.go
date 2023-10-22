@@ -72,6 +72,7 @@ import (
 	"time"
 	"unicode"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"gopkg.in/jcmturner/gokrb5.v6/client"
 	"gopkg.in/jcmturner/gokrb5.v6/config"
 	"gopkg.in/jcmturner/gokrb5.v6/keytab"
@@ -307,7 +308,9 @@ func newConn(dsn string) (*Conn, error) {
 		}
 	}
 
-	var httpClient = http.DefaultClient
+	var httpClient = &http.Client{
+		Transport: otelhttp.NewTransport(http.DefaultTransport),
+	}
 	if clientKey := query.Get("custom_client"); clientKey != "" {
 		httpClient = getCustomClient(clientKey)
 		if httpClient == nil {
@@ -329,11 +332,11 @@ func newConn(dsn string) (*Conn, error) {
 			certPool.AppendCertsFromPEM(cert)
 
 			httpClient = &http.Client{
-				Transport: &http.Transport{
+				Transport: otelhttp.NewTransport(&http.Transport{
 					TLSClientConfig: &tls.Config{
 						RootCAs: certPool,
 					},
-				},
+				}),
 			}
 		}
 	}
