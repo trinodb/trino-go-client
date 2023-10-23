@@ -209,6 +209,19 @@ trino.RegisterCustomClient("foobar", foobarClient)
 db, err := sql.Open("trino", "https://user@localhost:8080?custom_client=foobar")
 ```
 
+A custom client can also be used to add OpenTelemetry instrumentation. The
+[otelhttp](https://pkg.go.dev/go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp)
+package provides a transport wrapper that creates spans for HTTP requests and
+propagates the trace ID in HTTP headers:
+
+```go
+otelClient := &http.Client{
+    Transport: otelhttp.NewTransport(http.DefaultTransport),
+}
+trino.RegisterCustomClient("otel", otelClient)
+db, err := sql.Open("trino", "https://user@localhost:8080?custom_client=otel")
+```
+
 #### Examples
 
 ```
