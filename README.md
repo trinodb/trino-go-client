@@ -41,9 +41,12 @@ Make sure you have Git installed and in your $PATH.
 
 ## Usage
 
-This Trino client is an implementation of Go's `database/sql/driver` interface. In order to use it, you need to import the package and use the  [`database/sql`](https://golang.org/pkg/database/sql/) API then.
+This Trino client is an implementation of Go's `database/sql/driver` interface.
+In order to use it, you need to import the package and use the
+[`database/sql`](https://golang.org/pkg/database/sql/) API then.
 
-Use `trino` as `driverName` and a valid [DSN](#dsn-data-source-name) as the `dataSourceName`.
+Use `trino` as `driverName` and a valid [DSN](#dsn-data-source-name) as the
+`dataSourceName`.
 
 Example:
 
@@ -61,22 +64,35 @@ Both HTTP Basic and Kerberos authentication are supported.
 
 #### HTTP Basic authentication
 
-If the DSN contains a password, the client enables HTTP Basic authentication by setting the `Authorization` header in every request to Trino.
+If the DSN contains a password, the client enables HTTP Basic authentication by
+setting the `Authorization` header in every request to Trino.
 
-HTTP Basic authentication **is only supported on encrypted connections over HTTPS**.
+HTTP Basic authentication **is only supported on encrypted connections over
+HTTPS**.
 
 #### Kerberos authentication
 
-This driver supports Kerberos authentication by setting up the Kerberos fields in the [Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config) struct.
+This driver supports Kerberos authentication by setting up the Kerberos fields
+in the
+[Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config)
+struct.
 
-Please refer to the [Coordinator Kerberos Authentication](https://trino.io/docs/current/security/server.html) for server-side configuration.
+Please refer to the [Coordinator Kerberos
+Authentication](https://trino.io/docs/current/security/server.html) for
+server-side configuration.
 
 #### System access control and per-query user information
 
-It's possible to pass user information to Trino, different from the principal used to authenticate to the coordinator. See the [System Access Control](https://trino.io/docs/current/develop/system-access-control.html) documentation for details.
+It's possible to pass user information to Trino, different from the principal
+used to authenticate to the coordinator. See the [System Access
+Control](https://trino.io/docs/current/develop/system-access-control.html)
+documentation for details.
 
-In order to pass user information in queries to Trino, you have to add a [NamedArg](https://godoc.org/database/sql#NamedArg) to the query parameters where the key is X-Trino-User.
-This parameter is used by the driver to inform Trino about the user executing the query regardless of the authentication method for the actual connection, and its value is NOT passed to the query.
+In order to pass user information in queries to Trino, you have to add a
+[NamedArg](https://godoc.org/database/sql#NamedArg) to the query parameters
+where the key is X-Trino-User. This parameter is used by the driver to inform
+Trino about the user executing the query regardless of the authentication
+method for the actual connection, and its value is NOT passed to the query.
 
 Example:
 
@@ -84,25 +100,34 @@ Example:
 db.Query("SELECT * FROM foobar WHERE id=?", 1, sql.Named("X-Trino-User", string("Alice")))
 ```
 
-The position of the X-Trino-User NamedArg is irrelevant and does not affect the query in any way.
+The position of the X-Trino-User NamedArg is irrelevant and does not affect the
+query in any way.
 
 ### DSN (Data Source Name)
 
-The Data Source Name is a URL with a mandatory username, and optional query string parameters that are supported by this driver, in the following format:
+The Data Source Name is a URL with a mandatory username, and optional query
+string parameters that are supported by this driver, in the following format:
 
 ```
 http[s]://user[:pass]@host[:port][?parameters]
 ```
 
-The easiest way to build your DSN is by using the [Config.FormatDSN](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config.FormatDSN) helper function.
+The easiest way to build your DSN is by using the
+[Config.FormatDSN](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config.FormatDSN)
+helper function.
 
-The driver supports both HTTP and HTTPS. If you use HTTPS it's recommended that you also provide a custom `http.Client` that can validate (or skip) the security checks of the server certificate, and/or to configure TLS client authentication.
+The driver supports both HTTP and HTTPS. If you use HTTPS it's recommended that
+you also provide a custom `http.Client` that can validate (or skip) the
+security checks of the server certificate, and/or to configure TLS client
+authentication.
 
 #### Parameters
 
 *Parameters are case-sensitive*
 
-Refer to the [Trino Concepts](https://trino.io/docs/current/overview/concepts.html) documentation for more information.
+Refer to the [Trino
+Concepts](https://trino.io/docs/current/overview/concepts.html) documentation
+for more information.
 
 ##### `source`
 
@@ -112,7 +137,8 @@ Valid values:   string describing the source of the connection to Trino
 Default:        empty
 ```
 
-The `source` parameter is optional, but if used, can help Trino admins troubleshoot queries and trace them back to the original client.
+The `source` parameter is optional, but if used, can help Trino admins
+troubleshoot queries and trace them back to the original client.
 
 ##### `catalog`
 
@@ -122,7 +148,8 @@ Valid values:   the name of a catalog configured in the Trino server
 Default:        empty
 ```
 
-The `catalog` parameter defines the Trino catalog where schemas exist to organize tables.
+The `catalog` parameter defines the Trino catalog where schemas exist to
+organize tables.
 
 ##### `schema`
 
@@ -132,7 +159,8 @@ Valid values:   the name of an existing schema in the catalog
 Default:        empty
 ```
 
-The `schema` parameter defines the Trino schema where tables exist. This is also known as namespace in some environments.
+The `schema` parameter defines the Trino schema where tables exist. This is
+also known as namespace in some environments.
 
 ##### `session_properties`
 
@@ -142,7 +170,8 @@ Valid values:   comma-separated list of key=value session properties
 Default:        empty
 ```
 
-The `session_properties` parameter must contain valid parameters accepted by the Trino server. Run `SHOW SESSION` in Trino to get the current list.
+The `session_properties` parameter must contain valid parameters accepted by
+the Trino server. Run `SHOW SESSION` in Trino to get the current list.
 
 ##### `custom_client`
 
@@ -152,9 +181,11 @@ Valid values:   the name of a client previously registered to the driver
 Default:        empty (defaults to http.DefaultClient)
 ```
 
-The `custom_client` parameter allows the use of custom `http.Client` for the communication with Trino.
+The `custom_client` parameter allows the use of custom `http.Client` for the
+communication with Trino.
 
-Register your custom client in the driver, then refer to it by name in the DSN, on the call to `sql.Open`:
+Register your custom client in the driver, then refer to it by name in the DSN,
+on the call to `sql.Open`:
 
 ```go
 foobarClient := &http.Client{
@@ -192,7 +223,8 @@ https://user@localhost:8443?session_properties=query_max_run_time=10m,query_prio
 
 ### Query arguments
 
-When passing arguments to queries, the driver supports the following Go data types:
+When passing arguments to queries, the driver supports the following Go data
+types:
 * integers
 * `bool`
 * `string`
@@ -200,9 +232,12 @@ When passing arguments to queries, the driver supports the following Go data typ
 * `trino.Numeric` - a string representation of a number
 * `time.Time` - passed to Trino as a timestamp with a time zone
 * the result of `trino.Date(year, month, day)` - passed to Trino as a date
-* the result of `trino.Time(hour, minute, second, nanosecond)` - passed to Trino as a time without a time zone
-* the result of `trino.TimeTz(hour, minute, second, nanosecond, location)` - passed to Trino as a time with a time zone
-* the result of `trino.Timestamp(year, month, day, hour, minute, second, nanosecond)` - passed to Trino as a timestamp without a time zone
+* the result of `trino.Time(hour, minute, second, nanosecond)` - passed to
+  Trino as a time without a time zone
+* the result of `trino.TimeTz(hour, minute, second, nanosecond, location)` -
+  passed to Trino as a time with a time zone
+* the result of `trino.Timestamp(year, month, day, hour, minute, second,
+  nanosecond)` - passed to Trino as a timestamp without a time zone
 
 It's not yet possible to pass:
 * `float32` or `float64`
@@ -211,7 +246,8 @@ It's not yet possible to pass:
 * `json.RawMessage`
 * maps
 
-To use the unsupported types, pass them as strings and use casts in the query, like so:
+To use the unsupported types, pass them as strings and use casts in the query,
+like so:
 ```sql
 SELECT * FROM table WHERE col_double = cast(? AS DOUBLE) OR col_timestamp = CAST(? AS TIMESTAMP)
 ```
@@ -230,14 +266,16 @@ When reading response rows, the driver supports most Trino data types, except:
 * `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string
 * `UUID` - returned as string
 
-Data types like `HyperLogLog`, `SetDigest`, `QDigest`, and `TDigest` are not supported and cannot be returned from a query.
+Data types like `HyperLogLog`, `SetDigest`, `QDigest`, and `TDigest` are not
+supported and cannot be returned from a query.
 
 For reading nullable columns, use:
 * `trino.NullTime`
 * `trino.NullMap` - which stores a map of `map[string]interface{}`
 or similar structs from the `database/sql` package, like `sql.NullInt64`
 
-To read query results containing arrays or maps, pass one of the following structs to the `Scan()` function:
+To read query results containing arrays or maps, pass one of the following
+structs to the `Scan()` function:
 
 * `trino.NullSliceBool`
 * `trino.NullSliceString`
@@ -246,10 +284,12 @@ To read query results containing arrays or maps, pass one of the following struc
 * `trino.NullSliceTime`
 * `trino.NullSliceMap`
 
-For two or three dimensional arrays, use `trino.NullSlice2Bool` and `trino.NullSlice3Bool` or equivalents for other data types.
+For two or three dimensional arrays, use `trino.NullSlice2Bool` and
+`trino.NullSlice3Bool` or equivalents for other data types.
 
-To read `ROW` values, implement the `sql.Scanner` interface in a struct. Its `Scan()` function
-will receive a `[]interface{}` slice, with values of the following types:
+To read `ROW` values, implement the `sql.Scanner` interface in a struct. Its
+`Scan()` function will receive a `[]interface{}` slice, with values of the
+following types:
 * `bool`
 * `json.Number` for any numeric Trino types
 * `[]interface{}` for Trino arrays
@@ -270,4 +310,5 @@ go test -v -race -timeout 2m ./...
 
 ## Contributing
 
-For contributing, development, and release guidelines, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+For contributing, development, and release guidelines, see
+[CONTRIBUTING.md](./CONTRIBUTING.md).
