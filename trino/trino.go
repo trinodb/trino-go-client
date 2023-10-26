@@ -725,7 +725,7 @@ type stmtErrorFailureInfo struct {
 }
 
 func (e stmtError) Error() string {
-	return e.FailureInfo.Type + ": " + e.Message
+	return fmt.Sprintf("%v (name: %s, code: %d): %s", e.FailureInfo.Type, e.ErrorName, e.ErrorCode, e.Message)
 }
 
 type stmtStage struct {
