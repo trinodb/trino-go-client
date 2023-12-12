@@ -689,20 +689,27 @@ type stmtResponse struct {
 }
 
 type stmtStats struct {
-	State              string    `json:"state"`
-	Scheduled          bool      `json:"scheduled"`
-	Nodes              int       `json:"nodes"`
-	TotalSplits        int       `json:"totalSplits"`
-	QueuesSplits       int       `json:"queuedSplits"`
-	RunningSplits      int       `json:"runningSplits"`
-	CompletedSplits    int       `json:"completedSplits"`
-	UserTimeMillis     int       `json:"userTimeMillis"`
-	CPUTimeMillis      int       `json:"cpuTimeMillis"`
-	WallTimeMillis     int       `json:"wallTimeMillis"`
-	ProcessedRows      int       `json:"processedRows"`
-	ProcessedBytes     int       `json:"processedBytes"`
-	RootStage          stmtStage `json:"rootStage"`
-	ProgressPercentage float32   `json:"progressPercentage"`
+	State                string    `json:"state"`
+	Scheduled            bool      `json:"scheduled"`
+	Nodes                int       `json:"nodes"`
+	TotalSplits          int       `json:"totalSplits"`
+	QueuesSplits         int       `json:"queuedSplits"`
+	RunningSplits        int       `json:"runningSplits"`
+	CompletedSplits      int       `json:"completedSplits"`
+	UserTimeMillis       int       `json:"userTimeMillis"`
+	CPUTimeMillis        int64     `json:"cpuTimeMillis"`
+	WallTimeMillis       int64     `json:"wallTimeMillis"`
+	QueuedTimeMillis     int64     `json:"queuedTimeMillis"`
+	ElapsedTimeMillis    int64     `json:"elapsedTimeMillis"`
+	ProcessedRows        int64     `json:"processedRows"`
+	ProcessedBytes       int64     `json:"processedBytes"`
+	PhysicalInputBytes   int64     `json:"physicalInputBytes"`
+	PhysicalWrittenBytes int64     `json:"physicalWrittenBytes"`
+	PeakMemoryBytes      int64     `json:"peakMemoryBytes"`
+	SpilledBytes         int64     `json:"spilledBytes"`
+	RootStage            stmtStage `json:"rootStage"`
+	ProgressPercentage   float32   `json:"progressPercentage"`
+	RunningPercentage    float32   `json:"runningPercentage"`
 }
 
 type stmtError struct {
