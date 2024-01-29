@@ -448,8 +448,8 @@ func (c *Conn) Close() error {
 	return nil
 }
 
-func (c *Conn) newRequest(method, url string, body io.Reader, hs http.Header) (*http.Request, error) {
-	req, err := http.NewRequest(method, url, body)
+func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reader, hs http.Header) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, fmt.Errorf("trino: %w", err)
 	}
@@ -817,7 +817,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 		}
 	}
 
-	req, err := st.conn.newRequest("POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
+	req, err := st.conn.newRequest(ctx, "POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
 	if err != nil {
 		return nil, err
 	}
@@ -851,7 +851,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				}
 				hs := make(http.Header)
 				hs.Add(trinoUserHeader, st.user)
-				req, err := st.conn.newRequest("GET", nextURI, nil, hs)
+				req, err := st.conn.newRequest(ctx, "GET", nextURI, nil, hs)
 				if err != nil {
 					st.errors <- err
 					return
@@ -983,7 +983,7 @@ func (qr *driverRows) Close() error {
 	if qr.stmt.user != "" {
 		hs.Add(trinoUserHeader, qr.stmt.user)
 	}
-	req, err := qr.stmt.conn.newRequest("DELETE", qr.stmt.conn.baseURL+"/v1/query/"+url.PathEscape(qr.queryID), nil, hs)
+	req, err := qr.stmt.conn.newRequest(context.Background(), "DELETE", qr.stmt.conn.baseURL+"/v1/query/"+url.PathEscape(qr.queryID), nil, hs)
 	if err != nil {
 		return err
 	}
