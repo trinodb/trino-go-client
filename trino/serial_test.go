@@ -121,6 +121,16 @@ func TestSerial(t *testing.T) {
 			expectedSerial: "false",
 		},
 		{
+			name:           "bytes",
+			value:          []byte{1, 255},
+			expectedSerial: "X'01FF'",
+		},
+		{
+			name:           "empty bytes",
+			value:          []byte{},
+			expectedSerial: "X''",
+		},
+		{
 			name:           "date",
 			value:          Date(2017, 7, 10),
 			expectedSerial: "DATE '2017-07-10'",
