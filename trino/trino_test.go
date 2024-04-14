@@ -216,7 +216,7 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(&stmtResponse{
-			Error: stmtError{
+			Error: ErrTrino{
 				ErrorName: "TEST",
 			},
 		})
@@ -920,7 +920,7 @@ func TestQueryCancellation(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(&stmtResponse{
-			Error: stmtError{
+			Error: ErrTrino{
 				ErrorName: "USER_CANCELLED",
 			},
 		})
@@ -984,7 +984,7 @@ func TestFetchNoStackOverflow(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(&stmtResponse{
-			Error: stmtError{
+			Error: ErrTrino{
 				ErrorName: "TEST",
 			},
 		})
