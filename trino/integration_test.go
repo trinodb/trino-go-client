@@ -206,9 +206,55 @@ func TestIntegrationSelectFailedQuery(t *testing.T) {
 		rows.Close()
 		t.Fatal("query to invalid catalog succeeded")
 	}
-	_, ok := err.(*ErrQueryFailed)
+	queryFailed, ok := err.(*ErrQueryFailed)
 	if !ok {
 		t.Fatal("unexpected error:", err)
+	}
+	trinoErr, ok := errors.Unwrap(queryFailed).(*ErrTrino)
+	if !ok {
+		t.Fatal("unexpected error:", trinoErr)
+	}
+	expected := ErrTrino{
+		Message:   "line 1:15: Catalog 'catalog'",
+		SqlState:  "",
+		ErrorCode: 44,
+		ErrorName: "CATALOG_NOT_FOUND",
+		ErrorType: "USER_ERROR",
+		ErrorLocation: ErrorLocation{
+			LineNumber:   1,
+			ColumnNumber: 15,
+		},
+		FailureInfo: FailureInfo{
+			Type:    "io.trino.spi.TrinoException",
+			Message: "line 1:15: Catalog 'catalog'",
+		},
+	}
+	if !strings.HasPrefix(trinoErr.Message, expected.Message) {
+		t.Fatalf("expected ErrTrino.Message to start with `%s`, got: %s", expected.Message, trinoErr.Message)
+	}
+	if trinoErr.SqlState != expected.SqlState {
+		t.Fatalf("expected ErrTrino.SqlState to be `%s`, got: %s", expected.SqlState, trinoErr.SqlState)
+	}
+	if trinoErr.ErrorCode != expected.ErrorCode {
+		t.Fatalf("expected ErrTrino.ErrorCode to be `%d`, got: %d", expected.ErrorCode, trinoErr.ErrorCode)
+	}
+	if trinoErr.ErrorName != expected.ErrorName {
+		t.Fatalf("expected ErrTrino.ErrorName to be `%s`, got: %s", expected.ErrorName, trinoErr.ErrorName)
+	}
+	if trinoErr.ErrorType != expected.ErrorType {
+		t.Fatalf("expected ErrTrino.ErrorType to be `%s`, got: %s", expected.ErrorType, trinoErr.ErrorType)
+	}
+	if trinoErr.ErrorLocation.LineNumber != expected.ErrorLocation.LineNumber {
+		t.Fatalf("expected ErrTrino.ErrorLocation.LineNumber to be `%d`, got: %d", expected.ErrorLocation.LineNumber, trinoErr.ErrorLocation.LineNumber)
+	}
+	if trinoErr.ErrorLocation.ColumnNumber != expected.ErrorLocation.ColumnNumber {
+		t.Fatalf("expected ErrTrino.ErrorLocation.ColumnNumber to be `%d`, got: %d", expected.ErrorLocation.ColumnNumber, trinoErr.ErrorLocation.ColumnNumber)
+	}
+	if trinoErr.FailureInfo.Type != expected.FailureInfo.Type {
+		t.Fatalf("expected ErrTrino.FailureInfo.Type to be `%s`, got: %s", expected.FailureInfo.Type, trinoErr.FailureInfo.Type)
+	}
+	if !strings.HasPrefix(trinoErr.FailureInfo.Message, expected.FailureInfo.Message) {
+		t.Fatalf("expected ErrTrino.FailureInfo.Message to start with `%s`, got: %s", expected.FailureInfo.Message, trinoErr.FailureInfo.Message)
 	}
 }
 
@@ -486,13 +532,13 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 			name:          "invalid string as bigint",
 			query:         "SELECT * FROM tpch.sf1.customer WHERE custkey=? LIMIT 2",
 			args:          []interface{}{"1"},
-			expectedError: errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: line 1:46: Cannot apply operator: bigint = varchar(1)"`),
+			expectedError: errors.New(`trino: query failed (200 OK): "USER_ERROR: line 1:46: Cannot apply operator: bigint = varchar(1)"`),
 		},
 		{
 			name:          "valid string as date",
 			query:         "SELECT * FROM tpch.sf1.lineitem WHERE shipdate=? LIMIT 2",
 			args:          []interface{}{"1995-01-27"},
-			expectedError: errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: line 1:47: Cannot apply operator: date = varchar(10)"`),
+			expectedError: errors.New(`trino: query failed (200 OK): "USER_ERROR: line 1:47: Cannot apply operator: date = varchar(10)"`),
 		},
 	}
 
@@ -611,11 +657,11 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 	}{
 		{
 			query: "SET ROLE dummy",
-			err:   errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: line 1:1: Role 'dummy' does not exist"`),
+			err:   errors.New(`trino: query failed (200 OK): "USER_ERROR: line 1:1: Role 'dummy' does not exist"`),
 		},
 		{
 			query: "SET PATH dummy",
-			err:   errors.New(`trino: query failed (200 OK): "io.trino.spi.TrinoException: SET PATH not supported by client"`),
+			err:   errors.New(`trino: query failed (200 OK): "USER_ERROR: SET PATH not supported by client"`),
 		},
 	}
 	for _, c := range cases {

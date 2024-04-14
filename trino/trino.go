@@ -560,6 +560,11 @@ func (e *ErrQueryFailed) Error() string {
 		e.StatusCode, http.StatusText(e.StatusCode), e.Reason)
 }
 
+// Unwrap implements the unwrap interface.
+func (e *ErrQueryFailed) Unwrap() error {
+	return e.Reason
+}
+
 func newErrQueryFailedFromResponse(resp *http.Response) *ErrQueryFailed {
 	const maxBytes = 8 * 1024
 	defer resp.Body.Close()
@@ -683,7 +688,7 @@ type stmtResponse struct {
 	InfoURI     string    `json:"infoUri"`
 	NextURI     string    `json:"nextUri"`
 	Stats       stmtStats `json:"stats"`
-	Error       stmtError `json:"error"`
+	Error       ErrTrino  `json:"error"`
 	UpdateType  string    `json:"updateType"`
 	UpdateCount int64     `json:"updateCount"`
 }
@@ -712,27 +717,43 @@ type stmtStats struct {
 	RunningPercentage    float32   `json:"runningPercentage"`
 }
 
-type stmtError struct {
-	Message       string               `json:"message"`
-	ErrorName     string               `json:"errorName"`
-	ErrorCode     int                  `json:"errorCode"`
-	ErrorLocation stmtErrorLocation    `json:"errorLocation"`
-	FailureInfo   stmtErrorFailureInfo `json:"failureInfo"`
-	// Other fields omitted
+type ErrTrino struct {
+	Message       string        `json:"message"`
+	SqlState      string        `json:"sqlState"`
+	ErrorCode     int           `json:"errorCode"`
+	ErrorName     string        `json:"errorName"`
+	ErrorType     string        `json:"errorType"`
+	ErrorLocation ErrorLocation `json:"errorLocation"`
+	FailureInfo   FailureInfo   `json:"failureInfo"`
 }
 
-type stmtErrorLocation struct {
+func (i ErrTrino) Error() string {
+	return i.ErrorType + ": " + i.Message
+}
+
+type ErrorLocation struct {
 	LineNumber   int `json:"lineNumber"`
 	ColumnNumber int `json:"columnNumber"`
 }
 
-type stmtErrorFailureInfo struct {
-	Type string `json:"type"`
-	// Other fields omitted
+type FailureInfo struct {
+	Type          string        `json:"type"`
+	Message       string        `json:"message"`
+	Cause         *FailureInfo  `json:"cause"`
+	Suppressed    []FailureInfo `json:"suppressed"`
+	Stack         []string      `json:"stack"`
+	ErrorInfo     ErrorInfo     `json:"errorInfo"`
+	ErrorLocation ErrorLocation `json:"errorLocation"`
 }
 
-func (e stmtError) Error() string {
-	return e.FailureInfo.Type + ": " + e.Message
+type ErrorInfo struct {
+	Code int    `json:"code"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+func (i ErrorInfo) Error() string {
+	return fmt.Sprintf("%s: %s (%d)", i.Type, i.Name, i.Code)
 }
 
 type stmtStage struct {
@@ -1101,7 +1122,7 @@ type queryResponse struct {
 	Columns          []queryColumn `json:"columns"`
 	Data             []queryData   `json:"data"`
 	Stats            stmtStats     `json:"stats"`
-	Error            stmtError     `json:"error"`
+	Error            ErrTrino      `json:"error"`
 	UpdateType       string        `json:"updateType"`
 	UpdateCount      int64         `json:"updateCount"`
 }
@@ -1149,7 +1170,7 @@ type typeArgument struct {
 	long int64
 }
 
-func handleResponseError(status int, respErr stmtError) error {
+func handleResponseError(status int, respErr ErrTrino) error {
 	switch respErr.ErrorName {
 	case "":
 		return nil
