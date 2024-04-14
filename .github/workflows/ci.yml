@@ -13,8 +13,8 @@ jobs:
         go: ['>=1.22', '1.21']
         trino: ['latest', '372']
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-go@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go }}
       - run: go test -v -race -timeout 2m ./... -trino_image_tag=${{ matrix.trino }}
