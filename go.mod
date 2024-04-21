@@ -1,4 +1,4 @@
-module github.com/kamalkang-hpe/trino-go-client
+module trino-client/trino
 
 go 1.17
 

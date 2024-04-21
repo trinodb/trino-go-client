@@ -16,6 +16,7 @@ package trino
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -82,11 +83,17 @@ func TestMain(m *testing.M) {
 			if *trinoImageTagFlag == "" {
 				*trinoImageTagFlag = "latest"
 			}
+			exposedPorts := []string{
+				"8080/tcp",
+				"8081/tcp",
+			}
+
 			resource, err = pool.RunWithOptions(&dt.RunOptions{
-				Name:       name,
-				Repository: "trinodb/trino",
-				Tag:        *trinoImageTagFlag,
-				Mounts:     []string{wd + "/etc:/etc/trino"},
+				Name:         name,
+				Repository:   "trinodb/trino",
+				Tag:          *trinoImageTagFlag,
+				Mounts:       []string{wd + "/etc:/etc/trino"},
+				ExposedPorts: exposedPorts,
 			})
 			if err != nil {
 				log.Fatalf("Could not start resource: %s", err)
@@ -106,6 +113,8 @@ func TestMain(m *testing.M) {
 			log.Fatalf("Timed out waiting for container to get ready: %s", err)
 		}
 		*integrationServerFlag = "http://test@localhost:" + resource.GetPort("8080/tcp")
+
+		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
 	code := m.Run()
@@ -748,6 +757,28 @@ func TestIntegrationQueryContextCancellation(t *testing.T) {
 		if err = contextSleep(pollCtx, 100*time.Millisecond); err != nil {
 			t.Fatal("query was not cancelled in 1 second; state, code, err are:", state, code, err)
 		}
+	}
+}
+
+func TestIntegrationBearerAuth(t *testing.T) {
+	bearerAuth := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0IiwiZXhwIjo0ODY3MjQ4MzY1fQ.a8O5YhYSn1WNedLqAYq8e5lXSwOkabZjhvKIAXPEGBc5juYBgnWcfad4kXn4PCoD6ykcmGACRuMiBNGbQMxPy6iX5vNie8tX-P-GuXhgHuRIcf6deVOibGb9RHaS0VwtwsgBZREhxF9-410db0k5qwipVJKu-t8mttvgIRhx2hyRaXigH2IT1W3Q06K3o81Olq-c_b4qF1oVpVEuQ7uzPUXb5LVK30YVBcUtFHtlYQX0ZJ_5hCTI37l5krBGIt--WOGs368tVrUPDLyhdEW2V7dN_NnPwfGuxzBVRTgC8oqGNlbOWSouUYrfW3gN6LYEckBfXGbk5daNQ5u0OmYkgg"
+	dsn := "https://test@localhost:" + resource.GetPort("8081/tcp")
+	dsn += "?bearer_auth=" + bearerAuth
+
+	db := integrationOpen(t, dsn)
+
+	defer db.Close()
+	rows, err := db.Query("SHOW CATALOGS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if count < 1 {
+		t.Fatal("not enough rows returned:", count)
 	}
 }
 
