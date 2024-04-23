@@ -16,6 +16,7 @@ package trino
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"database/sql/driver"
 	"errors"
@@ -82,11 +83,17 @@ func TestMain(m *testing.M) {
 			if *trinoImageTagFlag == "" {
 				*trinoImageTagFlag = "latest"
 			}
+			exposedPorts := []string{
+				"8080/tcp",
+				"8081/tcp",
+			}
+
 			resource, err = pool.RunWithOptions(&dt.RunOptions{
-				Name:       name,
-				Repository: "trinodb/trino",
-				Tag:        *trinoImageTagFlag,
-				Mounts:     []string{wd + "/etc:/etc/trino"},
+				Name:         name,
+				Repository:   "trinodb/trino",
+				Tag:          *trinoImageTagFlag,
+				Mounts:       []string{wd + "/etc:/etc/trino"},
+				ExposedPorts: exposedPorts,
 			})
 			if err != nil {
 				log.Fatalf("Could not start resource: %s", err)
@@ -106,6 +113,8 @@ func TestMain(m *testing.M) {
 			log.Fatalf("Timed out waiting for container to get ready: %s", err)
 		}
 		*integrationServerFlag = "http://test@localhost:" + resource.GetPort("8080/tcp")
+
+		http.DefaultTransport.(*http.Transport).TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
 	}
 
 	code := m.Run()
@@ -748,6 +757,28 @@ func TestIntegrationQueryContextCancellation(t *testing.T) {
 		if err = contextSleep(pollCtx, 100*time.Millisecond); err != nil {
 			t.Fatal("query was not cancelled in 1 second; state, code, err are:", state, code, err)
 		}
+	}
+}
+
+func TestIntegrationAccessToken(t *testing.T) {
+	accessToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnb3RyaW5vIiwic3ViIjoidGVzdCIsImV4cCI6NDg2NzQzMTgzMH0.qKwLIsAxg6O2RfonRcxMatXuQ8Prw_lLqnl7cCt1zRgL_zcZBAm4rdv8PFu2QpWshIG7675n0VE0y4c5q1-Q-ifuCbfAAExD8SXEi5_aa2299xiQH8ADmrycizzebGNIwwK1qzH6u3jNWwSkABbDaJ58Z7vnQDPE5yir_Fap4mE7-OXWjuKF5CNL9CbtfBMEsnMtSZ6kRTvlBQ84dNOaYwcHPhQQuwKaIFFzrvN_nathFc5r1qjLkSvxA6mPLGw-dqXt2k0QD0DEppyu80b0BL3pPLXXZ99VfGR2iW0j2n34D_3PF4gUOTSh8jpfzrDPC-qqxlfUb_5yTA-LBDImsw"
+	dsn := "https://test@localhost:" + resource.GetPort("8081/tcp")
+	dsn += "?access_token=" + accessToken
+
+	db := integrationOpen(t, dsn)
+
+	defer db.Close()
+	rows, err := db.Query("SHOW CATALOGS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if count < 1 {
+		t.Fatal("not enough rows returned:", count)
 	}
 }
 
