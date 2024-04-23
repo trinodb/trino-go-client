@@ -760,10 +760,10 @@ func TestIntegrationQueryContextCancellation(t *testing.T) {
 	}
 }
 
-func TestIntegrationBearerAuth(t *testing.T) {
-	bearerAuth := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0IiwiZXhwIjo0ODY3MjQ4MzY1fQ.a8O5YhYSn1WNedLqAYq8e5lXSwOkabZjhvKIAXPEGBc5juYBgnWcfad4kXn4PCoD6ykcmGACRuMiBNGbQMxPy6iX5vNie8tX-P-GuXhgHuRIcf6deVOibGb9RHaS0VwtwsgBZREhxF9-410db0k5qwipVJKu-t8mttvgIRhx2hyRaXigH2IT1W3Q06K3o81Olq-c_b4qF1oVpVEuQ7uzPUXb5LVK30YVBcUtFHtlYQX0ZJ_5hCTI37l5krBGIt--WOGs368tVrUPDLyhdEW2V7dN_NnPwfGuxzBVRTgC8oqGNlbOWSouUYrfW3gN6LYEckBfXGbk5daNQ5u0OmYkgg"
+func TestIntegrationAccessToken(t *testing.T) {
+	accessToken := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnb3RyaW5vIiwic3ViIjoidGVzdCIsImV4cCI6NDg2NzQzMTgzMH0.qKwLIsAxg6O2RfonRcxMatXuQ8Prw_lLqnl7cCt1zRgL_zcZBAm4rdv8PFu2QpWshIG7675n0VE0y4c5q1-Q-ifuCbfAAExD8SXEi5_aa2299xiQH8ADmrycizzebGNIwwK1qzH6u3jNWwSkABbDaJ58Z7vnQDPE5yir_Fap4mE7-OXWjuKF5CNL9CbtfBMEsnMtSZ6kRTvlBQ84dNOaYwcHPhQQuwKaIFFzrvN_nathFc5r1qjLkSvxA6mPLGw-dqXt2k0QD0DEppyu80b0BL3pPLXXZ99VfGR2iW0j2n34D_3PF4gUOTSh8jpfzrDPC-qqxlfUb_5yTA-LBDImsw"
 	dsn := "https://test@localhost:" + resource.GetPort("8081/tcp")
-	dsn += "?bearer_auth=" + bearerAuth
+	dsn += "?access_token=" + accessToken
 
 	db := integrationOpen(t, dsn)
 

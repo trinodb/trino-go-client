@@ -167,16 +167,16 @@ func TestInvalidKerberosConfig(t *testing.T) {
 	assert.Error(t, err, "dsn generated from invalid secure url, since kerberos enabled must has SSL enabled")
 }
 
-func TestAuthorizationConfig(t *testing.T) {
+func TestAccessTokenConfig(t *testing.T) {
 	c := &Config{
-		ServerURI:  "https://foobar@localhost:8090",
-		BearerAuth: "token",
+		ServerURI:   "https://foobar@localhost:8090",
+		AccessToken: "token",
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	want := "https://foobar@localhost:8090?bearer_auth=token&source=trino-go-client"
+	want := "https://foobar@localhost:8090?access_token=token&source=trino-go-client"
 
 	assert.Equal(t, want, dsn)
 }
