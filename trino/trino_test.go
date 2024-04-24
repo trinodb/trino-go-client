@@ -1419,6 +1419,12 @@ func TestTypeConversion(t *testing.T) {
 				[]interface{}{"b"},
 			},
 		},
+		{
+			DataType:                   "SphericalGeography",
+			RawType:                    "SphericalGeography",
+			ResponseUnmarshalledSample: "Point (0 0)",
+			ExpectedGoValue:            "Point (0 0)",
+		},
 	}
 
 	for _, tc := range testcases {
