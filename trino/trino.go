@@ -129,14 +129,14 @@ const (
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
 
-	KerberosEnabledConfig           = "KerberosEnabled"
+	kerberosEnabledConfig           = "KerberosEnabled"
 	kerberosKeytabPathConfig        = "KerberosKeytabPath"
 	kerberosPrincipalConfig         = "KerberosPrincipal"
 	kerberosRealmConfig             = "KerberosRealm"
 	kerberosConfigPathConfig        = "KerberosConfigPath"
 	kerberosRemoteServiceNameConfig = "KerberosRemoteServiceName"
-	SSLCertPathConfig               = "SSLCertPath"
-	SSLCertConfig                   = "SSLCert"
+	sslCertPathConfig               = "SSLCertPath"
+	sslCertConfig                   = "SSLCert"
 )
 
 var (
@@ -217,7 +217,7 @@ func (c *Config) FormatDSN() (string, error) {
 		if c.SSLCert != "" {
 			return "", fmt.Errorf("trino: client configuration error, a custom SSL certificate file cannot be specified together with a certificate string")
 		}
-		query.Add(SSLCertPathConfig, c.SSLCertPath)
+		query.Add(sslCertPathConfig, c.SSLCertPath)
 	}
 
 	if c.SSLCert != "" {
@@ -227,14 +227,14 @@ func (c *Config) FormatDSN() (string, error) {
 		if c.SSLCertPath != "" {
 			return "", fmt.Errorf("trino: client configuration error, a custom SSL certificate string cannot be specified together with a certificate file")
 		}
-		query.Add(SSLCertConfig, c.SSLCert)
+		query.Add(sslCertConfig, c.SSLCert)
 	}
 
 	if KerberosEnabled {
 		if !isSSL {
 			return "", fmt.Errorf("trino: client configuration error, SSL must be enabled for secure env")
 		}
-		query.Add(KerberosEnabledConfig, "true")
+		query.Add(kerberosEnabledConfig, "true")
 		query.Add(kerberosKeytabPathConfig, c.KerberosKeytabPath)
 		query.Add(kerberosPrincipalConfig, c.KerberosPrincipal)
 		query.Add(kerberosRealmConfig, c.KerberosRealm)
@@ -291,7 +291,7 @@ func newConn(dsn string) (*Conn, error) {
 
 	query := serverURL.Query()
 
-	kerberosEnabled, _ := strconv.ParseBool(query.Get(KerberosEnabledConfig))
+	kerberosEnabled, _ := strconv.ParseBool(query.Get(kerberosEnabledConfig))
 
 	var kerberosClient client.Client
 
@@ -323,9 +323,9 @@ func newConn(dsn string) (*Conn, error) {
 		}
 	} else if serverURL.Scheme == "https" {
 
-		cert := []byte(query.Get(SSLCertConfig))
+		cert := []byte(query.Get(sslCertConfig))
 
-		if certPath := query.Get(SSLCertPathConfig); certPath != "" {
+		if certPath := query.Get(sslCertPathConfig); certPath != "" {
 			cert, err = ioutil.ReadFile(certPath)
 			if err != nil {
 				return nil, fmt.Errorf("trino: Error loading SSL Cert File: %w", err)
