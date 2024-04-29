@@ -1420,6 +1420,13 @@ func TestTypeConversion(t *testing.T) {
 			},
 		},
 		{
+			DataType:                   "Geometry",
+			RawType:                    "Geometry",
+			ResponseUnmarshalledSample: "Point (0 0)",
+			ExpectedGoValue:            "Point (0 0)",
+		},
+
+		{
 			DataType:                   "SphericalGeography",
 			RawType:                    "SphericalGeography",
 			ResponseUnmarshalledSample: "Point (0 0)",
