@@ -15,6 +15,7 @@
 package trino
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -36,8 +37,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ahmetb/dlog"
 	"github.com/golang-jwt/jwt/v4"
 	dt "github.com/ory/dockertest/v3"
+	docker "github.com/ory/dockertest/v3/docker"
 )
 
 var (
@@ -121,7 +124,8 @@ func TestMain(m *testing.M) {
 			}
 			return nil
 		}); err != nil {
-			log.Fatalf("Timed out waiting for container to get ready: %s", err)
+			logs := getLogs(resource.Container.ID)
+			log.Fatalf("Timed out waiting for container to get ready: %s\nContainer logs:\n%s", err, logs)
 		}
 		*integrationServerFlag = "http://test@localhost:" + resource.GetPort("8080/tcp")
 		tlsServer = "https://test@localhost:" + resource.GetPort("8443/tcp")
@@ -240,6 +244,20 @@ func getTLSConfig(dir string) (*tls.Config, error) {
 	return &tls.Config{
 		RootCAs: certPool,
 	}, nil
+}
+
+func getLogs(id string) []byte {
+	var buf bytes.Buffer
+	pool.Client.Logs(docker.LogsOptions{
+		Container:    id,
+		OutputStream: &buf,
+		ErrorStream:  &buf,
+		Stdout:       true,
+		Stderr:       true,
+		RawTerminal:  true,
+	})
+	logs, _ := io.ReadAll(dlog.NewReader(&buf))
+	return logs
 }
 
 // integrationOpen opens a connection to the integration test server.
