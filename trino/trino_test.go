@@ -358,6 +358,7 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 		statusMap: statusMap,
 	}
 	progressUpdaterPeriod, err := time.ParseDuration("1ms")
+	require.NoError(t, err)
 
 	rows, err := db.Query("SELECT 2",
 		sql.Named("X-Trino-Progress-Callback", progressUpdater),
@@ -1753,10 +1754,10 @@ func TestExec(t *testing.T) {
 		assert.NoError(t, db.Close())
 	})
 
-	result, err := db.Exec("CREATE TABLE memory.default.test (id INTEGER, name VARCHAR, optional VARCHAR)")
+	_, err = db.Exec("CREATE TABLE memory.default.test (id INTEGER, name VARCHAR, optional VARCHAR)")
 	require.NoError(t, err, "Failed executing CREATE TABLE query")
 
-	result, err = db.Exec("INSERT INTO memory.default.test (id, name, optional) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)",
+	result, err := db.Exec("INSERT INTO memory.default.test (id, name, optional) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)",
 		123, "abc", nil,
 		456, "def", "present",
 		789, "ghi", nil)
