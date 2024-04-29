@@ -168,6 +168,20 @@ func TestInvalidKerberosConfig(t *testing.T) {
 	assert.Error(t, err, "dsn generated from invalid secure url, since kerberos enabled must has SSL enabled")
 }
 
+func TestAccessTokenConfig(t *testing.T) {
+	c := &Config{
+		ServerURI:   "https://foobar@localhost:8090",
+		AccessToken: "token",
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	want := "https://foobar@localhost:8090?accessToken=token&source=trino-go-client"
+
+	assert.Equal(t, want, dsn)
+}
+
 func TestConfigWithMalformedURL(t *testing.T) {
 	_, err := (&Config{ServerURI: ":("}).FormatDSN()
 	assert.Error(t, err, "dsn generated from malformed url")
@@ -266,6 +280,26 @@ func TestAuthFailure(t *testing.T) {
 
 	db, err := sql.Open("trino", ts.URL)
 	require.NoError(t, err)
+
+	assert.NoError(t, db.Close())
+}
+
+func TestTokenAuth(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer token" {
+			w.WriteHeader(http.StatusUnauthorized)
+		} else {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+
+	t.Cleanup(ts.Close)
+
+	db, err := sql.Open("trino", ts.URL+"?accessToken=token")
+	require.NoError(t, err)
+
+	_, err = db.Query("SELECT 1")
+	require.Error(t, err, "trino: EOF")
 
 	assert.NoError(t, db.Close())
 }

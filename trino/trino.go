@@ -129,6 +129,8 @@ const (
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
 
+	authorizationHeader = "Authorization"
+
 	kerberosEnabledConfig           = "KerberosEnabled"
 	kerberosKeytabPathConfig        = "KerberosKeytabPath"
 	kerberosPrincipalConfig         = "KerberosPrincipal"
@@ -137,6 +139,7 @@ const (
 	kerberosRemoteServiceNameConfig = "KerberosRemoteServiceName"
 	sslCertPathConfig               = "SSLCertPath"
 	sslCertConfig                   = "SSLCert"
+	accessTokenConfig               = "accessToken"
 )
 
 var (
@@ -175,6 +178,7 @@ type Config struct {
 	KerberosConfigPath        string            // The krb5 config path (optional)
 	SSLCertPath               string            // The SSL cert path for TLS verification (optional)
 	SSLCert                   string            // The SSL cert for TLS verification (optional)
+	AccessToken               string            // An access token (JWT) for authentication (optional)
 }
 
 // FormatDSN returns a DSN string from the configuration.
@@ -256,6 +260,7 @@ func (c *Config) FormatDSN() (string, error) {
 		"session_properties": strings.Join(sessionkv, ","),
 		"extra_credentials":  strings.Join(credkv, ","),
 		"custom_client":      c.CustomClientName,
+		accessTokenConfig:    c.AccessToken,
 	} {
 		if v != "" {
 			query[k] = []string{v}
@@ -371,6 +376,7 @@ func newConn(dsn string) (*Conn, error) {
 		trinoSchemaHeader:          query.Get("schema"),
 		trinoSessionHeader:         query.Get("session_properties"),
 		trinoExtraCredentialHeader: query.Get("extra_credentials"),
+		authorizationHeader:        getAuthorization(query.Get(accessTokenConfig)),
 	} {
 		if v != "" {
 			c.httpHeaders.Add(k, v)
@@ -378,6 +384,13 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	return c, nil
+}
+
+func getAuthorization(token string) string {
+	if token == "" {
+		return ""
+	}
+	return fmt.Sprintf("Bearer %s", token)
 }
 
 // registry for custom http clients
