@@ -588,6 +588,9 @@ func TestIntegrationQueryNextAfterClose(t *testing.T) {
 
 	ctx := context.Background()
 	conn, err := (&Driver{}).Open(*integrationServerFlag)
+	if err != nil {
+		t.Fatalf("Failed to open connection: %v", err)
+	}
 	defer conn.Close()
 
 	stmt, err := conn.(driver.ConnPrepareContext).PrepareContext(ctx, "SELECT 1")
