@@ -21,7 +21,6 @@ import (
 	"crypto/tls"
 	"database/sql"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -131,7 +130,7 @@ func newReverseProxyHandler(serverURL *url.URL, cproxyURL chan string) http.Hand
 		w.WriteHeader(resp.StatusCode)
 		pr, pw := io.Pipe()
 		go func() {
-			b, err := ioutil.ReadAll(resp.Body)
+			b, err := io.ReadAll(resp.Body)
 			if err != nil {
 				pw.CloseWithError(err)
 				return
