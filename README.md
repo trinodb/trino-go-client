@@ -11,7 +11,7 @@ Trino, and receive the resulting data.
 
 * Native Go implementation
 * Connections over HTTP or HTTPS
-* HTTP Basic, and Kerberos authentication
+* HTTP Basic, Kerberos, and JSON web token (JWT) authentication
 * Per-query user information for access control
 * Support custom HTTP client (tunable conn pools, timeouts, TLS)
 * Supports conversion from Trino to native Go data types
@@ -60,7 +60,7 @@ db, err := sql.Open("trino", dsn)
 
 ### Authentication
 
-Both HTTP Basic, and Kerberos authentication are supported.
+Both HTTP Basic, Kerberos, and JWT authentication are supported.
 
 #### HTTP Basic authentication
 
@@ -79,6 +79,17 @@ struct.
 
 Please refer to the [Coordinator Kerberos
 Authentication](https://trino.io/docs/current/security/server.html) for
+server-side configuration.
+
+#### JSON web token authentication
+
+This driver supports JWT authentication by setting up the `AccessToken` field
+in the
+[Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config)
+struct.
+
+Please refer to the [Coordinator JWT
+Authentication](https://trino.io/docs/current/security/jwt.html) for
 server-side configuration.
 
 #### System access control and per-query user information
