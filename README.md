@@ -11,7 +11,7 @@ Trino, and receive the resulting data.
 
 * Native Go implementation
 * Connections over HTTP or HTTPS
-* HTTP Basic and Kerberos authentication
+* HTTP Basic, and Kerberos authentication
 * Per-query user information for access control
 * Support custom HTTP client (tunable conn pools, timeouts, TLS)
 * Supports conversion from Trino to native Go data types
@@ -60,7 +60,7 @@ db, err := sql.Open("trino", dsn)
 
 ### Authentication
 
-Both HTTP Basic and Kerberos authentication are supported.
+Both HTTP Basic, and Kerberos authentication are supported.
 
 #### HTTP Basic authentication
 
@@ -272,7 +272,7 @@ When reading response rows, the driver supports most Trino data types, except:
   `time.Time`. All precisions up to nanoseconds (`TIMESTAMP(9)` or `TIME(9)`)
   are supported (since this is the maximum precision Golang's `time.Time`
   supports). If a query returns columns defined with a greater precision,
-  values will be trimmed to 9 decimal digits. Use `CAST` to reduce the returned
+  values are trimmed to 9 decimal digits. Use `CAST` to reduce the returned
   precision, or convert the value to a string that then can be parsed manually.
 * `DECIMAL` - returned as string
 * `IPADDRESS` - returned as string
@@ -301,7 +301,7 @@ For two or three dimensional arrays, use `trino.NullSlice2Bool` and
 `trino.NullSlice3Bool` or equivalents for other data types.
 
 To read `ROW` values, implement the `sql.Scanner` interface in a struct. Its
-`Scan()` function will receive a `[]interface{}` slice, with values of the
+`Scan()` function receives a `[]interface{}` slice, with values of the
 following types:
 * `bool`
 * `json.Number` for any numeric Trino types
