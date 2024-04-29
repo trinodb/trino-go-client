@@ -139,20 +139,21 @@ func TestConfigWithoutSSLCertPath(t *testing.T) {
 
 func TestKerberosConfig(t *testing.T) {
 	c := &Config{
-		ServerURI:          "https://foobar@localhost:8090",
-		SessionProperties:  map[string]string{"query_priority": "1"},
-		KerberosEnabled:    "true",
-		KerberosKeytabPath: "/opt/test.keytab",
-		KerberosPrincipal:  "trino/testhost",
-		KerberosRealm:      "example.com",
-		KerberosConfigPath: "/etc/krb5.conf",
-		SSLCertPath:        "/tmp/test.cert",
+		ServerURI:                 "https://foobar@localhost:8090",
+		SessionProperties:         map[string]string{"query_priority": "1"},
+		KerberosEnabled:           "true",
+		KerberosKeytabPath:        "/opt/test.keytab",
+		KerberosPrincipal:         "trino/testhost",
+		KerberosRealm:             "example.com",
+		KerberosConfigPath:        "/etc/krb5.conf",
+		KerberosRemoteServiceName: "service",
+		SSLCertPath:               "/tmp/test.cert",
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3D1&source=trino-go-client"
+	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&KerberosRemoteServiceName=service&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3D1&source=trino-go-client"
 
 	assert.Equal(t, want, dsn)
 }
