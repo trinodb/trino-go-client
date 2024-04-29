@@ -60,10 +60,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math"
 	"net/http"
 	"net/url"
+	"os"
 	"reflect"
 	"sort"
 	"strconv"
@@ -326,7 +326,7 @@ func newConn(dsn string) (*Conn, error) {
 		cert := []byte(query.Get(sslCertConfig))
 
 		if certPath := query.Get(sslCertPathConfig); certPath != "" {
-			cert, err = ioutil.ReadFile(certPath)
+			cert, err = os.ReadFile(certPath)
 			if err != nil {
 				return nil, fmt.Errorf("trino: Error loading SSL Cert File: %w", err)
 			}
@@ -575,7 +575,7 @@ func newErrQueryFailedFromResponse(resp *http.Response) *ErrQueryFailed {
 	const maxBytes = 8 * 1024
 	defer resp.Body.Close()
 	qf := &ErrQueryFailed{StatusCode: resp.StatusCode}
-	b, err := ioutil.ReadAll(io.LimitReader(resp.Body, maxBytes))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes))
 	if err != nil {
 		qf.Reason = err
 		return qf
