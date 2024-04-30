@@ -112,20 +112,25 @@ func TestMain(m *testing.M) {
 			if err != nil {
 				log.Fatalf("Could not start resource: %s", err)
 			}
+		} else if !resource.Container.State.Running {
+			pool.Client.StartContainer(resource.Container.ID, nil)
 		}
 
 		if err := pool.Retry(func() error {
 			c, err := pool.Client.InspectContainer(resource.Container.ID)
 			if err != nil {
-				return err
+				log.Fatalf("Failed to inspect container %s: %s", resource.Container.ID, err)
 			}
+			if !c.State.Running {
+				log.Fatalf("Container %s is not running: %s\nContainer logs:\n%s", resource.Container.ID, c.State.String(), getLogs(resource.Container.ID))
+			}
+			log.Printf("Waiting for Trino container: %s\n", c.State.String())
 			if c.State.Health.Status != "healthy" {
 				return errors.New("Not ready")
 			}
 			return nil
 		}); err != nil {
-			logs := getLogs(resource.Container.ID)
-			log.Fatalf("Timed out waiting for container to get ready: %s\nContainer logs:\n%s", err, logs)
+			log.Fatalf("Timed out waiting for container to get ready: %s\nContainer logs:\n%s", err, getLogs(resource.Container.ID))
 		}
 		*integrationServerFlag = "http://test@localhost:" + resource.GetPort("8080/tcp")
 		tlsServer = "https://admin:admin@localhost:" + resource.GetPort("8443/tcp")
