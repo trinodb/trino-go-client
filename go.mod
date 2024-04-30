@@ -3,6 +3,7 @@ module github.com/trinodb/trino-go-client
 go 1.21
 
 require (
+	github.com/golang-jwt/jwt/v4 v4.5.0
 	github.com/ory/dockertest/v3 v3.10.0
 	github.com/stretchr/testify v1.9.0
 	gopkg.in/jcmturner/gokrb5.v6 v6.1.1
