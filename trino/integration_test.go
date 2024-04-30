@@ -128,7 +128,7 @@ func TestMain(m *testing.M) {
 			log.Fatalf("Timed out waiting for container to get ready: %s\nContainer logs:\n%s", err, logs)
 		}
 		*integrationServerFlag = "http://test@localhost:" + resource.GetPort("8080/tcp")
-		tlsServer = "https://test@localhost:" + resource.GetPort("8443/tcp")
+		tlsServer = "https://admin:admin@localhost:" + resource.GetPort("8443/tcp")
 
 		http.DefaultTransport.(*http.Transport).TLSClientConfig, err = getTLSConfig(wd + "/etc/secrets")
 		if err != nil {
@@ -949,6 +949,25 @@ func generateToken() (string, error) {
 	}
 
 	return signedToken, nil
+}
+
+func TestIntegrationTLS(t *testing.T) {
+	if tlsServer == "" {
+		t.Skip("Skipping TLS test when using a custom integration server.")
+	}
+
+	dsn := tlsServer
+	db := integrationOpen(t, dsn)
+
+	defer db.Close()
+	row := db.QueryRow("SELECT 1")
+	var count int
+	if err := row.Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("unexpected count=", count)
+	}
 }
 
 func contextSleep(ctx context.Context, d time.Duration) error {
