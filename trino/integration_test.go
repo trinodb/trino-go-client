@@ -36,6 +36,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v4"
 	dt "github.com/ory/dockertest/v3"
 )
 
@@ -873,6 +874,63 @@ func TestIntegrationQueryContextCancellation(t *testing.T) {
 			t.Fatal("query was not cancelled in 1 second; state, code, err are:", state, code, err)
 		}
 	}
+}
+
+func TestIntegrationAccessToken(t *testing.T) {
+	if tlsServer == "" {
+		t.Skip("Skipping access token test when using a custom integration server.")
+	}
+
+	accessToken, err := generateToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dsn := tlsServer + "?accessToken=" + accessToken
+
+	db := integrationOpen(t, dsn)
+
+	defer db.Close()
+	rows, err := db.Query("SHOW CATALOGS")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if count < 1 {
+		t.Fatal("not enough rows returned:", count)
+	}
+}
+
+func generateToken() (string, error) {
+	privateKeyPEM, err := os.ReadFile("etc/secrets/private_key.pem")
+	if err != nil {
+		return "", fmt.Errorf("error reading private key file: %w", err)
+	}
+
+	privateKey, err := jwt.ParseRSAPrivateKeyFromPEM(privateKeyPEM)
+	if err != nil {
+		return "", fmt.Errorf("error parsing private key: %w", err)
+	}
+
+	// Subject must be 'test'
+	claims := jwt.RegisteredClaims{
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * 365 * time.Hour)),
+		Issuer:    "gotrino",
+		Subject:   "test",
+	}
+
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	signedToken, err := token.SignedString(privateKey)
+
+	if err != nil {
+		return "", fmt.Errorf("error generating token: %w", err)
+	}
+
+	return signedToken, nil
 }
 
 func contextSleep(ctx context.Context, d time.Duration) error {
