@@ -713,27 +713,27 @@ type stmtResponse struct {
 }
 
 type stmtStats struct {
-	State                string    `json:"state"`
-	Scheduled            bool      `json:"scheduled"`
-	Nodes                int       `json:"nodes"`
-	TotalSplits          int       `json:"totalSplits"`
-	QueuesSplits         int       `json:"queuedSplits"`
-	RunningSplits        int       `json:"runningSplits"`
-	CompletedSplits      int       `json:"completedSplits"`
-	UserTimeMillis       int       `json:"userTimeMillis"`
-	CPUTimeMillis        int64     `json:"cpuTimeMillis"`
-	WallTimeMillis       int64     `json:"wallTimeMillis"`
-	QueuedTimeMillis     int64     `json:"queuedTimeMillis"`
-	ElapsedTimeMillis    int64     `json:"elapsedTimeMillis"`
-	ProcessedRows        int64     `json:"processedRows"`
-	ProcessedBytes       int64     `json:"processedBytes"`
-	PhysicalInputBytes   int64     `json:"physicalInputBytes"`
-	PhysicalWrittenBytes int64     `json:"physicalWrittenBytes"`
-	PeakMemoryBytes      int64     `json:"peakMemoryBytes"`
-	SpilledBytes         int64     `json:"spilledBytes"`
-	RootStage            stmtStage `json:"rootStage"`
-	ProgressPercentage   float32   `json:"progressPercentage"`
-	RunningPercentage    float32   `json:"runningPercentage"`
+	State                string      `json:"state"`
+	Scheduled            bool        `json:"scheduled"`
+	Nodes                int         `json:"nodes"`
+	TotalSplits          int         `json:"totalSplits"`
+	QueuesSplits         int         `json:"queuedSplits"`
+	RunningSplits        int         `json:"runningSplits"`
+	CompletedSplits      int         `json:"completedSplits"`
+	UserTimeMillis       int         `json:"userTimeMillis"`
+	CPUTimeMillis        int64       `json:"cpuTimeMillis"`
+	WallTimeMillis       int64       `json:"wallTimeMillis"`
+	QueuedTimeMillis     int64       `json:"queuedTimeMillis"`
+	ElapsedTimeMillis    int64       `json:"elapsedTimeMillis"`
+	ProcessedRows        int64       `json:"processedRows"`
+	ProcessedBytes       int64       `json:"processedBytes"`
+	PhysicalInputBytes   int64       `json:"physicalInputBytes"`
+	PhysicalWrittenBytes int64       `json:"physicalWrittenBytes"`
+	PeakMemoryBytes      int64       `json:"peakMemoryBytes"`
+	SpilledBytes         int64       `json:"spilledBytes"`
+	RootStage            stmtStage   `json:"rootStage"`
+	ProgressPercentage   jsonFloat64 `json:"progressPercentage"`
+	RunningPercentage    jsonFloat64 `json:"runningPercentage"`
 }
 
 type ErrTrino struct {
@@ -791,6 +791,28 @@ type stmtStage struct {
 	ProcessedBytes  int         `json:"processedBytes"`
 	SubStages       []stmtStage `json:"subStages"`
 }
+
+type jsonFloat64 float64
+
+func (f *jsonFloat64) UnmarshalJSON(data []byte) error {
+	var v float64
+	err := json.Unmarshal(data, &v)
+	if err != nil {
+		var jsonErr *json.UnmarshalTypeError
+		if errors.As(err, &jsonErr) {
+			if f != nil {
+				*f = 0
+			}
+			return nil
+		}
+		return err
+	}
+	p := (*float64)(f)
+	*p = v
+	return nil
+}
+
+var _ json.Unmarshaler = new(jsonFloat64)
 
 func (st *driverStmt) Query(args []driver.Value) (driver.Rows, error) {
 	return nil, driver.ErrSkip
