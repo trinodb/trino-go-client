@@ -24,7 +24,7 @@ Trino, and receive the resulting data.
 
 ## Requirements
 
-* Go 1.17 or newer
+* Go 1.21 or newer
 * Trino 372 or newer
 
 ## Installation
