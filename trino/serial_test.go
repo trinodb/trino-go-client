@@ -15,6 +15,7 @@
 package trino
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -159,6 +160,86 @@ func TestSerial(t *testing.T) {
 			name:           "timestamp with time zone in UTC",
 			value:          time.Date(2017, 7, 10, 11, 34, 25, 123456, time.UTC),
 			expectedSerial: "TIMESTAMP '2017-07-10 11:34:25.000123456 Z'",
+		},
+		{
+			name:           "duration",
+			value:          10*time.Second + 5*time.Millisecond,
+			expectedSerial: "INTERVAL '10.005' SECOND",
+		},
+		{
+			name:           "duration with negative value",
+			value:          -(10*time.Second + 5*time.Millisecond),
+			expectedSerial: "INTERVAL '-10.005' SECOND",
+		},
+		{
+			name:           "minute duration",
+			value:          10 * time.Minute,
+			expectedSerial: "INTERVAL '10' MINUTE",
+		},
+		{
+			name:           "hour duration",
+			value:          23 * time.Hour,
+			expectedSerial: "INTERVAL '23' HOUR",
+		},
+		{
+			name:           "max hour duration",
+			value:          (math.MaxInt64 / time.Hour) * time.Hour,
+			expectedSerial: "INTERVAL '2562047' HOUR",
+		},
+		{
+			name:           "min hour duration",
+			value:          (math.MinInt64 / time.Hour) * time.Hour,
+			expectedSerial: "INTERVAL '-2562047' HOUR",
+		},
+		{
+			name:           "max minute duration",
+			value:          (math.MaxInt64 / time.Minute) * time.Minute,
+			expectedSerial: "INTERVAL '153722867' MINUTE",
+		},
+		{
+			name:           "min minute duration",
+			value:          (math.MinInt64 / time.Minute) * time.Minute,
+			expectedSerial: "INTERVAL '-153722867' MINUTE",
+		},
+		{
+			name:          "too big second duration",
+			value:         (math.MaxInt64 / time.Second) * time.Second,
+			expectedError: true,
+		},
+		{
+			name:          "too small second duration",
+			value:         (math.MinInt64 / time.Second) * time.Second,
+			expectedError: true,
+		},
+		{
+			name:          "too big millisecond duration",
+			value:         time.Millisecond*912 + time.Second*12345678,
+			expectedError: true,
+		},
+		{
+			name:          "too small millisecond duration",
+			value:         -(time.Millisecond*910 + time.Second*123456789),
+			expectedError: true,
+		},
+		{
+			name:           "max allowed second duration",
+			value:          math.MaxInt32 * time.Second,
+			expectedSerial: "INTERVAL '2147483647' SECOND",
+		},
+		{
+			name:           "min allowed second duration",
+			value:          -math.MaxInt32 * time.Second,
+			expectedSerial: "INTERVAL '-2147483647' SECOND",
+		},
+		{
+			name:           "max allowed second with milliseconds duration",
+			value:          999999999*time.Second + 900*time.Millisecond,
+			expectedSerial: "INTERVAL '999999999.9' SECOND",
+		},
+		{
+			name:           "min allowed second with milliseconds duration",
+			value:          -999999999*time.Second - 900*time.Millisecond,
+			expectedSerial: "INTERVAL '-999999999.9' SECOND",
 		},
 		{
 			name:           "nil",
