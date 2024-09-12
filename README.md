@@ -262,11 +262,11 @@ types:
   passed to Trino as a time with a time zone
 * the result of `trino.Timestamp(year, month, day, hour, minute, second,
   nanosecond)` - passed to Trino as a timestamp without a time zone
+* `time.Duration` - passed to Trino as an interval day to second. Because Trino does not support nanosecond precision for intervals, if the nanosecond part of the value is not zero, an error will be returned.
 
 It's not yet possible to pass:
 * `float32` or `float64`
 * `byte`
-* `time.Duration`
 * `json.RawMessage`
 * maps
 

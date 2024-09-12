@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"math/big"
 	"net/http"
 	"os"
@@ -985,5 +986,129 @@ func contextSleep(ctx context.Context, d time.Duration) error {
 			<-timer.C
 		}
 		return ctx.Err()
+	}
+}
+
+func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+	tests := []struct {
+		name    string
+		arg     time.Duration
+		wantErr bool
+	}{
+		{
+			name:    "valid 1234567891s",
+			arg:     time.Duration(1234567891) * time.Second,
+			wantErr: false,
+		},
+		{
+			name:    "valid 123456789.1s",
+			arg:     time.Duration(123456789100) * time.Millisecond,
+			wantErr: false,
+		},
+		{
+			name:    "valid 12345678.91s",
+			arg:     time.Duration(12345678910) * time.Millisecond,
+			wantErr: false,
+		},
+		{
+			name:    "valid 1234567.891s",
+			arg:     time.Duration(1234567891) * time.Millisecond,
+			wantErr: false,
+		},
+		{
+			name:    "valid -1234567891s",
+			arg:     time.Duration(-1234567891) * time.Second,
+			wantErr: false,
+		},
+		{
+			name:    "valid -123456789.1s",
+			arg:     time.Duration(-123456789100) * time.Millisecond,
+			wantErr: false,
+		},
+		{
+			name:    "valid -12345678.91s",
+			arg:     time.Duration(-12345678910) * time.Millisecond,
+			wantErr: false,
+		},
+		{
+			name:    "valid -1234567.891s",
+			arg:     time.Duration(-1234567891) * time.Millisecond,
+			wantErr: false,
+		},
+		{
+			name:    "invalid 1234567891.2s",
+			arg:     time.Duration(1234567891200) * time.Millisecond,
+			wantErr: true,
+		},
+		{
+			name:    "invalid 123456789.12s",
+			arg:     time.Duration(123456789120) * time.Millisecond,
+			wantErr: true,
+		},
+		{
+			name:    "invalid 12345678.912s",
+			arg:     time.Duration(12345678912) * time.Millisecond,
+			wantErr: true,
+		},
+		{
+			name:    "invalid -1234567891.2s",
+			arg:     time.Duration(-1234567891200) * time.Millisecond,
+			wantErr: true,
+		},
+		{
+			name:    "invalid -123456789.12s",
+			arg:     time.Duration(-123456789120) * time.Millisecond,
+			wantErr: true,
+		},
+		{
+			name:    "invalid -12345678.912s",
+			arg:     time.Duration(-12345678912) * time.Millisecond,
+			wantErr: true,
+		},
+		{
+			name:    "invalid max seconds (9223372036)",
+			arg:     time.Duration(math.MaxInt64) / time.Second * time.Second,
+			wantErr: true,
+		},
+		{
+			name:    "invalid min seconds (-9223372036)",
+			arg:     time.Duration(math.MinInt64) / time.Second * time.Second,
+			wantErr: true,
+		},
+		{
+			name: "valid max seconds (2147483647)",
+			arg:  math.MaxInt32 * time.Second,
+		},
+		{
+			name: "valid min seconds (-2147483647)",
+			arg:  -math.MaxInt32 * time.Second,
+		},
+		{
+			name: "valid max minutes (153722867)",
+			arg:  time.Duration(math.MaxInt64) / time.Minute * time.Minute,
+		},
+		{
+			name: "valid min minutes (-153722867)",
+			arg:  time.Duration(math.MinInt64) / time.Minute * time.Minute,
+		},
+		{
+			name: "valid max hours (2562047)",
+			arg:  time.Duration(math.MaxInt64) / time.Hour * time.Hour,
+		},
+		{
+			name: "valid min hours (-2562047)",
+			arg:  time.Duration(math.MinInt64) / time.Hour * time.Hour,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := db.Exec("SELECT ?", test.arg)
+			if (err != nil) != test.wantErr {
+				t.Errorf("Exec() error = %v, wantErr %v", err, test.wantErr)
+				return
+			}
+		})
 	}
 }

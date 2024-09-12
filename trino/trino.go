@@ -682,7 +682,7 @@ func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
 	switch arg.Value.(type) {
 	case nil:
 		return nil
-	case Numeric, trinoDate, trinoTime, trinoTimeTz, trinoTimestamp:
+	case Numeric, trinoDate, trinoTime, trinoTimeTz, trinoTimestamp, time.Duration:
 		return nil
 	default:
 		{
