@@ -72,9 +72,10 @@ import (
 	"time"
 	"unicode"
 
-	"gopkg.in/jcmturner/gokrb5.v6/client"
-	"gopkg.in/jcmturner/gokrb5.v6/config"
-	"gopkg.in/jcmturner/gokrb5.v6/keytab"
+	"github.com/jcmturner/gokrb5/v8/client"
+	"github.com/jcmturner/gokrb5/v8/config"
+	"github.com/jcmturner/gokrb5/v8/keytab"
+	"github.com/jcmturner/gokrb5/v8/spnego"
 )
 
 func init() {
@@ -276,7 +277,7 @@ type Conn struct {
 	auth                      *url.Userinfo
 	httpClient                http.Client
 	httpHeaders               http.Header
-	kerberosClient            client.Client
+	kerberosClient            *client.Client
 	kerberosEnabled           bool
 	kerberosRemoteServiceName string
 	progressUpdater           ProgressUpdater
@@ -298,22 +299,19 @@ func newConn(dsn string) (*Conn, error) {
 
 	kerberosEnabled, _ := strconv.ParseBool(query.Get(kerberosEnabledConfig))
 
-	var kerberosClient client.Client
+	var kerberosClient *client.Client
 
 	if kerberosEnabled {
 		kt, err := keytab.Load(query.Get(kerberosKeytabPathConfig))
 		if err != nil {
 			return nil, fmt.Errorf("trino: Error loading Keytab: %w", err)
 		}
-
-		kerberosClient = client.NewClientWithKeytab(query.Get(kerberosPrincipalConfig), query.Get(kerberosRealmConfig), kt)
 		conf, err := config.Load(query.Get(kerberosConfigPathConfig))
 		if err != nil {
 			return nil, fmt.Errorf("trino: Error loading krb config: %w", err)
 		}
 
-		kerberosClient.WithConfig(conf)
-
+		kerberosClient = client.NewWithKeytab(query.Get(kerberosPrincipalConfig), query.Get(kerberosRealmConfig), kt, conf)
 		loginErr := kerberosClient.Login()
 		if loginErr != nil {
 			return nil, fmt.Errorf("trino: Error login to KDC: %v", loginErr)
@@ -481,7 +479,7 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 		if c.kerberosRemoteServiceName != "" {
 			remoteServiceName = c.kerberosRemoteServiceName
 		}
-		err = c.kerberosClient.SetSPNEGOHeader(req, remoteServiceName+"/"+req.URL.Hostname())
+		err = spnego.SetSPNEGOHeader(c.kerberosClient, req, remoteServiceName+"/"+req.URL.Hostname())
 		if err != nil {
 			return nil, fmt.Errorf("error setting client SPNEGO header: %w", err)
 		}

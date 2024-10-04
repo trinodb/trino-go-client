@@ -39,7 +39,7 @@ import (
 	"time"
 
 	"github.com/ahmetb/dlog"
-	"github.com/golang-jwt/jwt/v4"
+	"github.com/golang-jwt/jwt/v5"
 	dt "github.com/ory/dockertest/v3"
 	docker "github.com/ory/dockertest/v3/docker"
 )
