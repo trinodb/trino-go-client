@@ -497,7 +497,7 @@ handleErr:
 
 func TestIntegrationSessionProperties(t *testing.T) {
 	dsn := *integrationServerFlag
-	dsn += "?session_properties=query_max_run_time=10m,query_priority=2"
+	dsn += "?session_properties=query_max_run_time%3A10m%3Bquery_priority%3A2"
 	db := integrationOpen(t, dsn)
 	defer db.Close()
 	rows, err := db.Query("SHOW SESSION")

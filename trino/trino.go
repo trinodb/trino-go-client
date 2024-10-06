@@ -142,6 +142,9 @@ const (
 	sslCertConfig                   = "SSLCert"
 	accessTokenConfig               = "accessToken"
 	explicitPrepareConfig           = "explicitPrepare"
+
+	mapKeySeparator   = ":"
+	mapEntrySeparator = ";"
 )
 
 var (
@@ -192,13 +195,13 @@ func (c *Config) FormatDSN() (string, error) {
 	var sessionkv []string
 	if c.SessionProperties != nil {
 		for k, v := range c.SessionProperties {
-			sessionkv = append(sessionkv, k+"="+v)
+			sessionkv = append(sessionkv, k+mapKeySeparator+v)
 		}
 	}
 	var credkv []string
 	if c.ExtraCredentials != nil {
 		for k, v := range c.ExtraCredentials {
-			credkv = append(credkv, k+"="+v)
+			credkv = append(credkv, k+mapKeySeparator+v)
 		}
 	}
 	source := c.Source
@@ -259,8 +262,8 @@ func (c *Config) FormatDSN() (string, error) {
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
 		"schema":             c.Schema,
-		"session_properties": strings.Join(sessionkv, ","),
-		"extra_credentials":  strings.Join(credkv, ","),
+		"session_properties": strings.Join(sessionkv, mapEntrySeparator),
+		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
 		"custom_client":      c.CustomClientName,
 		accessTokenConfig:    c.AccessToken,
 	} {
@@ -375,20 +378,66 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	for k, v := range map[string]string{
-		trinoUserHeader:            user,
-		trinoSourceHeader:          query.Get("source"),
-		trinoCatalogHeader:         query.Get("catalog"),
-		trinoSchemaHeader:          query.Get("schema"),
-		trinoSessionHeader:         query.Get("session_properties"),
-		trinoExtraCredentialHeader: query.Get("extra_credentials"),
-		authorizationHeader:        getAuthorization(query.Get(accessTokenConfig)),
+		trinoUserHeader:     user,
+		trinoSourceHeader:   query.Get("source"),
+		trinoCatalogHeader:  query.Get("catalog"),
+		trinoSchemaHeader:   query.Get("schema"),
+		authorizationHeader: getAuthorization(query.Get(accessTokenConfig)),
 	} {
 		if v != "" {
 			c.httpHeaders.Add(k, v)
 		}
 	}
+	for header, param := range map[string]string{
+		trinoSessionHeader:         "session_properties",
+		trinoExtraCredentialHeader: "extra_credentials",
+	} {
+		v := query.Get(param)
+		if v != "" {
+			c.httpHeaders[header], err = decodeMapHeader(param, v)
+			if err != nil {
+				return c, err
+			}
+		}
+	}
 
 	return c, nil
+}
+
+func decodeMapHeader(name, input string) ([]string, error) {
+	result := []string{}
+	for _, entry := range strings.Split(input, mapEntrySeparator) {
+		parts := strings.SplitN(entry, mapKeySeparator, 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("trino: Malformed %s: %s", name, input)
+		}
+		key := parts[0]
+		value := parts[1]
+		if len(key) == 0 {
+			return nil, fmt.Errorf("trino: %s key is empty", name)
+		}
+		if len(value) == 0 {
+			return nil, fmt.Errorf("trino: %s value is empty", name)
+		}
+		if !isASCII(key) {
+			return nil, fmt.Errorf("trino: %s key '%s' contains spaces or is not printable ASCII", name, key)
+		}
+		if !isASCII(value) {
+			// do not log value as it may contain sensitive information
+			return nil, fmt.Errorf("trino: %s value for key '%s' contains spaces or is not printable ASCII", name, key)
+		}
+		result = append(result, key+"="+url.QueryEscape(value))
+	}
+	return result, nil
+}
+
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < '\u0021' || s[i] > '\u007E' {
+			return false
+		}
+	}
+	return true
 }
 
 func getAuthorization(token string) string {
