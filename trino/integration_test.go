@@ -34,6 +34,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -75,6 +76,9 @@ func TestMain(m *testing.M) {
 	flag.Parse()
 	DefaultQueryTimeout = *integrationServerQueryTimeout
 	DefaultCancelQueryTimeout = *integrationServerQueryTimeout
+	if *trinoImageTagFlag == "" {
+		*trinoImageTagFlag = "latest"
+	}
 
 	var err error
 	if *integrationServerFlag == "" && !testing.Short() {
@@ -96,9 +100,6 @@ func TestMain(m *testing.M) {
 			err = generateCerts(wd + "/etc/secrets")
 			if err != nil {
 				log.Fatalf("Could not generate TLS certificates: %s", err)
-			}
-			if *trinoImageTagFlag == "" {
-				*trinoImageTagFlag = "latest"
 			}
 			resource, err = pool.RunWithOptions(&dt.RunOptions{
 				Name:       name,
@@ -1110,5 +1111,31 @@ func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
 				return
 			}
 		})
+	}
+}
+
+func TestIntegrationLargeQuery(t *testing.T) {
+	version, err := strconv.Atoi(*trinoImageTagFlag)
+	if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 418) {
+		t.Skip("Skipping test when not using Trino 418 or later.")
+	}
+	dsn := *integrationServerFlag
+	dsn += "?explicitPrepare=false"
+	db := integrationOpen(t, dsn)
+	defer db.Close()
+	rows, err := db.Query("SELECT ?, '"+strings.Repeat("a", 5000000)+"'", 42)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if rows.Err() != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("not enough rows returned:", count)
 	}
 }

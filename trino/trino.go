@@ -141,6 +141,7 @@ const (
 	sslCertPathConfig               = "SSLCertPath"
 	sslCertConfig                   = "SSLCert"
 	accessTokenConfig               = "accessToken"
+	explicitPrepareConfig           = "explicitPrepare"
 )
 
 var (
@@ -282,6 +283,7 @@ type Conn struct {
 	kerberosRemoteServiceName string
 	progressUpdater           ProgressUpdater
 	progressUpdaterPeriod     queryProgressCallbackPeriod
+	useExplicitPrepare        bool
 }
 
 var (
@@ -298,6 +300,10 @@ func newConn(dsn string) (*Conn, error) {
 	query := serverURL.Query()
 
 	kerberosEnabled, _ := strconv.ParseBool(query.Get(kerberosEnabledConfig))
+	useExplicitPrepare := true
+	if query.Get(explicitPrepareConfig) != "" {
+		useExplicitPrepare, _ = strconv.ParseBool(query.Get(explicitPrepareConfig))
+	}
 
 	var kerberosClient *client.Client
 
@@ -356,6 +362,7 @@ func newConn(dsn string) (*Conn, error) {
 		kerberosClient:            kerberosClient,
 		kerberosEnabled:           kerberosEnabled,
 		kerberosRemoteServiceName: query.Get(kerberosRemoteServiceNameConfig),
+		useExplicitPrepare:        useExplicitPrepare,
 	}
 
 	var user string
@@ -867,7 +874,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 
 				hs.Add(arg.Name, headerValue)
 			} else {
-				if hs.Get(preparedStatementHeader) == "" {
+				if st.conn.useExplicitPrepare && hs.Get(preparedStatementHeader) == "" {
 					for _, v := range st.conn.httpHeaders.Values(preparedStatementHeader) {
 						hs.Add(preparedStatementHeader, v)
 					}
@@ -880,7 +887,11 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			return nil, ErrInvalidProgressCallbackHeader
 		}
 		if len(ss) > 0 {
-			query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(ss, ", ")
+			if st.conn.useExplicitPrepare {
+				query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(ss, ", ")
+			} else {
+				query = "EXECUTE IMMEDIATE " + formatStringLiteral(st.query) + " USING " + strings.Join(ss, ", ")
+			}
 		}
 	}
 
@@ -1026,6 +1037,10 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 		st.conn.progressUpdaterPeriod.LastQueryState = sr.Stats.State
 	}
 	return &sr, handleResponseError(resp.StatusCode, sr.Error)
+}
+
+func formatStringLiteral(query string) string {
+	return "'" + strings.ReplaceAll(query, "'", "''") + "'"
 }
 
 type driverRows struct {
