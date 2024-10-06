@@ -43,7 +43,7 @@ func TestConfig(t *testing.T) {
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	want := "http://foobar@localhost:8080?session_properties=query_priority%3D1&source=trino-go-client"
+	want := "http://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client"
 
 	assert.Equal(t, want, dsn)
 }
@@ -58,7 +58,7 @@ func TestConfigSSLCertPath(t *testing.T) {
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	want := "https://foobar@localhost:8080?SSLCertPath=cert.pem&session_properties=query_priority%3D1&source=trino-go-client"
+	want := "https://foobar@localhost:8080?SSLCertPath=cert.pem&session_properties=query_priority%3A1&source=trino-go-client"
 
 	assert.Equal(t, want, dsn)
 }
@@ -105,7 +105,7 @@ FKu5ZAlRfb2aYegr49DHhzoVAdInWQmP+5EZEUD1
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	want := "https://foobar@localhost:8080?SSLCert=" + url.QueryEscape(sslCert) + "&session_properties=query_priority%3D1&source=trino-go-client"
+	want := "https://foobar@localhost:8080?SSLCert=" + url.QueryEscape(sslCert) + "&session_properties=query_priority%3A1&source=trino-go-client"
 
 	assert.Equal(t, want, dsn)
 }
@@ -113,15 +113,59 @@ FKu5ZAlRfb2aYegr49DHhzoVAdInWQmP+5EZEUD1
 func TestExtraCredentials(t *testing.T) {
 	c := &Config{
 		ServerURI:        "http://foobar@localhost:8080",
-		ExtraCredentials: map[string]string{"token": "mYtOkEn", "otherToken": "oThErToKeN"},
+		ExtraCredentials: map[string]string{"token": "mYtOkEn", "otherToken": "oThErToKeN%*!#@special"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	want := "http://foobar@localhost:8080?extra_credentials=otherToken%3DoThErToKeN%2Ctoken%3DmYtOkEn&source=trino-go-client"
-
+	want := "http://foobar@localhost:8080?extra_credentials=otherToken%3AoThErToKeN%25%2A%21%23%40special%3Btoken%3AmYtOkEn&source=trino-go-client"
 	assert.Equal(t, want, dsn)
+}
+
+func TestInvalidExtraCredentials(t *testing.T) {
+	testcases := []struct {
+		Name        string
+		Credentials map[string]string
+		Error       string
+	}{
+		{
+			Name:        "Empty key",
+			Credentials: map[string]string{"": "emptyKey"},
+			Error:       "trino: extra_credentials key is empty",
+		},
+		{
+			Name:        "Empty value",
+			Credentials: map[string]string{"valid": "a", "emptyValue": ""},
+			Error:       "trino: extra_credentials value is empty",
+		},
+		{
+			Name:        "Unprintable key",
+			Credentials: map[string]string{"😊": "unprintableKey"},
+			Error:       "trino: extra_credentials key '😊' contains spaces or is not printable ASCII",
+		},
+		{
+			Name:        "Unprintable value",
+			Credentials: map[string]string{"unprintableValue": "😊"},
+			Error:       "trino: extra_credentials value for key 'unprintableValue' contains spaces or is not printable ASCII",
+		},
+	}
+
+	for _, tc := range testcases {
+
+		t.Run(tc.Name, func(t *testing.T) {
+			c := &Config{
+				ServerURI:        "http://foobar@localhost:8080",
+				ExtraCredentials: tc.Credentials,
+			}
+			dsn, err := c.FormatDSN()
+			require.NoError(t, err)
+			db, err := sql.Open("trino", dsn)
+			require.NoError(t, err)
+			err = db.Ping()
+			assert.EqualError(t, err, tc.Error)
+		})
+	}
 }
 
 func TestConfigWithoutSSLCertPath(t *testing.T) {
@@ -132,7 +176,7 @@ func TestConfigWithoutSSLCertPath(t *testing.T) {
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	want := "https://foobar@localhost:8080?session_properties=query_priority%3D1&source=trino-go-client"
+	want := "https://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client"
 
 	assert.Equal(t, want, dsn)
 }
@@ -153,7 +197,7 @@ func TestKerberosConfig(t *testing.T) {
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&KerberosRemoteServiceName=service&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3D1&source=trino-go-client"
+	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&KerberosRemoteServiceName=service&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3A1&source=trino-go-client"
 
 	assert.Equal(t, want, dsn)
 }
