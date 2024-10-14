@@ -1264,13 +1264,13 @@ func TestTypeConversion(t *testing.T) {
 			DataType:                   "date",
 			RawType:                    "date",
 			ResponseUnmarshalledSample: "2017-07-10",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 0, 0, 0, 0, time.Local),
+			ExpectedGoValue:            time.Date(2017, 7, 10, 0, 0, 0, 0, time.UTC),
 		},
 		{
 			DataType:                   "time",
 			RawType:                    "time",
 			ResponseUnmarshalledSample: "01:02:03.000",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.Local),
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.UTC),
 		},
 		{
 			DataType:                   "time with time zone",
@@ -1306,7 +1306,7 @@ func TestTypeConversion(t *testing.T) {
 			DataType:                   "time",
 			RawType:                    "time",
 			ResponseUnmarshalledSample: "01:02:03.123456789",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.Local),
+			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.UTC),
 		},
 		{
 			DataType:                   "time with time zone",
@@ -1348,7 +1348,7 @@ func TestTypeConversion(t *testing.T) {
 			DataType:                   "timestamp",
 			RawType:                    "timestamp",
 			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.Local),
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.UTC),
 		},
 		{
 			DataType:                   "timestamp with time zone",
@@ -1384,7 +1384,7 @@ func TestTypeConversion(t *testing.T) {
 			DataType:                   "timestamp",
 			RawType:                    "timestamp",
 			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.Local),
+			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.UTC),
 		},
 		{
 			DataType:                   "timestamp with time zone",
