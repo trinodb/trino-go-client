@@ -252,6 +252,7 @@ types:
 * integers
 * `bool`
 * `string`
+* `[]byte`
 * slices
 * `trino.Numeric` - a string representation of a number
 * `time.Time` - passed to Trino as a timestamp with a time zone
