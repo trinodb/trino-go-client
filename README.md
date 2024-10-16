@@ -92,6 +92,12 @@ Please refer to the [Coordinator JWT
 Authentication](https://trino.io/docs/current/security/jwt.html) for
 server-side configuration.
 
+#### Authorization header forwarding
+This driver supports forwarding authorization headers by adding a [NamedArg](https://godoc.org/database/sql#NamedArg) with the name `accessToken` (e.g., `accessToken=<your_access_token>`) and setting the `ForwardAuthorizationHeader` field in the [Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config) struct to `true`. 
+
+When enabled, this configuration will override the `AccessToken` set in the `Config` struct.
+
+
 #### System access control and per-query user information
 
 It's possible to pass user information to Trino, different from the principal
