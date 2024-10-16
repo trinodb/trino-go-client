@@ -1911,3 +1911,35 @@ func TestExec(t *testing.T) {
 	_, err = db.Exec("DROP TABLE memory.default.test")
 	require.NoError(t, err, "Failed executing DROP TABLE query")
 }
+
+func TestForwardAuthorizationHeaderConfig(t *testing.T) {
+	c := &Config{
+		ServerURI:                  "https://foobar@localhost:8090",
+		ForwardAuthorizationHeader: true,
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	want := "https://foobar@localhost:8090?forwardAuthorizationHeader=true&source=trino-go-client"
+
+	assert.Equal(t, want, dsn)
+}
+
+func TestForwardAuthorizationHeader(t *testing.T) {
+	var captureAuthHeader string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Capture the Authorization header for later inspection
+		captureAuthHeader = r.Header.Get("Authorization")
+	}))
+
+	t.Cleanup(ts.Close)
+
+	db, err := sql.Open("trino", ts.URL+"?forwardAuthorizationHeader=true")
+	require.NoError(t, err)
+
+	_, _ = db.Query("SELECT 1", sql.Named("accessToken", string("token"))) // Ingore response to focus on header capture
+	require.Equal(t, "Bearer token", captureAuthHeader, "Authorization header is incorrect")
+
+	assert.NoError(t, db.Close())
+}

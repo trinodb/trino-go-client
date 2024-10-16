@@ -132,16 +132,17 @@ const (
 
 	authorizationHeader = "Authorization"
 
-	kerberosEnabledConfig           = "KerberosEnabled"
-	kerberosKeytabPathConfig        = "KerberosKeytabPath"
-	kerberosPrincipalConfig         = "KerberosPrincipal"
-	kerberosRealmConfig             = "KerberosRealm"
-	kerberosConfigPathConfig        = "KerberosConfigPath"
-	kerberosRemoteServiceNameConfig = "KerberosRemoteServiceName"
-	sslCertPathConfig               = "SSLCertPath"
-	sslCertConfig                   = "SSLCert"
-	accessTokenConfig               = "accessToken"
-	explicitPrepareConfig           = "explicitPrepare"
+	kerberosEnabledConfig            = "KerberosEnabled"
+	kerberosKeytabPathConfig         = "KerberosKeytabPath"
+	kerberosPrincipalConfig          = "KerberosPrincipal"
+	kerberosRealmConfig              = "KerberosRealm"
+	kerberosConfigPathConfig         = "KerberosConfigPath"
+	kerberosRemoteServiceNameConfig  = "KerberosRemoteServiceName"
+	sslCertPathConfig                = "SSLCertPath"
+	sslCertConfig                    = "SSLCert"
+	accessTokenConfig                = "accessToken"
+	explicitPrepareConfig            = "explicitPrepare"
+	forwardAuthorizationHeaderConfig = "forwardAuthorizationHeader"
 
 	mapKeySeparator   = ":"
 	mapEntrySeparator = ";"
@@ -168,22 +169,23 @@ var _ driver.Driver = &Driver{}
 
 // Config is a configuration that can be encoded to a DSN string.
 type Config struct {
-	ServerURI                 string            // URI of the Trino server, e.g. http://user@localhost:8080
-	Source                    string            // Source of the connection (optional)
-	Catalog                   string            // Catalog (optional)
-	Schema                    string            // Schema (optional)
-	SessionProperties         map[string]string // Session properties (optional)
-	ExtraCredentials          map[string]string // Extra credentials (optional)
-	CustomClientName          string            // Custom client name (optional)
-	KerberosEnabled           string            // KerberosEnabled (optional, default is false)
-	KerberosKeytabPath        string            // Kerberos Keytab Path (optional)
-	KerberosPrincipal         string            // Kerberos Principal used to authenticate to KDC (optional)
-	KerberosRemoteServiceName string            // Trino coordinator Kerberos service name (optional)
-	KerberosRealm             string            // The Kerberos Realm (optional)
-	KerberosConfigPath        string            // The krb5 config path (optional)
-	SSLCertPath               string            // The SSL cert path for TLS verification (optional)
-	SSLCert                   string            // The SSL cert for TLS verification (optional)
-	AccessToken               string            // An access token (JWT) for authentication (optional)
+	ServerURI                  string            // URI of the Trino server, e.g. http://user@localhost:8080
+	Source                     string            // Source of the connection (optional)
+	Catalog                    string            // Catalog (optional)
+	Schema                     string            // Schema (optional)
+	SessionProperties          map[string]string // Session properties (optional)
+	ExtraCredentials           map[string]string // Extra credentials (optional)
+	CustomClientName           string            // Custom client name (optional)
+	KerberosEnabled            string            // KerberosEnabled (optional, default is false)
+	KerberosKeytabPath         string            // Kerberos Keytab Path (optional)
+	KerberosPrincipal          string            // Kerberos Principal used to authenticate to KDC (optional)
+	KerberosRemoteServiceName  string            // Trino coordinator Kerberos service name (optional)
+	KerberosRealm              string            // The Kerberos Realm (optional)
+	KerberosConfigPath         string            // The krb5 config path (optional)
+	SSLCertPath                string            // The SSL cert path for TLS verification (optional)
+	SSLCert                    string            // The SSL cert for TLS verification (optional)
+	AccessToken                string            // An access token (JWT) for authentication (optional)
+	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 }
 
 // FormatDSN returns a DSN string from the configuration.
@@ -210,6 +212,10 @@ func (c *Config) FormatDSN() (string, error) {
 	}
 	query := make(url.Values)
 	query.Add("source", source)
+
+	if c.ForwardAuthorizationHeader {
+		query.Add(forwardAuthorizationHeaderConfig, "true")
+	}
 
 	KerberosEnabled, _ := strconv.ParseBool(c.KerberosEnabled)
 	isSSL := serverURL.Scheme == "https"
@@ -277,16 +283,17 @@ func (c *Config) FormatDSN() (string, error) {
 
 // Conn is a Trino connection.
 type Conn struct {
-	baseURL                   string
-	auth                      *url.Userinfo
-	httpClient                http.Client
-	httpHeaders               http.Header
-	kerberosClient            *client.Client
-	kerberosEnabled           bool
-	kerberosRemoteServiceName string
-	progressUpdater           ProgressUpdater
-	progressUpdaterPeriod     queryProgressCallbackPeriod
-	useExplicitPrepare        bool
+	baseURL                    string
+	auth                       *url.Userinfo
+	httpClient                 http.Client
+	httpHeaders                http.Header
+	kerberosEnabled            bool
+	kerberosClient             *client.Client
+	kerberosRemoteServiceName  string
+	progressUpdater            ProgressUpdater
+	progressUpdaterPeriod      queryProgressCallbackPeriod
+	useExplicitPrepare         bool
+	forwardAuthorizationHeader bool
 }
 
 var (
@@ -303,6 +310,9 @@ func newConn(dsn string) (*Conn, error) {
 	query := serverURL.Query()
 
 	kerberosEnabled, _ := strconv.ParseBool(query.Get(kerberosEnabledConfig))
+
+	forwardAuthorizationHeader, _ := strconv.ParseBool(query.Get(forwardAuthorizationHeaderConfig))
+
 	useExplicitPrepare := true
 	if query.Get(explicitPrepareConfig) != "" {
 		useExplicitPrepare, _ = strconv.ParseBool(query.Get(explicitPrepareConfig))
@@ -359,13 +369,14 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	c := &Conn{
-		baseURL:                   serverURL.Scheme + "://" + serverURL.Host,
-		httpClient:                *httpClient,
-		httpHeaders:               make(http.Header),
-		kerberosClient:            kerberosClient,
-		kerberosEnabled:           kerberosEnabled,
-		kerberosRemoteServiceName: query.Get(kerberosRemoteServiceNameConfig),
-		useExplicitPrepare:        useExplicitPrepare,
+		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
+		httpClient:                 *httpClient,
+		httpHeaders:                make(http.Header),
+		kerberosClient:             kerberosClient,
+		kerberosEnabled:            kerberosEnabled,
+		kerberosRemoteServiceName:  query.Get(kerberosRemoteServiceNameConfig),
+		useExplicitPrepare:         useExplicitPrepare,
+		forwardAuthorizationHeader: forwardAuthorizationHeader,
 	}
 
 	var user string
@@ -906,6 +917,12 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			}
 			if arg.Name == trinoProgressCallbackPeriodParam {
 				st.conn.progressUpdaterPeriod.Period = arg.Value.(time.Duration)
+				continue
+			}
+
+			if st.conn.forwardAuthorizationHeader && arg.Name == accessTokenConfig {
+				token := arg.Value.(string)
+				hs.Add(authorizationHeader, getAuthorization(token))
 				continue
 			}
 
