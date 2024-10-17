@@ -921,6 +921,14 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				continue
 			}
 
+			if arg.Name == accessTokenConfig {
+				if st.conn.forwardAuthorizationHeader {
+					token := arg.Value.(string)
+					hs.Add(authorizationHeader, getAuthorization(token))
+				}
+				continue
+			}
+
 			s, err := Serial(arg.Value)
 			if err != nil {
 				return nil, err
