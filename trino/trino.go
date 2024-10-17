@@ -284,16 +284,17 @@ func (c *Config) FormatDSN() (string, error) {
 
 // Conn is a Trino connection.
 type Conn struct {
-	baseURL                   string
-	auth                      *url.Userinfo
-	httpClient                http.Client
-	httpHeaders               http.Header
-	kerberosClient            *client.Client
-	kerberosEnabled           bool
-	kerberosRemoteServiceName string
-	progressUpdater           ProgressUpdater
-	progressUpdaterPeriod     queryProgressCallbackPeriod
-	useExplicitPrepare        bool
+	baseURL                    string
+	auth                       *url.Userinfo
+	httpClient                 http.Client
+	httpHeaders                http.Header
+	kerberosEnabled            bool
+	kerberosClient             *client.Client
+	kerberosRemoteServiceName  string
+	progressUpdater            ProgressUpdater
+	progressUpdaterPeriod      queryProgressCallbackPeriod
+	useExplicitPrepare         bool
+	forwardAuthorizationHeader bool
 }
 
 var (
@@ -310,6 +311,9 @@ func newConn(dsn string) (*Conn, error) {
 	query := serverURL.Query()
 
 	kerberosEnabled, _ := strconv.ParseBool(query.Get(kerberosEnabledConfig))
+
+	forwardAuthorizationHeader, _ := strconv.ParseBool(query.Get(forwardAuthorizationHeaderConfig))
+
 	useExplicitPrepare := true
 	if query.Get(explicitPrepareConfig) != "" {
 		useExplicitPrepare, _ = strconv.ParseBool(query.Get(explicitPrepareConfig))
@@ -366,13 +370,14 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	c := &Conn{
-		baseURL:                   serverURL.Scheme + "://" + serverURL.Host,
-		httpClient:                *httpClient,
-		httpHeaders:               make(http.Header),
-		kerberosClient:            kerberosClient,
-		kerberosEnabled:           kerberosEnabled,
-		kerberosRemoteServiceName: query.Get(kerberosRemoteServiceNameConfig),
-		useExplicitPrepare:        useExplicitPrepare,
+		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
+		httpClient:                 *httpClient,
+		httpHeaders:                make(http.Header),
+		kerberosClient:             kerberosClient,
+		kerberosEnabled:            kerberosEnabled,
+		kerberosRemoteServiceName:  query.Get(kerberosRemoteServiceNameConfig),
+		useExplicitPrepare:         useExplicitPrepare,
+		forwardAuthorizationHeader: forwardAuthorizationHeader,
 	}
 
 	var user string
