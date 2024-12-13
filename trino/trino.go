@@ -617,7 +617,7 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 					}
 				}
 				return resp, nil
-			case http.StatusServiceUnavailable:
+			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 				resp.Body.Close()
 				timer.Reset(delay)
 				delay = time.Duration(math.Min(
