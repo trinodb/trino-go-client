@@ -266,32 +266,62 @@ func TestRegisterCustomClientReserved(t *testing.T) {
 }
 
 func TestRoundTripRetryQueryError(t *testing.T) {
-	count := 0
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if count == 0 {
-			count++
-			w.WriteHeader(http.StatusServiceUnavailable)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&stmtResponse{
-			Error: ErrTrino{
-				ErrorName: "TEST",
-			},
+	testcases := []struct {
+		Name                string
+		HttpStatus          int
+		ExpectedErrorStatus string
+	}{
+		{
+			Name:                "Test retry 502 Bad Gateway",
+			HttpStatus:          http.StatusBadGateway,
+			ExpectedErrorStatus: "200 OK",
+		},
+		{
+			Name:                "Test retry 503 Service Unavailable",
+			HttpStatus:          http.StatusServiceUnavailable,
+			ExpectedErrorStatus: "200 OK",
+		},
+		{
+			Name:                "Test retry 504 Gateway Timeout",
+			HttpStatus:          http.StatusGatewayTimeout,
+			ExpectedErrorStatus: "200 OK",
+		},
+		{
+			Name:                "Test no retry 404 Not Found",
+			HttpStatus:          http.StatusNotFound,
+			ExpectedErrorStatus: "404 Not Found",
+		},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.Name, func(t *testing.T) {
+			count := 0
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if count == 0 {
+					count++
+					w.WriteHeader(tc.HttpStatus)
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+				json.NewEncoder(w).Encode(&stmtResponse{
+					Error: ErrTrino{
+						ErrorName: "TEST",
+					},
+				})
+			}))
+
+			t.Cleanup(ts.Close)
+
+			db, err := sql.Open("trino", ts.URL)
+			require.NoError(t, err)
+
+			t.Cleanup(func() {
+				assert.NoError(t, db.Close())
+			})
+
+			_, err = db.Query("SELECT 1")
+			assert.ErrorContains(t, err, tc.ExpectedErrorStatus, "unexpected error: %w", err)
 		})
-	}))
-
-	t.Cleanup(ts.Close)
-
-	db, err := sql.Open("trino", ts.URL)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
-
-	_, err = db.Query("SELECT 1")
-	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
+	}
 }
 
 func TestRoundTripBogusData(t *testing.T) {
