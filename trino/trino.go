@@ -56,6 +56,7 @@ import (
 	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1511,8 +1512,10 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 	switch typeNames[0] {
 	case "boolean":
 		v = sql.NullBool{}
-	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 		v = sql.NullString{}
+	case "varbinary":
+		v = []byte{}
 	case "tinyint", "smallint":
 		v = sql.NullInt32{}
 	case "integer":
@@ -1596,12 +1599,14 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bool, err
-	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "Geometry", "SphericalGeography", "unknown":
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "Geometry", "SphericalGeography", "unknown":
 		vv, err := scanNullString(v)
 		if !vv.Valid {
 			return nil, err
 		}
 		return vv.String, err
+	case "varbinary":
+		return scanNullBytes(v)
 	case "tinyint", "smallint", "integer", "bigint":
 		vv, err := scanNullInt64(v)
 		if !vv.Valid {
@@ -1769,6 +1774,26 @@ func scanNullString(v interface{}) (sql.NullString, error) {
 			fmt.Errorf("cannot convert %v (%T) to string", v, v)
 	}
 	return sql.NullString{Valid: true, String: vv}, nil
+}
+
+func scanNullBytes(v interface{}) ([]byte, error) {
+	if v == nil {
+		return nil, nil
+	}
+
+	// VARBINARY values come back as a base64 encoded string.
+	vv, ok := v.(string)
+	if !ok {
+		return nil, fmt.Errorf("cannot convert %v (%T) to []byte", v, v)
+	}
+
+	// Decode the base64 encoded string into a []byte.
+	decoded, err := base64.StdEncoding.DecodeString(vv)
+	if err != nil {
+		return nil, fmt.Errorf("cannot decode base64 string into []byte: %w", err)
+	}
+
+	return decoded, nil
 }
 
 // NullSliceString represents a slice of string that may be null.

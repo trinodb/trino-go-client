@@ -24,6 +24,7 @@ import (
 	"crypto/x509/pkix"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"flag"
@@ -34,6 +35,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -110,6 +112,14 @@ func TestMain(m *testing.M) {
 					"8080/tcp",
 					"8443/tcp",
 				},
+			}, func(hc *docker.HostConfig) {
+				hc.Ulimits = []docker.ULimit{
+					{
+						Name: "nofile",
+						Hard: 4096,
+						Soft: 4096,
+					},
+				}
 			})
 			if err != nil {
 				log.Fatalf("Could not start resource: %s", err)
@@ -545,6 +555,8 @@ func TestIntegrationTypeConversion(t *testing.T) {
 	var (
 		goTime            time.Time
 		nullTime          NullTime
+		goBytes           []byte
+		nullBytes         []byte
 		goString          string
 		nullString        sql.NullString
 		nullStringSlice   NullSliceString
@@ -564,6 +576,8 @@ func TestIntegrationTypeConversion(t *testing.T) {
 		SELECT
 			TIMESTAMP '2017-07-10 01:02:03.004 UTC',
 			CAST(NULL AS TIMESTAMP),
+			CAST(X'FFFF0FFF3FFFFFFF' AS VARBINARY),
+			CAST(NULL AS VARBINARY),
 			CAST('string' AS VARCHAR),
 			CAST(NULL AS VARCHAR),
 			ARRAY['A', 'B', NULL],
@@ -581,6 +595,8 @@ func TestIntegrationTypeConversion(t *testing.T) {
 	`).Scan(
 		&goTime,
 		&nullTime,
+		&goBytes,
+		&nullBytes,
 		&goString,
 		&nullString,
 		&nullStringSlice,
@@ -599,6 +615,116 @@ func TestIntegrationTypeConversion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	// Compare the actual and expected values.
+	expectedTime := time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC)
+	if !goTime.Equal(expectedTime) {
+		t.Errorf("expected GoTime to be %v, got %v", expectedTime, goTime)
+	}
+
+	expectedBytes := []byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff}
+	if !bytes.Equal(goBytes, expectedBytes) {
+		t.Errorf("expected GoBytes to be %v, got %v", expectedBytes, goBytes)
+	}
+
+	if nullBytes != nil {
+		t.Errorf("expected NullBytes to be nil, got %v", nullBytes)
+	}
+
+	if goString != "string" {
+		t.Errorf("expected GoString to be %q, got %q", "string", goString)
+	}
+
+	if nullString.Valid {
+		t.Errorf("expected NullString.Valid to be false, got true")
+	}
+
+	if !reflect.DeepEqual(nullStringSlice.SliceString, []sql.NullString{{String: "A", Valid: true}, {String: "B", Valid: true}, {Valid: false}}) {
+		t.Errorf("expected NullStringSlice.SliceString to be %v, got %v",
+			[]sql.NullString{{String: "A", Valid: true}, {String: "B", Valid: true}, {Valid: false}},
+			nullStringSlice.SliceString)
+	}
+	if !nullStringSlice.Valid {
+		t.Errorf("expected NullStringSlice.Valid to be true, got false")
+	}
+
+	expectedSlice2String := [][]sql.NullString{{{String: "A", Valid: true}}, {}}
+	if !reflect.DeepEqual(nullStringSlice2.Slice2String, expectedSlice2String) {
+		t.Errorf("expected NullStringSlice2.Slice2String to be %v, got %v", expectedSlice2String, nullStringSlice2.Slice2String)
+	}
+	if !nullStringSlice2.Valid {
+		t.Errorf("expected NullStringSlice2.Valid to be true, got false")
+	}
+
+	expectedSlice3String := [][][]sql.NullString{{{{String: "A", Valid: true}}, {}}, {}}
+	if !reflect.DeepEqual(nullStringSlice3.Slice3String, expectedSlice3String) {
+		t.Errorf("expected NullStringSlice3.Slice3String to be %v, got %v", expectedSlice3String, nullStringSlice3.Slice3String)
+	}
+	if !nullStringSlice3.Valid {
+		t.Errorf("expected NullStringSlice3.Valid to be true, got false")
+	}
+
+	expectedSliceInt64 := []sql.NullInt64{{Int64: 1, Valid: true}, {Int64: 2, Valid: true}, {Valid: false}}
+	if !reflect.DeepEqual(nullInt64Slice.SliceInt64, expectedSliceInt64) {
+		t.Errorf("expected NullInt64Slice.SliceInt64 to be %v, got %v", expectedSliceInt64, nullInt64Slice.SliceInt64)
+	}
+	if !nullInt64Slice.Valid {
+		t.Errorf("expected NullInt64Slice.Valid to be true, got false")
+	}
+
+	expectedSlice2Int64 := [][]sql.NullInt64{{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, {}}
+	if !reflect.DeepEqual(nullInt64Slice2.Slice2Int64, expectedSlice2Int64) {
+		t.Errorf("expected NullInt64Slice2.Slice2Int64 to be %v, got %v", expectedSlice2Int64, nullInt64Slice2.Slice2Int64)
+	}
+	if !nullInt64Slice2.Valid {
+		t.Errorf("expected NullInt64Slice2.Valid to be true, got false")
+	}
+
+	expectedSlice3Int64 := [][][]sql.NullInt64{{{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, {}}, {}}
+	if !reflect.DeepEqual(nullInt64Slice3.Slice3Int64, expectedSlice3Int64) {
+		t.Errorf("expected NullInt64Slice3.Slice3Int64 to be %v, got %v", expectedSlice3Int64, nullInt64Slice3.Slice3Int64)
+	}
+	if !nullInt64Slice3.Valid {
+		t.Errorf("expected NullInt64Slice3.Valid to be true, got false")
+	}
+
+	expectedSliceFloat64 := []sql.NullFloat64{{Float64: 1.0, Valid: true}, {Float64: 2.0, Valid: true}, {Valid: false}}
+	if !reflect.DeepEqual(nullFloat64Slice.SliceFloat64, expectedSliceFloat64) {
+		t.Errorf("expected NullFloat64Slice.SliceFloat64 to be %v, got %v", expectedSliceFloat64, nullFloat64Slice.SliceFloat64)
+	}
+	if !nullFloat64Slice.Valid {
+		t.Errorf("expected NullFloat64Slice.Valid to be true, got false")
+	}
+
+	expectedSlice2Float64 := [][]sql.NullFloat64{{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, {}}
+	if !reflect.DeepEqual(nullFloat64Slice2.Slice2Float64, expectedSlice2Float64) {
+		t.Errorf("expected NullFloat64Slice2.Slice2Float64 to be %v, got %v", expectedSlice2Float64, nullFloat64Slice2.Slice2Float64)
+	}
+	if !nullFloat64Slice2.Valid {
+		t.Errorf("expected NullFloat64Slice2.Valid to be true, got false")
+	}
+
+	expectedSlice3Float64 := [][][]sql.NullFloat64{{{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, {}}, {}}
+	if !reflect.DeepEqual(nullFloat64Slice3.Slice3Float64, expectedSlice3Float64) {
+		t.Errorf("expected NullFloat64Slice3.Slice3Float64 to be %v, got %v", expectedSlice3Float64, nullFloat64Slice3.Slice3Float64)
+	}
+	if !nullFloat64Slice3.Valid {
+		t.Errorf("expected NullFloat64Slice3.Valid to be true, got false")
+	}
+
+	expectedMap := map[string]interface{}{"a": "c", "b": "d"}
+	if !reflect.DeepEqual(goMap, expectedMap) {
+		t.Errorf("expected GoMap to be %v, got %v", expectedMap, goMap)
+	}
+
+	if nullMap.Valid {
+		t.Errorf("expected NullMap.Valid to be false, got true")
+	}
+
+	expectedRow := []interface{}{json.Number("1"), "a", "2017-07-10 01:02:03.004000 UTC", []interface{}{"c"}}
+	if !reflect.DeepEqual(goRow, expectedRow) {
+		t.Errorf("expected GoRow to be %v, got %v", expectedRow, goRow)
+	}
 }
 
 func TestIntegrationArgsConversion(t *testing.T) {
@@ -615,8 +741,9 @@ func TestIntegrationArgsConversion(t *testing.T) {
 			CAST(1 AS DOUBLE),
 			TIMESTAMP '2017-07-10 01:02:03.004 UTC',
 			CAST('string' AS VARCHAR),
+			CAST(X'FFFF0FFF3FFFFFFF' AS VARBINARY),
 			ARRAY['A', 'B']
-			)) AS t(col_tiny, col_small, col_int, col_big, col_real, col_double, col_ts, col_varchar, col_array )
+			)) AS t(col_tiny, col_small, col_int, col_big, col_real, col_double, col_ts, col_varchar, col_varbinary, col_array )
 			WHERE 1=1
 			AND col_tiny = ?
 			AND col_small = ?
@@ -626,6 +753,7 @@ func TestIntegrationArgsConversion(t *testing.T) {
 			AND col_double = cast(? as double)
 			AND col_ts = ?
 			AND col_varchar = ?
+			AND col_varbinary = ?
 			AND col_array = ?`,
 		int16(1),
 		int16(1),
@@ -635,7 +763,9 @@ func TestIntegrationArgsConversion(t *testing.T) {
 		Numeric("1"),
 		time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC),
 		"string",
-		[]string{"A", "B"}).Scan(&value)
+		[]byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff},
+		[]string{"A", "B"},
+	).Scan(&value)
 	if err != nil {
 		t.Fatal(err)
 	}
