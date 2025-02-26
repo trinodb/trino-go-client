@@ -258,6 +258,7 @@ types:
 * integers
 * `bool`
 * `string`
+* `[]byte`
 * slices
 * `trino.Numeric` - a string representation of a number
 * `time.Time` - passed to Trino as a timestamp with a time zone
@@ -324,7 +325,11 @@ following types:
 * `json.Number` for any numeric Trino types
 * `[]interface{}` for Trino arrays
 * `map[string]interface{}` for Trino maps
-* `string` for other Trino types, as character, date, time, or timestamp
+* `string` for other Trino types, as character, date, time, or timestamp.
+
+> [!NOTE]
+> `VARBINARY` columns are returned as base64-encoded strings when used within
+> `ROW`, `MAP`, or `ARRAY` values.
 
 ## License
 

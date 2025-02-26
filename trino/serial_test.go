@@ -47,6 +47,21 @@ func TestSerial(t *testing.T) {
 			expectedSerial: `'hello "world"'`,
 		},
 		{
+			name:           "basic binary",
+			value:          []byte{0x01, 0x02, 0x03},
+			expectedSerial: `X'010203'`,
+		},
+		{
+			name:           "empty binary",
+			value:          []byte{},
+			expectedSerial: `X''`,
+		},
+		{
+			name:           "nil binary",
+			value:          []byte(nil),
+			expectedSerial: `NULL`,
+		},
+		{
 			name:           "int8",
 			value:          int8(100),
 			expectedSerial: "100",

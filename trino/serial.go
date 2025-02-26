@@ -15,6 +15,7 @@
 package trino
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -148,9 +149,11 @@ func Serial(v interface{}) (string, error) {
 	case string:
 		return "'" + strings.Replace(x, "'", "''", -1) + "'", nil
 
-		// TODO - []byte should probably be matched to 'VARBINARY' in trino
 	case []byte:
-		return "", UnsupportedArgError{"[]byte"}
+		if x == nil {
+			return "NULL", nil
+		}
+		return "X'" + hex.EncodeToString(x) + "'", nil
 
 	case trinoDate:
 		return fmt.Sprintf("DATE '%04d-%02d-%02d'", x.year, x.month, x.day), nil
