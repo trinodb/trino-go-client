@@ -727,6 +727,62 @@ func TestIntegrationTypeConversion(t *testing.T) {
 	}
 }
 
+func TestComplexTypes(t *testing.T) {
+	// This test has been created to showcase some issues with parsing
+	// complex types. It is not intended to be a comprehensive test of
+	// the parsing logic, but rather to provide a reference for future
+	// changes to the parsing logic.
+	//
+	// The current implementation of the parsing logic reads the value
+	// in the same format as the JSON response from Trino. This means
+	// that we don't go further to parse values as their structured types.
+	// For example, a row like `ROW(1, X'0000')` is read as
+	// a list of a `json.Number(1)` and a base64-encoded string.
+	t.Skip("skipping failing test")
+
+	dsn := *integrationServerFlag
+	db := integrationOpen(t, dsn)
+
+	for _, tt := range []struct {
+		name     string
+		query    string
+		expected interface{}
+	}{
+		{
+			name:     "row containing scalar values",
+			query:    `SELECT ROW(1, 'a', X'0000')`,
+			expected: []interface{}{1, "a", []byte{0x00, 0x00}},
+		},
+		{
+			name:     "nested row",
+			query:    `SELECT ROW(ROW(1, 'a'), ROW(2, 'b'))`,
+			expected: []interface{}{[]interface{}{1, "a"}, []interface{}{2, "b"}},
+		},
+		{
+			name:     "map with scalar values",
+			query:    `SELECT MAP(ARRAY['a', 'b'], ARRAY[1, 2])`,
+			expected: map[string]interface{}{"a": 1, "b": 2},
+		},
+		{
+			name:     "map with nested row",
+			query:    `SELECT MAP(ARRAY['a', 'b'], ARRAY[ROW(1, 'a'), ROW(2, 'b')])`,
+			expected: map[string]interface{}{"a": []interface{}{1, "a"}, "b": []interface{}{2, "b"}},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var result interface{}
+			err := db.QueryRow(tt.query).Scan(&result)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !reflect.DeepEqual(result, tt.expected) {
+				t.Errorf("expected %v, got %v", tt.expected, result)
+			}
+		})
+	}
+}
+
 func TestIntegrationArgsConversion(t *testing.T) {
 	dsn := *integrationServerFlag
 	db := integrationOpen(t, dsn)
