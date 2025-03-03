@@ -1140,12 +1140,13 @@ func (qr *driverRows) Close() error {
 	}
 
 	qr.err = io.EOF
-	hs := make(http.Header)
-	if qr.stmt.user != "" {
-		hs.Add(trinoUserHeader, qr.stmt.user)
-	}
 
 	if qr.nextURI != "" {
+		hs := make(http.Header)
+		if qr.stmt.user != "" {
+			hs.Add(trinoUserHeader, qr.stmt.user)
+		}
+
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(qr.ctx), DefaultCancelQueryTimeout)
 		defer cancel()
 		req, err := qr.stmt.conn.newRequest(ctx, "DELETE", qr.nextURI, nil, hs)
@@ -1164,6 +1165,7 @@ func (qr *driverRows) Close() error {
 		resp.Body.Close()
 
 	}
+
 	return qr.err
 }
 
@@ -1219,11 +1221,6 @@ func (qr *driverRows) Next(dest []driver.Value) error {
 		if err := qr.fetch(); err != nil {
 			qr.err = err
 			return err
-		}
-
-		if len(qr.data) == 0 {
-			qr.err = io.EOF
-			return qr.err
 		}
 	}
 
