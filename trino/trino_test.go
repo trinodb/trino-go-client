@@ -1973,3 +1973,109 @@ func TestForwardAuthorizationHeader(t *testing.T) {
 
 	assert.NoError(t, db.Close())
 }
+
+func TestPagination(t *testing.T) {
+	var buf, buf2, buf3 *bytes.Buffer
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statement" {
+			if buf == nil {
+				buf = new(bytes.Buffer)
+
+				json.NewEncoder(buf).Encode(&stmtResponse{
+					ID:      "fake-query",
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					Stats: stmtStats{
+						State: "QUEUED",
+					},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf.Bytes())
+			return
+		}
+
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+			if buf2 == nil {
+				buf2 = new(bytes.Buffer)
+				json.NewEncoder(buf2).Encode(&queryResponse{
+					ID:      "fake-query",
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/2",
+					Columns: []queryColumn{
+						{
+							Name: "_col0",
+							Type: "integer",
+							TypeSignature: typeSignature{
+								RawType:   "integer",
+								Arguments: []typeArgument{},
+							},
+						},
+					},
+					Data: []queryData{
+						{1},
+					},
+					Stats: stmtStats{
+						State: "FINISHED",
+					},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf2.Bytes())
+			return
+		}
+
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/2" {
+			if buf3 == nil {
+				buf3 = new(bytes.Buffer)
+				json.NewEncoder(buf3).Encode(&queryResponse{
+					ID: "fake-query",
+					Columns: []queryColumn{
+						{
+							Name: "_col1",
+							Type: "integer",
+							TypeSignature: typeSignature{
+								RawType:   "integer",
+								Arguments: []typeArgument{},
+							},
+						},
+					},
+					Data: []queryData{
+						{2},
+					},
+					Stats: stmtStats{
+						State: "FINISHED",
+					},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf3.Bytes())
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+	}))
+
+	defer ts.Close()
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+	defer db.Close()
+
+	// Run a query
+	rows, err := db.Query("SELECT 1")
+
+	var results []int
+	for rows.Next() {
+		var value int
+		err := rows.Scan(&value)
+		require.NoError(t, err)
+		results = append(results, value)
+	}
+
+	// Ensure no error in iteration
+	require.NoError(t, rows.Err())
+
+	// Assert expected results
+	assert.Equal(t, []int{1, 2}, results, "Expected query results to match")
+}

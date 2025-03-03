@@ -1138,27 +1138,32 @@ func (qr *driverRows) Close() error {
 	if qr.err == sql.ErrNoRows || qr.err == io.EOF {
 		return nil
 	}
+
 	qr.err = io.EOF
 	hs := make(http.Header)
 	if qr.stmt.user != "" {
 		hs.Add(trinoUserHeader, qr.stmt.user)
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(qr.ctx), DefaultCancelQueryTimeout)
-	defer cancel()
-	req, err := qr.stmt.conn.newRequest(ctx, "DELETE", qr.stmt.conn.baseURL+"/v1/query/"+url.PathEscape(qr.queryID), nil, hs)
-	if err != nil {
-		return err
-	}
-	resp, err := qr.stmt.conn.roundTrip(ctx, req)
-	if err != nil {
-		qferr, ok := err.(*ErrQueryFailed)
-		if ok && qferr.StatusCode == http.StatusNoContent {
-			qr.nextURI = ""
-			return nil
+
+	if qr.nextURI != "" {
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(qr.ctx), DefaultCancelQueryTimeout)
+		defer cancel()
+		req, err := qr.stmt.conn.newRequest(ctx, "DELETE", qr.nextURI, nil, hs)
+		if err != nil {
+			return err
 		}
-		return err
+		resp, err := qr.stmt.conn.roundTrip(ctx, req)
+		if err != nil {
+			qferr, ok := err.(*ErrQueryFailed)
+			if ok && qferr.StatusCode == http.StatusNoContent {
+				qr.nextURI = ""
+				return nil
+			}
+			return err
+		}
+		resp.Body.Close()
+
 	}
-	resp.Body.Close()
 	return qr.err
 }
 
@@ -1205,6 +1210,7 @@ func (qr *driverRows) Next(dest []driver.Value) error {
 	if qr.err != nil {
 		return qr.err
 	}
+
 	if qr.columns == nil || qr.rowindex >= len(qr.data) {
 		if qr.nextURI == "" {
 			qr.err = io.EOF
@@ -1214,23 +1220,40 @@ func (qr *driverRows) Next(dest []driver.Value) error {
 			qr.err = err
 			return err
 		}
+
+		if len(qr.data) == 0 {
+			qr.err = io.EOF
+			return qr.err
+		}
 	}
+
 	if len(qr.coltype) == 0 {
 		qr.err = sql.ErrNoRows
 		return qr.err
 	}
-	for i, v := range qr.coltype {
-		if i > len(dest)-1 {
+
+	row := qr.data[qr.rowindex]
+	for i, colType := range qr.coltype {
+		if i >= len(dest) {
 			break
 		}
-		vv, err := v.ConvertValue(qr.data[qr.rowindex][i])
+		val, err := colType.ConvertValue(row[i])
 		if err != nil {
 			qr.err = err
 			return err
 		}
-		dest[i] = vv
+		dest[i] = val
 	}
+
 	qr.rowindex++
+
+	// Prefetch next set of rows
+	if qr.rowindex == len(qr.data) && qr.nextURI != "" {
+		if err := qr.fetch(); err != nil {
+			qr.err = err
+		}
+	}
+
 	return nil
 }
 
@@ -1330,6 +1353,7 @@ func (qr *driverRows) fetch() error {
 				return err
 			}
 			qr.rowindex = 0
+			qr.nextURI = qresp.NextURI
 			qr.data = qresp.Data
 			qr.rowsAffected = qresp.UpdateCount
 			qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
