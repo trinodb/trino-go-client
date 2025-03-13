@@ -239,6 +239,16 @@ trino.RegisterCustomClient("otel", otelClient)
 db, err := sql.Open("trino", "https://user@localhost:8080?custom_client=otel")
 ```
 
+##### `queryTimeout`
+
+```
+Type:           time.Duration
+Valid values:   duration string
+Default:        nil
+```
+
+The `queryTimeout` parameter sets a timeout for the query. If the query takes longer than the timeout, it will be cancelled. If it is not set the default context timeout will be used.
+
 #### Examples
 
 ```
