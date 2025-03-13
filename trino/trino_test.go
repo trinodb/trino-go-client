@@ -265,6 +265,19 @@ func TestRegisterCustomClientReserved(t *testing.T) {
 	}
 }
 
+func TestQueryTimeout(t *testing.T) {
+	timeout := 10 * time.Second
+	c := &Config{
+		ServerURI:    "https://foobar@localhost:8090",
+		QueryTimeout: &timeout,
+	}
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	want := "https://foobar@localhost:8090?query_timeout=10s&source=trino-go-client"
+	assert.Equal(t, want, dsn)
+}
+
 func TestRoundTripRetryQueryError(t *testing.T) {
 	testcases := []struct {
 		Name                string
@@ -1972,4 +1985,46 @@ func TestForwardAuthorizationHeader(t *testing.T) {
 	require.Equal(t, "Bearer token", captureAuthHeader, "Authorization header is incorrect")
 
 	assert.NoError(t, db.Close())
+}
+
+func TestQueryTimeoutDeadline(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond) // Simulate slow response
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ts.Close()
+
+	testcases := []struct {
+		name          string
+		queryTimeout  string
+		expectedError string
+	}{
+		{
+			name:          "with timeout",
+			queryTimeout:  "100ms",
+			expectedError: "context deadline exceeded",
+		},
+		{
+			name:          "without timeout",
+			queryTimeout:  "10s",
+			expectedError: "EOF", // Default server response
+		},
+		{
+			name:          "bad timeout",
+			queryTimeout:  "abc",
+			expectedError: "trino: invalid timeout", // Default server response
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			println(ts.URL + "?query_timeout=" + tc.queryTimeout)
+			db, err := sql.Open("trino", ts.URL+"?query_timeout="+tc.queryTimeout)
+			require.NoError(t, err)
+			defer db.Close()
+
+			_, err = db.Query("SELECT 1")
+			assert.ErrorContains(t, err, tc.expectedError)
+		})
+	}
 }
