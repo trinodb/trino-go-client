@@ -85,7 +85,7 @@ func init() {
 
 var (
 	// DefaultQueryTimeout is the default timeout for queries executed without a context.
-	DefaultQueryTimeout = 60 * time.Second
+	DefaultQueryTimeout = 10 * time.Hour
 
 	// DefaultCancelQueryTimeout is the timeout for the request to cancel queries in Trino.
 	DefaultCancelQueryTimeout = 30 * time.Second
@@ -187,6 +187,7 @@ type Config struct {
 	SSLCert                    string            // The SSL cert for TLS verification (optional)
 	AccessToken                string            // An access token (JWT) for authentication (optional)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
+	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
 }
 
 // FormatDSN returns a DSN string from the configuration.
@@ -266,6 +267,10 @@ func (c *Config) FormatDSN() (string, error) {
 	sort.Strings(sessionkv)
 	sort.Strings(credkv)
 
+	if c.QueryTimeout != nil {
+		query.Add("query_timeout", c.QueryTimeout.String())
+	}
+
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
 		"schema":             c.Schema,
@@ -295,6 +300,7 @@ type Conn struct {
 	progressUpdaterPeriod      queryProgressCallbackPeriod
 	useExplicitPrepare         bool
 	forwardAuthorizationHeader bool
+	queryTimeout               *time.Duration
 }
 
 var (
@@ -369,6 +375,15 @@ func newConn(dsn string) (*Conn, error) {
 		}
 	}
 
+	var queryTimeout *time.Duration
+	if timeoutStr := query.Get("query_timeout"); timeoutStr != "" {
+		d, err := time.ParseDuration(timeoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid timeout: %w", err)
+		}
+		queryTimeout = &d
+	}
+
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
 		httpClient:                 *httpClient,
@@ -378,6 +393,7 @@ func newConn(dsn string) (*Conn, error) {
 		kerberosRemoteServiceName:  query.Get(kerberosRemoteServiceNameConfig),
 		useExplicitPrepare:         useExplicitPrepare,
 		forwardAuthorizationHeader: forwardAuthorizationHeader,
+		queryTimeout:               queryTimeout,
 	}
 
 	var user string
@@ -963,9 +979,12 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	}
 
 	var cancel context.CancelFunc = func() {}
-	if _, ok := ctx.Deadline(); !ok {
+	if st.conn.queryTimeout != nil {
+		ctx, cancel = context.WithTimeout(ctx, *st.conn.queryTimeout)
+	} else if _, ok := ctx.Deadline(); !ok {
 		ctx, cancel = context.WithTimeout(ctx, DefaultQueryTimeout)
 	}
+
 	req, err := st.conn.newRequest(ctx, "POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
 	if err != nil {
 		cancel()
