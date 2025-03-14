@@ -34,6 +34,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	jsonZstdEncoded = "KLUv/WBiIK1yAHq75CIm0EaCtAPMYUoAQABayZeEMFNVrbp7M0JYURRFwX01Jjij1MModfYhAh8CIgKVoWJgTE/hCFGWkEMlKHowcYc55ZTeS5kM474fhpUXWc+n5Lt72jen98p57ZTfF1n8D8miYk88OWXvGdh5/4qkr8Jw36OvVDn2U3KOM93Y08oxtVdOa6cMJMIM08k0Ec7HAOJbFJJTci52Ml30rwzEuE6rJA4mEzvR51QfrbI8CIsDNQgo5Mxb2v32jimumlrdr675ExDBExliGMgp956UjtoHxUirMsz3wLHyWOrV6il3t5l2y2mvG6ELDYvNqzLFRiQcBPaRIMgptcY4CeSqb0VdyGVe9FWaiGEVF30PSeSweEgKcnItWe3xlFbbTnnPVPdMM5Yz3yk9asC1mBw64bfjOKi8iJwy54v7XhdGGJddHxhyYofBVNEHOw0Tfu3KolHTxMy3W+q46il55pfq2qn3mvYrZ7dT7q7xplHsZF0ip8Q407qr476WgdGUwBD8Yud/0ah9TSinJCQOAoaCEZEE5OxY8nbTKX3ll/auaa2a7ivntlMaMBcE8RGhv32wCpZwIUO3EQhEbRxAiWQCB2IxCSQUcsp7ZwFSE2aaFX0NwypNBFb/yiJMxnVfVnEwlRdx3/OjURs1MPqaMArFzqq+1m0qTAR+7OsykVZxWSYaNVDssk/MRBL4MTmlYXGYEgeJQM5sJex5n9L2fem1meKNab1yVjtlx1nwDsJOLM72yTp4Vg6hBUJiYQ1OTllrrQF8f+tCUBzIaTXvlgACAlMmQom7rwwBHvjlFQh2H6b6GYb7F/c3UMq9+n7p9ZnunacCflg63gaSxWUTWcsRCUN7fyskmWgd4gNhmgqoozRtw6/9sNK86PoY1l1f021VlCWe96YaZ3pxH3CQNuByUV5icVEFSCaxOJYNNnphlqthTiigQmfwykctrD7sh1xmr98509o5tRhTbuXkU3IZUX8mBm8PPgS7zoourbO4SqO7ZK+lU+7qM9U2U60zvVbOOyWnkw+Rg3U5ble25zIocITcPgCXJb+93tRWTD23msnjTS+CAk4UTDgDPA7KMpnKStzinDPFF3M5cTdb1y08kWSCiCDKZgmV23TZgLC35Hefcm+Oad2Wep6pvnJqOyXjwY1YKwiJgGN2TudwZxZqXnNdFmLELwQ5EPyaJhQ/XSXPq82ddm3pvXJyO2XkgYmECZR5EFfWMuaH/+Jb2jdP2bPOtOtMue2ISmY0Ho7G5qFpQhUt4igQMA2fP7VgzAGWrqz6rGh+lkuce70x9dXSbOXMU1qTDAMXCu/Rs4YjollDqPoJlbDUG12a2H3klFOCQREgEgYl574SxhpbTLnuFctZ75SUzY+8I3QhfIQNArkEKAhJlVVvw59L42BBEQP60fRe2nv7KX3elnaLqfVdy0JUmMEBjVr5nkwNPDcPp5PxosGqu+4Jgv/zQP+HmSoCf9iF3jaCFajLRJ/3vwYCoKW+fd+c8ntpzXZ+u0NkAlLvmE6pc/UUd04x7pP6UDzF59KfBRvRZtRXtzrNOAhA/kN7ngs2qoZoaS7TeFp3RVKu3mtNc+8U4/yYfI6j8fGM4LcFB4LFs1blmgIKx4dMCEH40FtU9dyrr2EXS/h6by3FVVO+Pb1YznunxNxggxiQOYw3UC1uQvMHKtO8zP80I4G9lHXPONNsOa0ZU4ynLICoECWydUaH5QsnTg6DSODhCFGyxPjorgLRCZPtShPjsL3Zc5ozphpvWq2cdcoOUjXzEGaGwXw80SCEvOopi8laUZe6791vyquvTD54wjuGheJcINiFAnacq1D4cLkyYdel2dj2XSKq195d+ErVVn41rffSfXGAVyjbtkUa5TKvlnU0byXb6/Wa3q6pxZ5aK6edEiReNsECWxPFAZqCnbG6rYAJcUDDgCngGPhMh7J+AKXrlgh+/+IyTSTZuvOUvXt/4SBAkIqDCNsVwUOF+8bHglftLb25040t9VZOP+UmDJgm2EpcMsPGo6DiFR+peBoVTbQbD+8ZFRzElsKfiZ3K8zPtW6O2sVSz9VNifDfdG1ObOfVXTj9l/6vwduEdSGUVnA32+38CgUXyqTx4JtsiFoSic636ZnqtjhAcItQRvRBbYWGLMBjU1Q06gQltFgeEZ1F6/Q/9fQL5s6JRyzIZUctUX4BdJd+3nhJfzWnnmlYrp71TDnbY4cT/2cSxCCmwCIqcqL32U958va6YYisnDgUUIDPXe5pr91Cwtoi7KSi+gkXj8CiCtykKiqkvlWEI9IKScFyO6qHllLX2WrsGI3YfpomZrv32dPNLq/WeLjJiCligbKbGxvuqSjZnfz3NHNNrscig6O6hP9wyFEIVD2YaJxbEdlUEfUbZR/uq72FJd9yn7JZbWntHbCybzFI9IowLUi5ThqH8BjQYOozr7rPN1Ndc+H1u0QAGx1NRHRyZYCDOgplQWsHYHxS/7/mc5LnV1lvrYGBAEWFujO6pgl5MnQ51V+SpvgaUrr94yoyxp717Wvem3crZp9zwAERzU8BiTZcBlb+/wY9mCCgeH8WAzMbqBnOIslQljnnPnOKb6b0hCHJhFEixiAfGpEJQALQHx3S3iU8PW3Uo0N9o4yX2kpX01rhuerWlGevQBnTxMhzN8YUiN/1MI7MVqInwbHgDJBlMuodBKUTerTBVypvzKTvWmu6Nab5TDpjUibcrbMxgEBdKGMFcl+MV8uJiOfBnwkQOxGauUbqXX2zp9RjEAcHPIvEQjguDz8gkq9e4TBNqLWVu8ZTXak/tthxC8x7/KQFVEoz6FpNCVnmEB69FAQtuAntzPMZpwOrThFbytl+/qeeXVn4nmw+wxmCBeSrNUCGQxmKsFpLHZ/o7ZHco0O2lU9p8O9U80901YlaHdTh4M+JcBmMPqJINwVAJJmXSIWi2iyaQPwoD4cD/1oWTY+27pthizmE1r2hAFBd+LrsKP6XgDwUIgmuoIpROGYbIyIiIiMhoojbCCBIEQag8kGh9EoCzIMblJGNIkQh1GgNAJQQ45IQvUL6JpZCyfdjAQZveuuAC5RAJCb4uxqaWSyEihz5xdrmAXPLL3Wv1TI258iqIKjyuhD3V05YKCSx95jS9P/kxcUdasf2TKwkl+dp79vxcV9S3wtmoiws/lnmXgcuyHk1tHsnlXNaT0xgOcbpymgqLIU091RbE9t8/JCs1RvsmB2gq2ksTGu4/Y15ANGrkiM2Yd2Cj1nhGiM0micQ45PJMaK31MGzuf+YnJYkcnE+03h3NfrSpTsNPMeHxOQH+d/YMvPAnP1OfcCWNYE+510a7RlU8AUn8rRc+/9LmshWQ19u6+NFSuYmT2TWPtSgIRUpPFcM5ypkf6NCfbBqssR1BYgrjnwqKZTbw6TWqGRC37wEIo2wXzgptoTchKPpq8/NWrovSZic+f7JYafVtt37x2mxd97JFHA+U5JvAer2Zg+MXrTYEqBm3ZnXVxUsQPrGB9AqhaKhvDaKDTmuh1DJDIcWv2uk5lYpug9W0oQwilgXq/UsdEl0gJ+SpRnmowAE4IsPk7fInpT3CKnH8EorxsnOscqVIeaYitHKuLF7N5RwKQCTG/nFM026Jg1kBiNGs41Wg3WNn1zF26dXI5DgUhsQOraKottKkNpe1/zsTg2QEsZ2EJ6xtrcphUB/u8O59DwBpaIPPnfIqY/ntsxiWp2cIT1VlhJfQTO0vmMTNs0aYg1NGf8LNvYPhWDK4wPmVAJ4WT8ZBj6S8+ohEGQmoNztDFypbX1zvpUpklLeuIsZh/r9jrzWARzpNwK4QT6GSW5c+timZWA2T32eMe711/HlY/LhJXLHOMx+6uySM8JEiP0mfB0Ppey0xVF9tAuL9X5wFb5ZdAIORgCWBRWyt7osOd6kcShJXdKyvZuBRIb5cZmDdWBNkGldx+rX/yf1NsNRm2qJ+kPDMAxfMfDUGsxCe5mfw+j2aoPE4UmLDIIrk7MmcM5heErLCOnI0PsmJVUV+YtkK2D4QI+CrVXXW8eNjhHSLSY5lcAzrYUPlhhn8yIXOab8rf5b1BJTnIngdRpBlngwnIiF8tYi+6qUwcCDCnUdFuX0Df41AeAKfj/HVUSDFCe5W10OCklkm1cqL9/dTozO7XaFWcEBVShYrDn7hsCdoU8GyUjjYHytWmeBt61CKachxMo/1LlUA3lQG/35AZl7plQGLU6rF/KKLJEIIu0IiwCdw4soYAXk03Bb39Kwv2UgsvkImMvKzQ3/nupi93ptjZFyTVomLtW/XAleMWdpU0p6YavbJmBNwgFXOOVQV5ktIlCypxnvTGUWQLlagZHkoC1gBRaFgryL9g/Bsjyq5yb4cb+utQ+QDaOCRaXxlegGSWzsYvMVAEjpAKl2bhnvIx/Y36QR15sJromrPTxjHo6NNzBeDSvsZQoQsw/srcPAzjAUIkXwpRGMb0NUZPV+9soFpAdxssR7APXf9K1eYMRNjWXqjhHZ6pCUnvMm+5xvRxAyck+lhBt8uEAHUA2pE/2dQQPpWpV/whhmo5ixvaq3I3VyeJmqeKdCRw6s8yHHVc8Odd9PLr54LXmSG88sYMTOIYM2mHLP+E8fRVfhjxvJxu+4FhsfpVaoMXHfa68hKTQlYeH5cpH5QL1Xd7cwaGp6AgBwv4WoQg0dXcmir8j0wa2tK6W+EEy5mqtdsc1z7VakbiCuh64nxyd0iwR+6nlZborWjCrqPGh92ML2LXR/O8bV1icMuUTVlwm9StBagqH0r9nhXjqzEhJLu/QwZDpuUnuZybJ032ULGw4A4RF0KuNKvmUQAKbQProU1xYLSMZ2EUSpGvam1zOjesQZ/XYQaunkWiAiCwiSRiG2aeSskphuC5D1VFCRUw01bTkd+Bw=="
+)
+
 func TestConfig(t *testing.T) {
 	c := &Config{
 		ServerURI:         "http://foobar@localhost:8080",
@@ -1145,6 +1149,293 @@ func TestFetchNoStackOverflow(t *testing.T) {
 	_, err = db.Query("SELECT 1")
 	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
 
+}
+
+func TestSpoolingSpooledJsonEncoded(t *testing.T) {
+	var buf *bytes.Buffer
+	var ts *httptest.Server
+
+	// Create a mock server to simulate Trino's behavior
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statement" {
+			if buf == nil {
+				buf = new(bytes.Buffer)
+				json.NewEncoder(buf).Encode(&stmtResponse{
+					ID:      "fake-query",
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					Stats: stmtStats{
+						State: "QUEUED",
+					},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf.Bytes())
+			return
+		}
+
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+			json.NewEncoder(w).Encode(&queryResponse{
+				ID: "fake-query",
+				Columns: []queryColumn{
+					{
+						Name: "_col0",
+						Type: "integer",
+						TypeSignature: typeSignature{
+							RawType:   "integer",
+							Arguments: []typeArgument{},
+						},
+					},
+				},
+				Data: map[string]interface{}{
+					"encoding": "json",
+					"segments": []map[string]interface{}{
+						{
+							"type":     "inline",
+							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
+							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 0},
+						},
+					},
+				},
+				Stats: stmtStats{
+					State: "FINISHED",
+				},
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+	}))
+
+	defer ts.Close()
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+	defer db.Close()
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+
+	var results []int
+	for rows.Next() {
+		var value int
+		err := rows.Scan(&value)
+		require.NoError(t, err)
+		results = append(results, value)
+	}
+
+	require.NoError(t, rows.Err())
+
+	expected := []int{1000, 10001}
+
+	assert.Equal(t, expected, results, "Expected query results to match")
+}
+
+func TestSpoolingSpooledWrongUncompressSize(t *testing.T) {
+	var buf *bytes.Buffer
+	var ts *httptest.Server
+
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statement" {
+			if buf == nil {
+				buf = new(bytes.Buffer)
+				json.NewEncoder(buf).Encode(&stmtResponse{
+					ID:      "fake-query",
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					Stats:   stmtStats{State: "QUEUED"},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf.Bytes())
+			return
+		}
+
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+			json.NewEncoder(w).Encode(&queryResponse{
+				ID: "fake-query",
+				Columns: []queryColumn{
+					{
+						Name: "_col0",
+						Type: "integer",
+						TypeSignature: typeSignature{
+							RawType:   "integer",
+							Arguments: []typeArgument{},
+						},
+					},
+				},
+				Data: map[string]interface{}{
+					"encoding": "json+zstd",
+					"segments": []map[string]interface{}{
+						{
+							"type": "inline",
+							"data": "W1sxMDAwXSwgWzEwMDAxXV0=",
+							"metadata": map[string]interface{}{
+								"segmentSize":      1,
+								"uncompressedSize": 1,
+								"rowOffset":        0,
+							},
+						},
+					},
+				},
+				Stats: stmtStats{State: "FINISHED"},
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+	}))
+
+	defer ts.Close()
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+	defer db.Close()
+
+	want := "segment size mismatch: expected 1 bytes, got 17 bytes"
+	_, err = db.Query("SELECT 1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), want)
+}
+
+func TestSpoolingSpooledWrongCompresSize(t *testing.T) {
+	var buf *bytes.Buffer
+	var ts *httptest.Server
+
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statement" {
+			if buf == nil {
+				buf = new(bytes.Buffer)
+				json.NewEncoder(buf).Encode(&stmtResponse{
+					ID:      "fake-query",
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					Stats:   stmtStats{State: "QUEUED"},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf.Bytes())
+			return
+		}
+
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+			json.NewEncoder(w).Encode(&queryResponse{
+				ID: "fake-query",
+				Columns: []queryColumn{
+					{
+						Name: "_col0",
+						Type: "integer",
+						TypeSignature: typeSignature{
+							RawType:   "integer",
+							Arguments: []typeArgument{},
+						},
+					},
+				},
+				Data: map[string]interface{}{
+					"encoding": "json+zstd",
+					"segments": []map[string]interface{}{
+						{
+							"type": "inline",
+							"data": jsonZstdEncoded,
+							"metadata": map[string]interface{}{
+								"segmentSize":      3679,
+								"uncompressedSize": 2,
+								"rowOffset":        0,
+							},
+						},
+					},
+				},
+				Stats: stmtStats{State: "FINISHED"},
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+	}))
+
+	defer ts.Close()
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+	defer db.Close()
+
+	want := "decompressed size mismatch: expected 2 bytes, got 8546 bytes"
+	_, err = db.Query("SELECT 1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), want)
+}
+
+func TestSpoolingSpooledWrongSpooledHeaders(t *testing.T) {
+	var buf *bytes.Buffer
+	var ts *httptest.Server
+
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statement" {
+			if buf == nil {
+				buf = new(bytes.Buffer)
+				json.NewEncoder(buf).Encode(&stmtResponse{
+					ID:      "fake-query",
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					Stats:   stmtStats{State: "QUEUED"},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf.Bytes())
+			return
+		}
+
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+			json.NewEncoder(w).Encode(&queryResponse{
+				ID: "fake-query",
+				Columns: []queryColumn{
+					{
+						Name: "_col0",
+						Type: "integer",
+						TypeSignature: typeSignature{
+							RawType:   "integer",
+							Arguments: []typeArgument{},
+						},
+					},
+				},
+				Data: map[string]interface{}{
+					"encoding": "json+zstd",
+					"segments": []map[string]interface{}{
+						{
+							"type": "spooled",
+							"data": "fake-data",
+							"metadata": map[string]interface{}{
+								"segmentSize":      3679,
+								"uncompressedSize": 2,
+								"rowOffset":        0,
+							},
+							"headers": map[string][]interface{}{
+								"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
+								"x-amz-server-side-encryption-customer-key":       {"key"},
+								"x-amz-server-side-encryption-customer-key-md5":   {"md5", "md5"}, // wrong, more then one
+							},
+						},
+					},
+				},
+
+				Stats: stmtStats{State: "FINISHED"},
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+	}))
+
+	defer ts.Close()
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+	defer db.Close()
+
+	want := "trino: multiple values for header x-amz-server-side-encryption-customer-key-md5"
+	_, err = db.Query("SELECT 1")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), want)
 }
 
 func TestSession(t *testing.T) {

@@ -8,7 +8,9 @@ require (
 	github.com/ahmetb/dlog v0.0.0-20170105205344-4fb5f8204f26
 	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/jcmturner/gokrb5/v8 v8.4.4
+	github.com/klauspost/compress v1.18.0
 	github.com/ory/dockertest/v3 v3.11.0
+	github.com/pierrec/lz4 v2.6.1+incompatible
 	github.com/stretchr/testify v1.9.0
 )
 
@@ -25,6 +27,7 @@ require (
 	github.com/docker/docker v27.1.1+incompatible // indirect
 	github.com/docker/go-connections v0.5.0 // indirect
 	github.com/docker/go-units v0.5.0 // indirect
+	github.com/frankban/quicktest v1.14.6 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
 	github.com/hashicorp/go-uuid v1.0.3 // indirect

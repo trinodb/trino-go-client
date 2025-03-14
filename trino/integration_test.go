@@ -35,6 +35,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"os/exec"
 	"reflect"
 	"strconv"
 	"strings"
@@ -47,9 +48,15 @@ import (
 	docker "github.com/ory/dockertest/v3/docker"
 )
 
+const (
+	DockerLocalStackName = "localstack"
+	bucketName           = "spooling"
+	DockerTrinoName      = "trino-go-client-tests"
+)
+
 var (
-	pool     *dt.Pool
-	resource *dt.Resource
+	pool          *dt.Pool
+	trinoResource *dt.Resource
 
 	trinoImageTagFlag = flag.String(
 		"trino_image_tag",
@@ -90,21 +97,46 @@ func TestMain(m *testing.M) {
 		}
 		pool.MaxWait = 1 * time.Minute
 
+		networkName := "trino-network"
+		networkExists, networkID, err := networkExists(pool, networkName)
+		if err != nil {
+			log.Fatalf("Could not check if Docker network exists: %s", err)
+		}
+
+		if !networkExists {
+			network, err := pool.Client.CreateNetwork(docker.CreateNetworkOptions{
+				Name: networkName,
+			})
+			if err != nil {
+				log.Fatalf("Could not create Docker network: %s", err)
+			}
+			networkID = network.ID
+		}
+
 		wd, err := os.Getwd()
 		if err != nil {
 			log.Fatalf("Failed to get working directory: %s", err)
 		}
-		name := "trino-go-client-tests"
+
 		var ok bool
-		resource, ok = pool.ContainerByName(name)
+
+		// Start LocalStack (S3-Compatible Storage)
+		_, ok = pool.ContainerByName(DockerLocalStackName)
+		if !ok {
+			_, err = setupLocalStack(pool, networkID)
+			if err != nil {
+				log.Fatalf("Failed to start LocalStack: %s", err)
+			}
+		}
+		trinoResource, ok = pool.ContainerByName(DockerTrinoName)
 
 		if !ok {
 			err = generateCerts(wd + "/etc/secrets")
 			if err != nil {
 				log.Fatalf("Could not generate TLS certificates: %s", err)
 			}
-			resource, err = pool.RunWithOptions(&dt.RunOptions{
-				Name:       name,
+			trinoResource, err = pool.RunWithOptions(&dt.RunOptions{
+				Name:       DockerTrinoName,
 				Repository: "trinodb/trino",
 				Tag:        *trinoImageTagFlag,
 				Mounts:     []string{wd + "/etc:/etc/trino"},
@@ -112,6 +144,7 @@ func TestMain(m *testing.M) {
 					"8080/tcp",
 					"8443/tcp",
 				},
+				NetworkID: networkID,
 			}, func(hc *docker.HostConfig) {
 				hc.Ulimits = []docker.ULimit{
 					{
@@ -124,17 +157,17 @@ func TestMain(m *testing.M) {
 			if err != nil {
 				log.Fatalf("Could not start resource: %s", err)
 			}
-		} else if !resource.Container.State.Running {
-			pool.Client.StartContainer(resource.Container.ID, nil)
+		} else if !trinoResource.Container.State.Running {
+			pool.Client.StartContainer(trinoResource.Container.ID, nil)
 		}
 
 		if err := pool.Retry(func() error {
-			c, err := pool.Client.InspectContainer(resource.Container.ID)
+			c, err := pool.Client.InspectContainer(trinoResource.Container.ID)
 			if err != nil {
-				log.Fatalf("Failed to inspect container %s: %s", resource.Container.ID, err)
+				log.Fatalf("Failed to inspect container %s: %s", trinoResource.Container.ID, err)
 			}
 			if !c.State.Running {
-				log.Fatalf("Container %s is not running: %s\nContainer logs:\n%s", resource.Container.ID, c.State.String(), getLogs(resource.Container.ID))
+				log.Fatalf("Container %s is not running: %s\nContainer logs:\n%s", trinoResource.Container.ID, c.State.String(), getLogs(trinoResource.Container.ID))
 			}
 			log.Printf("Waiting for Trino container: %s\n", c.State.String())
 			if c.State.Health.Status != "healthy" {
@@ -142,10 +175,10 @@ func TestMain(m *testing.M) {
 			}
 			return nil
 		}); err != nil {
-			log.Fatalf("Timed out waiting for container to get ready: %s\nContainer logs:\n%s", err, getLogs(resource.Container.ID))
+			log.Fatalf("Timed out waiting for container to get ready: %s\nContainer logs:\n%s", err, getLogs(trinoResource.Container.ID))
 		}
-		*integrationServerFlag = "http://test@localhost:" + resource.GetPort("8080/tcp")
-		tlsServer = "https://admin:admin@localhost:" + resource.GetPort("8443/tcp")
+		*integrationServerFlag = "http://test@localhost:" + trinoResource.GetPort("8080/tcp")
+		tlsServer = "https://admin:admin@localhost:" + trinoResource.GetPort("8443/tcp")
 
 		http.DefaultTransport.(*http.Transport).TLSClientConfig, err = getTLSConfig(wd + "/etc/secrets")
 		if err != nil {
@@ -155,14 +188,116 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	if !*noCleanup && pool != nil && resource != nil {
-		// You can't defer this because os.Exit doesn't care for defer
-		if err := pool.Purge(resource); err != nil {
-			log.Fatalf("Could not purge resource: %s", err)
+	if !*noCleanup && pool != nil {
+		if trinoResource != nil {
+			if err := pool.Purge(trinoResource); err != nil {
+				log.Fatalf("Could not purge resource: %s", err)
+			}
+		}
+		// Purge LocalStack container
+		localstackResource, ok := pool.ContainerByName(DockerLocalStackName)
+		if ok {
+			if err := pool.Purge(localstackResource); err != nil {
+				log.Fatalf("Could not purge LocalStack resource: %s", err)
+			}
+		}
+		// Purge Docker network
+		networkExists, networkID, err := networkExists(pool, "trino-network")
+		if err == nil && networkExists {
+			if err := pool.Client.RemoveNetwork(networkID); err != nil {
+				log.Fatalf("Could not remove Docker network: %s", err)
+			}
 		}
 	}
 
 	os.Exit(code)
+}
+
+func networkExists(pool *dt.Pool, networkName string) (bool, string, error) {
+	networks, err := pool.Client.ListNetworks()
+	if err != nil {
+		return false, "", fmt.Errorf("could not list Docker networks: %w", err)
+	}
+	for _, network := range networks {
+		if network.Name == networkName {
+			return true, network.ID, nil
+		}
+	}
+	return false, "", nil
+}
+
+func setupLocalStack(pool *dt.Pool, networkID string) (string, error) {
+	localstackRes, err := pool.RunWithOptions(&dt.RunOptions{
+		Name:       DockerLocalStackName,
+		Repository: "localstack/localstack",
+		Tag:        "latest",
+		Env: []string{
+			"SERVICES=s3",
+			"region_name=us-east-1",
+		},
+
+		PortBindings: map[docker.Port][]docker.PortBinding{
+			"4566/tcp": {{HostIP: "0.0.0.0", HostPort: "4566"}},
+			"4571/tcp": {{HostIP: "0.0.0.0", HostPort: "4571"}},
+		},
+
+		NetworkID: networkID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("could not start LocalStack: %w", err)
+	}
+
+	// Get LocalStack endpoint
+	localstackPort := localstackRes.GetPort("4566/tcp")
+	s3Endpoint := "http://localhost:" + localstackPort
+
+	log.Println("LocalStack started at:", s3Endpoint)
+
+	// Wait for LocalStack to be ready
+	if err := waitForContainerRunning(pool, localstackRes.Container.ID); err != nil {
+		return "", fmt.Errorf("LocalStack did not become ready: %w", err)
+	}
+
+	// Create S3 bucket for integration tests
+	for i := 0; i < 10; i++ {
+		err := runLocalStackCommand("test", "test", fmt.Sprintf("aws --endpoint-url=%s s3 mb s3://%s", s3Endpoint, bucketName))
+		if err == nil {
+			log.Println("S3 bucket created successfully")
+			return s3Endpoint, nil
+		}
+		log.Printf("Failed to create S3 bucket, retrying... (%d/10)\n", i+1)
+		time.Sleep(2 * time.Second)
+	}
+
+	return "", fmt.Errorf("failed to create S3 bucket after multiple attempts: %w", err)
+}
+
+func runLocalStackCommand(accessKey, secretKey, command string) error {
+	cmd := exec.Command("sh", "-c", command)
+	cmd.Env = append(os.Environ(),
+		"AWS_ACCESS_KEY_ID="+accessKey,
+		"AWS_SECRET_ACCESS_KEY="+secretKey,
+		"AWS_DEFAULT_REGION=us-east-1",
+	)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func waitForContainerRunning(pool *dt.Pool, containerID string) error {
+	log.Println("Waiting for LocalStack container to be in a running state...")
+	for i := 0; i < 10; i++ {
+		c, err := pool.Client.InspectContainer(containerID)
+		if err != nil {
+			return fmt.Errorf("failed to inspect container: %w", err)
+		}
+		if c.State.Running {
+			log.Println("LocalStack container is running!")
+			return nil
+		}
+		time.Sleep(2 * time.Second)
+	}
+	return fmt.Errorf("LocalStack container did not start in time")
 }
 
 func generateCerts(dir string) error {
@@ -780,6 +915,243 @@ func TestComplexTypes(t *testing.T) {
 				t.Errorf("expected %v, got %v", tt.expected, result)
 			}
 		})
+	}
+}
+
+func TestIntegrationTypeConversionSpoolingProtocolInlineJsonEncoder(t *testing.T) {
+	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn := *integrationServerFlag
+	dsn += "?custom_client=uncompressed"
+	db := integrationOpen(t, dsn)
+	var (
+		goTime            time.Time
+		nullTime          NullTime
+		goString          string
+		nullString        sql.NullString
+		nullStringSlice   NullSliceString
+		nullStringSlice2  NullSlice2String
+		nullStringSlice3  NullSlice3String
+		nullInt64Slice    NullSliceInt64
+		nullInt64Slice2   NullSlice2Int64
+		nullInt64Slice3   NullSlice3Int64
+		nullFloat64Slice  NullSliceFloat64
+		nullFloat64Slice2 NullSlice2Float64
+		nullFloat64Slice3 NullSlice3Float64
+		goMap             map[string]interface{}
+		nullMap           NullMap
+		goRow             []interface{}
+	)
+	err = db.QueryRow(`
+		SELECT
+			TIMESTAMP '2017-07-10 01:02:03.004 UTC',
+			CAST(NULL AS TIMESTAMP),
+			CAST('string' AS VARCHAR),
+			CAST(NULL AS VARCHAR),
+			ARRAY['A', 'B', NULL],
+			ARRAY[ARRAY['A'], NULL],
+			ARRAY[ARRAY[ARRAY['A'], NULL], NULL],
+			ARRAY[1, 2, NULL],
+			ARRAY[ARRAY[1, 1, 1], NULL],
+			ARRAY[ARRAY[ARRAY[1, 1, 1], NULL], NULL],
+			ARRAY[1.0, 2.0, NULL],
+			ARRAY[ARRAY[1.1, 1.1, 1.1], NULL],
+			ARRAY[ARRAY[ARRAY[1.1, 1.1, 1.1], NULL], NULL],
+			MAP(ARRAY['a', 'b'], ARRAY['c', 'd']),
+			CAST(NULL AS MAP(ARRAY(INTEGER), ARRAY(INTEGER))),
+			ROW(1, 'a', CAST('2017-07-10 01:02:03.004 UTC' AS TIMESTAMP(6) WITH TIME ZONE), ARRAY['c'])
+	`, sql.Named("X-Trino-Query-Data-Encoding", "json")).Scan(
+		&goTime,
+		&nullTime,
+		&goString,
+		&nullString,
+		&nullStringSlice,
+		&nullStringSlice2,
+		&nullStringSlice3,
+		&nullInt64Slice,
+		&nullInt64Slice2,
+		&nullInt64Slice3,
+		&nullFloat64Slice,
+		&nullFloat64Slice2,
+		&nullFloat64Slice3,
+		&goMap,
+		&nullMap,
+		&goRow,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonZstdEncoded(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named("X-Trino-Query-Data-Encoding", "json+zstd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var col tpchRow
+		err = rows.Scan(
+			&col.CustKey,
+			&col.Name,
+			&col.Address,
+			&col.NationKey,
+			&col.Phone,
+			&col.AcctBal,
+			&col.MktSegment,
+			&col.Comment,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows.Err() != nil {
+		t.Fatal(err)
+	}
+	if count != 1000 {
+		t.Fatal("not enough rows returned:", count)
+	}
+}
+
+func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonEncoded(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named("X-Trino-Query-Data-Encoding", "json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var col tpchRow
+		err = rows.Scan(
+			&col.CustKey,
+			&col.Name,
+			&col.Address,
+			&col.NationKey,
+			&col.Phone,
+			&col.AcctBal,
+			&col.MktSegment,
+			&col.Comment,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows.Err() != nil {
+		t.Fatal(err)
+	}
+	if count != 1000 {
+		t.Fatal("not enough rows returned:", count)
+	}
+}
+
+func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonLz4Encoded(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named("X-Trino-Query-Data-Encoding", "json+lz4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var col tpchRow
+		err = rows.Scan(
+			&col.CustKey,
+			&col.Name,
+			&col.Address,
+			&col.NationKey,
+			&col.Phone,
+			&col.AcctBal,
+			&col.MktSegment,
+			&col.Comment,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows.Err() != nil {
+		t.Fatal(err)
+	}
+	if count != 1000 {
+		t.Fatal("not enough rows returned:", count)
+	}
+}
+
+func TestIntegrationSelectTpch100SpoolingInlineSegmentJsonZstdEncoded(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 100", sql.Named("X-Trino-Query-Data-Encoding", "json+zstd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var col tpchRow
+		err = rows.Scan(
+			&col.CustKey,
+			&col.Name,
+			&col.Address,
+			&col.NationKey,
+			&col.Phone,
+			&col.AcctBal,
+			&col.MktSegment,
+			&col.Comment,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows.Err() != nil {
+		t.Fatal(err)
+	}
+	if count != 100 {
+		t.Fatal("not enough rows returned:", count)
+	}
+}
+
+func TestIntegrationSelectTpch100SpoolingInlineSegmentJsonlz4Encoded(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 100", sql.Named("X-Trino-Query-Data-Encoding", "json+lz4"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+		var col tpchRow
+		err = rows.Scan(
+			&col.CustKey,
+			&col.Name,
+			&col.Address,
+			&col.NationKey,
+			&col.Phone,
+			&col.AcctBal,
+			&col.MktSegment,
+			&col.Comment,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows.Err() != nil {
+		t.Fatal(err)
+	}
+	if count != 100 {
+		t.Fatal("not enough rows returned:", count)
 	}
 }
 
