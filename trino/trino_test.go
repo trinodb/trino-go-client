@@ -1155,7 +1155,6 @@ func TestSpoolingSpooledJsonEncoded(t *testing.T) {
 	var buf *bytes.Buffer
 	var ts *httptest.Server
 
-	// Create a mock server to simulate Trino's behavior
 	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/statement" {
 			if buf == nil {
