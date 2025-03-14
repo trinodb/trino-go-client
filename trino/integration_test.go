@@ -42,14 +42,27 @@ import (
 	"time"
 
 	"github.com/ahmetb/dlog"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/golang-jwt/jwt/v5"
 	dt "github.com/ory/dockertest/v3"
 	docker "github.com/ory/dockertest/v3/docker"
 )
 
+const (
+	DockerLocalStackName = "localstack"
+	bucketName           = "spooling"
+	DockerTrinoName      = "trino-go-client-tests"
+	MAXRetries           = 10
+	TrinoNetwork         = "trino-network"
+)
+
 var (
-	pool     *dt.Pool
-	resource *dt.Resource
+	pool               *dt.Pool
+	trinoResource      *dt.Resource
+	localStackResource *dt.Resource
 
 	trinoImageTagFlag = flag.String(
 		"trino_image_tag",
@@ -82,6 +95,17 @@ func TestMain(m *testing.M) {
 		*trinoImageTagFlag = "latest"
 	}
 
+	var spoolingProtocolSupported bool
+	if *trinoImageTagFlag == "latest" {
+		spoolingProtocolSupported = true
+	} else {
+		version, err := strconv.Atoi(*trinoImageTagFlag)
+		if err != nil {
+			log.Fatalf("Invalid trino_image_tag: %s", *trinoImageTagFlag)
+		}
+		spoolingProtocolSupported = version >= 466
+	}
+
 	var err error
 	if *integrationServerFlag == "" && !testing.Short() {
 		pool, err = dt.NewPool("")
@@ -90,28 +114,50 @@ func TestMain(m *testing.M) {
 		}
 		pool.MaxWait = 1 * time.Minute
 
+		networkID := getOrCreateNetwork(pool)
+
 		wd, err := os.Getwd()
 		if err != nil {
 			log.Fatalf("Failed to get working directory: %s", err)
 		}
-		name := "trino-go-client-tests"
+
 		var ok bool
-		resource, ok = pool.ContainerByName(name)
+		if spoolingProtocolSupported {
+			localStackResource = getOrCreateLocalStack(pool, networkID)
+		}
+
+		trinoResource, ok = pool.ContainerByName(DockerTrinoName)
 
 		if !ok {
 			err = generateCerts(wd + "/etc/secrets")
 			if err != nil {
 				log.Fatalf("Could not generate TLS certificates: %s", err)
 			}
-			resource, err = pool.RunWithOptions(&dt.RunOptions{
-				Name:       name,
+
+			mounts := []string{
+				wd + "/etc/catalog:/etc/trino/catalog",
+				wd + "/etc/secrets:/etc/trino/secrets",
+				wd + "/etc/jvm.config:/etc/trino/jvm.config",
+				wd + "/etc/node.properties:/etc/trino/node.properties",
+				wd + "/etc/password-authenticator.properties:/etc/trino/password-authenticator.properties",
+			}
+
+			if spoolingProtocolSupported {
+				mounts = append(mounts, wd+"/etc/config.properties:/etc/trino/config.properties")
+				mounts = append(mounts, wd+"/etc/spooling-manager.properties:/etc/trino/spooling-manager.properties")
+			} else {
+				mounts = append(mounts, wd+"/etc/config-pre-466version.properties:/etc/trino/config.properties")
+			}
+			trinoResource, err = pool.RunWithOptions(&dt.RunOptions{
+				Name:       DockerTrinoName,
 				Repository: "trinodb/trino",
 				Tag:        *trinoImageTagFlag,
-				Mounts:     []string{wd + "/etc:/etc/trino"},
+				Mounts:     mounts,
 				ExposedPorts: []string{
 					"8080/tcp",
 					"8443/tcp",
 				},
+				NetworkID: networkID,
 			}, func(hc *docker.HostConfig) {
 				hc.Ulimits = []docker.ULimit{
 					{
@@ -124,28 +170,14 @@ func TestMain(m *testing.M) {
 			if err != nil {
 				log.Fatalf("Could not start resource: %s", err)
 			}
-		} else if !resource.Container.State.Running {
-			pool.Client.StartContainer(resource.Container.ID, nil)
+		} else if !trinoResource.Container.State.Running {
+			pool.Client.StartContainer(trinoResource.Container.ID, nil)
 		}
 
-		if err := pool.Retry(func() error {
-			c, err := pool.Client.InspectContainer(resource.Container.ID)
-			if err != nil {
-				log.Fatalf("Failed to inspect container %s: %s", resource.Container.ID, err)
-			}
-			if !c.State.Running {
-				log.Fatalf("Container %s is not running: %s\nContainer logs:\n%s", resource.Container.ID, c.State.String(), getLogs(resource.Container.ID))
-			}
-			log.Printf("Waiting for Trino container: %s\n", c.State.String())
-			if c.State.Health.Status != "healthy" {
-				return errors.New("Not ready")
-			}
-			return nil
-		}); err != nil {
-			log.Fatalf("Timed out waiting for container to get ready: %s\nContainer logs:\n%s", err, getLogs(resource.Container.ID))
-		}
-		*integrationServerFlag = "http://test@localhost:" + resource.GetPort("8080/tcp")
-		tlsServer = "https://admin:admin@localhost:" + resource.GetPort("8443/tcp")
+		waitForContainerHealth(trinoResource.Container.ID, "trino")
+
+		*integrationServerFlag = "http://test@localhost:" + trinoResource.GetPort("8080/tcp")
+		tlsServer = "https://admin:admin@localhost:" + trinoResource.GetPort("8443/tcp")
 
 		http.DefaultTransport.(*http.Transport).TLSClientConfig, err = getTLSConfig(wd + "/etc/secrets")
 		if err != nil {
@@ -155,14 +187,166 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	if !*noCleanup && pool != nil && resource != nil {
-		// You can't defer this because os.Exit doesn't care for defer
-		if err := pool.Purge(resource); err != nil {
-			log.Fatalf("Could not purge resource: %s", err)
+	if !*noCleanup && pool != nil {
+		if trinoResource != nil {
+			if err := pool.Purge(trinoResource); err != nil {
+				log.Fatalf("Could not purge resource: %s", err)
+			}
+		}
+
+		if localStackResource != nil {
+			if err := pool.Purge(localStackResource); err != nil {
+				log.Fatalf("Could not purge LocalStack resource: %s", err)
+			}
+		}
+
+		networkExists, networkID, err := networkExists(pool, TrinoNetwork)
+		if err == nil && networkExists {
+			if err := pool.Client.RemoveNetwork(networkID); err != nil {
+				log.Fatalf("Could not remove Docker network: %s", err)
+			}
 		}
 	}
 
 	os.Exit(code)
+}
+
+func getOrCreateLocalStack(pool *dt.Pool, networkID string) *dt.Resource {
+	resource, ok := pool.ContainerByName(DockerLocalStackName)
+	if ok {
+		return resource
+	}
+
+	newResource, err := setupLocalStack(pool, networkID)
+	if err != nil {
+		log.Fatalf("Failed to start LocalStack: %s", err)
+	}
+
+	return newResource
+}
+
+func getOrCreateNetwork(pool *dt.Pool) string {
+	networkExists, networkID, err := networkExists(pool, TrinoNetwork)
+	if err != nil {
+		log.Fatalf("Could not check if Docker network exists: %s", err)
+	}
+
+	if networkExists {
+		return networkID
+	}
+
+	network, err := pool.Client.CreateNetwork(docker.CreateNetworkOptions{
+		Name: TrinoNetwork,
+	})
+	if err != nil {
+		log.Fatalf("Could not create Docker network: %s", err)
+	}
+
+	return network.ID
+}
+
+func networkExists(pool *dt.Pool, networkName string) (bool, string, error) {
+	networks, err := pool.Client.ListNetworks()
+	if err != nil {
+		return false, "", fmt.Errorf("could not list Docker networks: %w", err)
+	}
+	for _, network := range networks {
+		if network.Name == networkName {
+			return true, network.ID, nil
+		}
+	}
+	return false, "", nil
+}
+
+func setupLocalStack(pool *dt.Pool, networkID string) (*dt.Resource, error) {
+	localstackResource, err := pool.RunWithOptions(&dt.RunOptions{
+		Name:       DockerLocalStackName,
+		Repository: "localstack/localstack",
+		Tag:        "latest",
+		Env: []string{
+			"SERVICES=s3",
+			"region_name=us-east-1",
+			"AWS_ACCESS_KEY_ID=test",
+			"AWS_SECRET_ACCESS_KEY=test",
+		},
+
+		PortBindings: map[docker.Port][]docker.PortBinding{
+			"4566/tcp": {{HostIP: "0.0.0.0", HostPort: "4566"}},
+			"4571/tcp": {{HostIP: "0.0.0.0", HostPort: "4571"}},
+		},
+
+		NetworkID: networkID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("could not start LocalStack: %w", err)
+	}
+
+	localstackPort := localstackResource.GetPort("4566/tcp")
+	s3Endpoint := "http://localhost:" + localstackPort
+
+	log.Println("LocalStack started at:", s3Endpoint)
+
+	waitForContainerHealth(localstackResource.Container.ID, "localstack")
+
+	for retry := 0; retry < MAXRetries; retry++ {
+		err := createS3Bucket(s3Endpoint, "test", "test", bucketName)
+		if err == nil {
+			log.Println("S3 bucket created successfully")
+			return localstackResource, nil
+		}
+		log.Printf("Failed to create S3 bucket, retrying... (%d/%d)\n", retry+1, MAXRetries)
+		time.Sleep(2 * time.Second)
+	}
+
+	return nil, fmt.Errorf("failed to create S3 bucket after multiple attempts: %w", err)
+}
+
+func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithRegion("us-east-1"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	s3Client := s3.New(s3.Options{
+		Credentials:  cfg.Credentials,
+		Region:       "us-east-1",
+		BaseEndpoint: &endpoint,
+		UsePathStyle: *aws.Bool(true),
+	})
+
+	createBucketInput := &s3.CreateBucketInput{
+		Bucket: aws.String(bucketName),
+	}
+
+	_, err = s3Client.CreateBucket(context.TODO(), createBucketInput)
+	if err != nil {
+		return fmt.Errorf("failed to create S3 bucket: %w", err)
+	}
+
+	log.Printf("Bucket %s created successfully!", bucketName)
+	return nil
+}
+
+func waitForContainerHealth(containerID, containerName string) {
+	if err := pool.Retry(func() error {
+		c, err := pool.Client.InspectContainer(containerID)
+		if err != nil {
+			log.Fatalf("Failed to inspect container %s: %s", containerID, err)
+		}
+		if !c.State.Running {
+			log.Fatalf("Container %s is not running: %s\nContainer logs:\n%s", containerID, c.State.String(), getLogs(trinoResource.Container.ID))
+		}
+		log.Printf("Waiting for %s container: %s\n", containerName, c.State.String())
+		if c.State.Health.Status != "healthy" {
+			return errors.New("Not ready")
+		}
+		return nil
+	}); err != nil {
+		log.Fatalf("Timed out waiting for container %s to get ready: %s\nContainer logs:\n%s", containerName, err, getLogs(containerID))
+	}
 }
 
 func generateCerts(dir string) error {
@@ -1359,5 +1543,157 @@ func TestIntegrationLargeQuery(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatal("not enough rows returned:", count)
+	}
+}
+
+func TestIntegrationTypeConversionSpoolingProtocolInlineJsonEncoder(t *testing.T) {
+	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dsn := *integrationServerFlag
+	dsn += "?custom_client=uncompressed"
+	db := integrationOpen(t, dsn)
+	var (
+		goTime            time.Time
+		nullTime          NullTime
+		goString          string
+		nullString        sql.NullString
+		nullStringSlice   NullSliceString
+		nullStringSlice2  NullSlice2String
+		nullStringSlice3  NullSlice3String
+		nullInt64Slice    NullSliceInt64
+		nullInt64Slice2   NullSlice2Int64
+		nullInt64Slice3   NullSlice3Int64
+		nullFloat64Slice  NullSliceFloat64
+		nullFloat64Slice2 NullSlice2Float64
+		nullFloat64Slice3 NullSlice3Float64
+		goMap             map[string]interface{}
+		nullMap           NullMap
+		goRow             []interface{}
+	)
+	err = db.QueryRow(`
+		SELECT
+			TIMESTAMP '2017-07-10 01:02:03.004 UTC',
+			CAST(NULL AS TIMESTAMP),
+			CAST('string' AS VARCHAR),
+			CAST(NULL AS VARCHAR),
+			ARRAY['A', 'B', NULL],
+			ARRAY[ARRAY['A'], NULL],
+			ARRAY[ARRAY[ARRAY['A'], NULL], NULL],
+			ARRAY[1, 2, NULL],
+			ARRAY[ARRAY[1, 1, 1], NULL],
+			ARRAY[ARRAY[ARRAY[1, 1, 1], NULL], NULL],
+			ARRAY[1.0, 2.0, NULL],
+			ARRAY[ARRAY[1.1, 1.1, 1.1], NULL],
+			ARRAY[ARRAY[ARRAY[1.1, 1.1, 1.1], NULL], NULL],
+			MAP(ARRAY['a', 'b'], ARRAY['c', 'd']),
+			CAST(NULL AS MAP(ARRAY(INTEGER), ARRAY(INTEGER))),
+			ROW(1, 'a', CAST('2017-07-10 01:02:03.004 UTC' AS TIMESTAMP(6) WITH TIME ZONE), ARRAY['c'])
+	`, sql.Named(trinoEncoding, "json")).Scan(
+		&goTime,
+		&nullTime,
+		&goString,
+		&nullString,
+		&nullStringSlice,
+		&nullStringSlice2,
+		&nullStringSlice3,
+		&nullInt64Slice,
+		&nullInt64Slice2,
+		&nullInt64Slice3,
+		&nullFloat64Slice,
+		&nullFloat64Slice2,
+		&nullFloat64Slice3,
+		&goMap,
+		&nullMap,
+		&goRow,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIntegrationSelectTpchSpoolingSegments(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		encoding string
+		expected int
+	}{
+		// Testing with a LIMIT of 1001 rows.
+		// Since we exceed the `protocol.spooling.inlining.max-rows` threshold (1000),
+		// this query trigger spooling protocol with spooled segments.
+		{
+			name:     "Spooled Segment JSON+ZSTD Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 1001",
+			encoding: "json+zstd",
+			expected: 1001,
+		},
+		{
+			name:     "Spooled Segment JSON Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 1001",
+			encoding: "json",
+			expected: 1001,
+		},
+		{
+			name:     "Spooled Segment JSON+LZ4 Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 1001",
+			encoding: "json+lz4",
+			expected: 1001,
+		},
+		// Testing with a LIMIT of 100 rows.
+		// This should remain inline as it is below the `protocol.spooling.inlining.max-rows` (1000) and bellow `protocol.spooling.inlining.max-size` 128kb
+		{
+			name:     "Inline Segment JSON+ZSTD Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 100",
+			encoding: "json+zstd",
+			expected: 100,
+		},
+		{
+			name:     "Inline Segment JSON+LZ4 Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 100",
+			encoding: "json+lz4",
+			expected: 100,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := integrationOpen(t)
+			defer db.Close()
+
+			rows, err := db.Query(tt.query, sql.Named(trinoEncoding, tt.encoding))
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			defer rows.Close()
+
+			count := 0
+			for rows.Next() {
+				count++
+				var col tpchRow
+				err = rows.Scan(
+					&col.CustKey,
+					&col.Name,
+					&col.Address,
+					&col.NationKey,
+					&col.Phone,
+					&col.AcctBal,
+					&col.MktSegment,
+					&col.Comment,
+				)
+				if err != nil {
+					t.Fatalf("Row scan failed: %v", err)
+				}
+			}
+
+			if rows.Err() != nil {
+				t.Fatalf("Rows iteration error: %v", rows.Err())
+			}
+
+			if count != tt.expected {
+				t.Fatalf("Expected %d rows, got %d", tt.expected, count)
+			}
+		})
 	}
 }

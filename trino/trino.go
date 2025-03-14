@@ -51,6 +51,7 @@
 package trino
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -77,6 +78,8 @@ import (
 	"github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4"
 )
 
 func init() {
@@ -130,6 +133,9 @@ const (
 
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
+
+	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
+	trinoEncoding                = "encoding"
 
 	authorizationHeader = "Authorization"
 
@@ -943,6 +949,11 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				continue
 			}
 
+			if arg.Name == trinoEncoding {
+				hs.Add(trinoQueryDataEncodingHeader, arg.Value.(string))
+				continue
+			}
+
 			s, err := Serial(arg.Value)
 			if err != nil {
 				return nil, err
@@ -1272,11 +1283,306 @@ type queryResponse struct {
 	PartialCancelURI string        `json:"partialCancelUri"`
 	NextURI          string        `json:"nextUri"`
 	Columns          []queryColumn `json:"columns"`
-	Data             []queryData   `json:"data"`
+	Data             interface{}   `json:"data"`
 	Stats            stmtStats     `json:"stats"`
 	Error            ErrTrino      `json:"error"`
 	UpdateType       string        `json:"updateType"`
 	UpdateCount      int64         `json:"updateCount"`
+}
+
+type spoolingProtocol struct {
+	httpClient http.Client
+	ctx        context.Context
+	encoding   string
+	segments   []interface{}
+}
+
+type spoolingMetadata struct {
+	rowOffset        int64
+	rowsCount        int64
+	segmentSize      int64
+	uncompressedSize int64
+}
+
+func (sp *spoolingProtocol) fetch() ([]queryData, error) {
+	var queryData []queryData
+	for segmentIndex, segment := range sp.segments {
+		segment, ok := segment.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("segment at index %d is invalid: expected map[string]interface{}, got %T", segmentIndex, segment)
+		}
+		segmentMetadata, exists := segment["metadata"]
+		if !exists {
+			return nil, fmt.Errorf("metadata is missing in segment at index %d", segmentIndex)
+		}
+
+		typedMetadata, ok := segmentMetadata.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("metadata is invalid or cannot be parsed as map[string]interface{} in segment at index %d", segmentIndex)
+		}
+
+		metadata, err := parseSpoolingMetadata(typedMetadata)
+		if err != nil {
+			return nil, err
+		}
+		switch segment["type"] {
+		case "inline":
+			decodedBytes, err := base64.StdEncoding.DecodeString(segment["data"].(string))
+
+			if err != nil {
+				return nil, fmt.Errorf("error decoding base64 data in inline segment at index %d: %v", segmentIndex, err)
+			}
+
+			decodedData, err := decodeSegment(decodedBytes, sp.encoding, metadata)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode inline segment at index %d: %v", segmentIndex, err)
+			}
+
+			queryData = append(queryData, decodedData...)
+		case "spooled":
+			uri, ok := segment["uri"].(string)
+			if !ok || uri == "" {
+				return nil, fmt.Errorf("missing or invalid 'uri' field in spooled segment at index %d", segmentIndex)
+			}
+			ackUri, ok := segment["ackUri"].(string)
+			if !ok || ackUri == "" {
+				return nil, fmt.Errorf("missing or invalid 'ackUri' field in spooled segment at index %d", segmentIndex)
+			}
+			headers, ok := segment["headers"].(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("missing or invalid 'headers' field in spooled segment at index %d", segmentIndex)
+			}
+
+			data, err := sp.fetchSegment(uri, ackUri, headers)
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch segment from uri '%s' at index %d: %v", uri, segmentIndex, err)
+			}
+
+			decodedData, err := decodeSegment(data, sp.encoding, metadata)
+			if err != nil {
+				return nil, fmt.Errorf("failed to decode spooled segment at index %d: %v", segmentIndex, err)
+			}
+
+			queryData = append(queryData, decodedData...)
+		}
+
+	}
+
+	return queryData, nil
+}
+
+func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, error) {
+	result := spoolingMetadata{
+		rowOffset:        0,
+		rowsCount:        0,
+		segmentSize:      0,
+		uncompressedSize: 0,
+	}
+
+	var err error
+	// Mandatory field
+	if result.rowOffset, err = getInt64(metadata, "rowOffset"); err != nil {
+		return spoolingMetadata{}, err
+	}
+
+	// Mandatory field
+	if result.segmentSize, err = getInt64(metadata, "segmentSize"); err != nil {
+		return spoolingMetadata{}, err
+	}
+
+	if result.uncompressedSize, err = getOptionalInt64(metadata, "uncompressedSize"); err != nil {
+		return spoolingMetadata{}, err
+	}
+
+	// Bug: rowsCount was wrongly not enforced as a mandatory field on Trino response. Fixed on 475 release
+	if result.rowsCount, err = getOptionalInt64(metadata, "rowsCount"); err != nil {
+		return spoolingMetadata{}, err
+	}
+
+	return result, nil
+}
+
+func getInt64(metadata map[string]interface{}, key string) (int64, error) {
+	val, exists := metadata[key]
+	if !exists {
+		return 0, fmt.Errorf("%s is missing in segment metadata", key)
+	}
+
+	return parseInt64(val, key)
+}
+
+func getOptionalInt64(metadata map[string]interface{}, key string) (int64, error) {
+	val, exists := metadata[key]
+	if !exists {
+		return 0, nil
+	}
+
+	return parseInt64(val, key)
+}
+
+func parseInt64(val interface{}, key string) (int64, error) {
+	num, ok := val.(json.Number)
+	if !ok {
+		return 0, fmt.Errorf("invalid type for %s in segment metadata, expected json.Number, got %T", key, val)
+	}
+
+	n, err := num.Int64()
+	if err != nil {
+		return 0, fmt.Errorf("error converting %s to int64: %v", key, err)
+	}
+
+	return n, nil
+}
+
+func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]interface{}) ([]byte, error) {
+	req, err := http.NewRequestWithContext(sp.ctx, "GET", uri, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	for k, v := range headers {
+		headerSlice, ok := v.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("unsupported header type %T", v)
+		}
+
+		if len(headerSlice) == 0 {
+			continue
+		}
+
+		if len(headerSlice) > 1 {
+			return nil, fmt.Errorf("multiple values for header %s", k)
+		}
+
+		header, ok := headerSlice[0].(string)
+		if !ok {
+			return nil, fmt.Errorf("unsupported header value type %T", headerSlice[0])
+		}
+		req.Header.Add(k, header)
+	}
+
+	resp, err := sp.roundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching segment from uri '%s': %v", uri, err)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	//acknowledge the segment read
+	go func() {
+		// TODO: handle ack erros
+		ackReq, err := http.NewRequestWithContext(sp.ctx, "GET", ackUri, nil)
+		if err != nil {
+			return
+		}
+
+		for k, values := range req.Header {
+			for _, v := range values {
+				ackReq.Header.Add(k, v)
+			}
+		}
+
+		resp, err := sp.httpClient.Do(ackReq)
+		if err != nil {
+			return
+		}
+		resp.Body.Close()
+	}()
+
+	return data, nil
+}
+
+func (sp *spoolingProtocol) roundTrip(req *http.Request) (*http.Response, error) {
+	delay := 100 * time.Millisecond
+	const maxDelayBetweenRequests = float64(15 * time.Second)
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-sp.ctx.Done():
+			return nil, sp.ctx.Err()
+		case <-timer.C:
+			resp, err := sp.httpClient.Do(req)
+			if err != nil {
+				return nil, &ErrQueryFailed{Reason: err}
+			}
+			switch resp.StatusCode {
+			case http.StatusOK:
+				return resp, nil
+			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+				resp.Body.Close()
+				timer.Reset(delay)
+				delay = time.Duration(math.Min(
+					float64(delay)*math.Phi,
+					maxDelayBetweenRequests,
+				))
+				continue
+			default:
+				return nil, newErrQueryFailedFromResponse(resp)
+			}
+		}
+	}
+}
+
+func decodeSegment(data []byte, encoding string, metadata spoolingMetadata) ([]queryData, error) {
+	if int64(len(data)) != metadata.segmentSize {
+		return nil, fmt.Errorf("segment size mismatch: expected %d bytes, got %d bytes", metadata.segmentSize, len(data))
+	}
+
+	decompressedSegment, err := decompressSegment(data, encoding, metadata)
+	if err != nil {
+		return nil, err
+	}
+
+	var queryDataList = make([]queryData, metadata.rowsCount)
+	decoder := json.NewDecoder(bytes.NewReader(decompressedSegment))
+	decoder.UseNumber()
+	err = decoder.Decode(&queryDataList)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode segment into JSON at rowOffset %d: %v", metadata.rowOffset, err)
+	}
+
+	return queryDataList, nil
+}
+
+func decompressSegment(data []byte, encoding string, metadata spoolingMetadata) ([]byte, error) {
+	if metadata.uncompressedSize == 0 {
+		return data, nil
+	}
+
+	var decompressedData []byte
+	switch encoding {
+	case "json+zstd":
+		zstdReader, err := zstd.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("error creating zstd reader: %w", err)
+		}
+		defer zstdReader.Close()
+		decompressedData, err = io.ReadAll(zstdReader)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decompress zstd segment at rowOffset %d: %v", metadata.rowOffset, err)
+		}
+	case "json+lz4":
+		decompressedData = make([]byte, metadata.uncompressedSize)
+
+		n, err := lz4.UncompressBlock(data, decompressedData)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decompress LZ4 segment at rowOffset %d: %v", metadata.rowOffset, err)
+		}
+
+		decompressedData = decompressedData[:n]
+	default:
+		return nil, fmt.Errorf("unsupported segment encoder: %s", encoding)
+	}
+
+	if int64(len(decompressedData)) != metadata.uncompressedSize {
+		return nil, fmt.Errorf("decompressed size mismatch: expected %d bytes, got %d bytes", metadata.uncompressedSize, len(decompressedData))
+	}
+
+	return decompressedData, nil
 }
 
 type queryColumn struct {
@@ -1345,12 +1651,51 @@ func (qr *driverRows) fetch() error {
 			if qresp.ID == "" {
 				return io.EOF
 			}
+
 			err = qr.initColumns(&qresp)
 			if err != nil {
 				return err
 			}
+
 			qr.rowindex = 0
-			qr.data = qresp.Data
+			switch data := qresp.Data.(type) {
+			case []interface{}:
+				// direct protocol
+				qr.data = make([]queryData, len(data))
+				for i, item := range data {
+					if row, ok := item.([]interface{}); ok {
+						qr.data[i] = row
+					} else {
+						return fmt.Errorf("unexpected data type for row at index %d: expected []interface{}, got %T", i, item)
+					}
+				}
+			case map[string]interface{}:
+				// spooling protocol
+				encoding, ok := data["encoding"].(string)
+				if !ok {
+					return fmt.Errorf("invalid or missing 'encoding' field on spooling protocol, expected string")
+				}
+
+				segments, ok := data["segments"].([]interface{})
+				if !ok {
+					return fmt.Errorf("invalid or missing 'segments' field on spooling protocol, expected []interface{}")
+				}
+
+				spoolingData := spoolingProtocol{
+					httpClient: qr.stmt.conn.httpClient,
+					ctx:        qr.ctx,
+					encoding:   encoding,
+					segments:   segments,
+				}
+
+				qr.data, err = spoolingData.fetch()
+				if err != nil {
+					return err
+				}
+
+			case nil:
+				qr.data = nil
+			}
 			qr.rowsAffected = qresp.UpdateCount
 			qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
 			if len(qr.data) != 0 {
