@@ -1151,7 +1151,7 @@ func TestFetchNoStackOverflow(t *testing.T) {
 
 }
 
-func TestSpoolingSpooledJsonEncoded(t *testing.T) {
+func TestSpoolingInlineSegmentJsonEncoded(t *testing.T) {
 	var buf *bytes.Buffer
 	var ts *httptest.Server
 
@@ -1230,7 +1230,7 @@ func TestSpoolingSpooledJsonEncoded(t *testing.T) {
 	assert.Equal(t, expected, results, "Expected query results to match")
 }
 
-func TestSpoolingSpooledWrongUncompressSize(t *testing.T) {
+func TestSpoolingSpooledSegmentWrongUncompressSize(t *testing.T) {
 	var buf *bytes.Buffer
 	var ts *httptest.Server
 
@@ -1297,7 +1297,7 @@ func TestSpoolingSpooledWrongUncompressSize(t *testing.T) {
 	require.Contains(t, err.Error(), want)
 }
 
-func TestSpoolingSpooledWrongCompresSize(t *testing.T) {
+func TestSpoolingSpooledSegmentWrongCompresSize(t *testing.T) {
 	var buf *bytes.Buffer
 	var ts *httptest.Server
 
@@ -1364,7 +1364,7 @@ func TestSpoolingSpooledWrongCompresSize(t *testing.T) {
 	require.Contains(t, err.Error(), want)
 }
 
-func TestSpoolingSpooledWrongSpooledHeaders(t *testing.T) {
+func TestSpoolingSpooledSegmentWrongSpooledHeaders(t *testing.T) {
 	var buf *bytes.Buffer
 	var ts *httptest.Server
 
