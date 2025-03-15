@@ -2079,3 +2079,92 @@ func TestPagination(t *testing.T) {
 	// Assert expected results
 	assert.Equal(t, []int{1, 2}, results, "Expected query results to match")
 }
+
+func TestQuerySingleRowDoesNotTriggerDeleteRequest(t *testing.T) {
+	var buf, buf2, buf3 *bytes.Buffer
+	var ts *httptest.Server
+	var methodUsed string
+
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statement" {
+			if buf == nil {
+				buf = new(bytes.Buffer)
+
+				json.NewEncoder(buf).Encode(&stmtResponse{
+					ID:      "fake-query",
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					Stats: stmtStats{
+						State: "QUEUED",
+					},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf.Bytes())
+			return
+		}
+
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+			if buf2 == nil {
+				buf2 = new(bytes.Buffer)
+				json.NewEncoder(buf2).Encode(&queryResponse{
+					ID:      "fake-query",
+					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/2",
+					Columns: []queryColumn{
+						{
+							Name: "_col0",
+							Type: "integer",
+							TypeSignature: typeSignature{
+								RawType:   "integer",
+								Arguments: []typeArgument{},
+							},
+						},
+					},
+					Data: []queryData{
+						{1},
+					},
+					Stats: stmtStats{
+						State: "FINISHED",
+					},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf2.Bytes())
+			return
+		}
+
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/2" {
+			methodUsed = r.Method
+
+			if buf3 == nil {
+				buf3 = new(bytes.Buffer)
+				json.NewEncoder(buf3).Encode(&queryResponse{
+					Stats: stmtStats{
+						State: "FINISHED",
+					},
+				})
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write(buf3.Bytes())
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+	}))
+
+	defer ts.Close()
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+	defer db.Close()
+
+	var v int
+
+	err = db.QueryRow("SELECT 1").Scan(&v)
+
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, v, "Expected query results to match")
+
+	assert.NotEqual(t, http.MethodDelete, methodUsed, "Expected HTTP method to be GET")
+}
