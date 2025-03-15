@@ -51,6 +51,7 @@
 package trino
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -77,6 +78,8 @@ import (
 	"github.com/jcmturner/gokrb5/v8/config"
 	"github.com/jcmturner/gokrb5/v8/keytab"
 	"github.com/jcmturner/gokrb5/v8/spnego"
+	"github.com/klauspost/compress/zstd"
+	"github.com/pierrec/lz4"
 )
 
 func init() {
@@ -130,6 +133,8 @@ const (
 
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
+
+	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
 
 	authorizationHeader = "Authorization"
 
@@ -927,6 +932,11 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				continue
 			}
 
+			if arg.Name == trinoQueryDataEncodingHeader {
+				hs.Add(trinoQueryDataEncodingHeader, arg.Value.(string))
+				continue
+			}
+
 			s, err := Serial(arg.Value)
 			if err != nil {
 				return nil, err
@@ -1253,11 +1263,190 @@ type queryResponse struct {
 	PartialCancelURI string        `json:"partialCancelUri"`
 	NextURI          string        `json:"nextUri"`
 	Columns          []queryColumn `json:"columns"`
-	Data             []queryData   `json:"data"`
+	Data             interface{}   `json:"data"`
 	Stats            stmtStats     `json:"stats"`
 	Error            ErrTrino      `json:"error"`
 	UpdateType       string        `json:"updateType"`
 	UpdateCount      int64         `json:"updateCount"`
+}
+
+type spoolingProtocol struct {
+	httClient http.Client
+	ctx       context.Context
+	encoder   string
+	segments  []interface{}
+}
+
+func (sp *spoolingProtocol) fetch() ([]queryData, error) {
+	var queryData []queryData
+	for _, segment := range sp.segments {
+		segment := segment.(map[string]interface{})
+		metaData, _ := segment["metadata"].(map[string]interface{})
+		switch segment["type"] {
+		case "inline":
+			data := segment["data"].(string)
+			decodedBytes, err := base64.StdEncoding.DecodeString(data)
+
+			if err != nil {
+				return nil, fmt.Errorf("error decoding base64: %v", err)
+			}
+
+			decodedData, err := decode(decodedBytes, sp.encoder, metaData)
+			if err != nil {
+				return nil, err
+			}
+
+			queryData = append(queryData, decodedData...)
+		case "spooled":
+			uri, _ := segment["uri"].(string)
+			ackUri, _ := segment["ackUri"].(string)
+			headers, _ := segment["headers"].(map[string]interface{})
+
+			segmentdata, err := sp.fetchSegment(uri, ackUri, headers, metaData)
+			if err != nil {
+				return nil, err
+			}
+
+			queryData = append(queryData, segmentdata...)
+		}
+
+	}
+
+	return queryData, nil
+}
+
+func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]interface{}, metaData map[string]interface{}) ([]queryData, error) {
+	req, err := http.NewRequestWithContext(sp.ctx, "GET", uri, nil)
+	if err != nil {
+		return nil, fmt.Errorf("trino: %w", err)
+	}
+
+	for k, v := range headers {
+		val := reflect.TypeOf(v)
+		switch val.Kind() {
+		case reflect.String:
+			req.Header.Add(k, v.(string)) // not sure if it can be a string
+		case reflect.Slice:
+			slice, ok := v.([]interface{})
+			if !ok {
+				return nil, fmt.Errorf("trino: invalid header format for key %s", k)
+			}
+			if len(slice) > 1 {
+				return nil, fmt.Errorf("trino: multiple values for header %s", k)
+			}
+			req.Header.Add(k, slice[0].(string))
+		default:
+			return nil, fmt.Errorf("trino: invalid header format type for key %s", k)
+		}
+	}
+
+	resp, err := sp.httClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("trino: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("trino: unexpected status code %d", resp.StatusCode)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	//acknowledge the segment read
+	go func() {
+		ackReq, err := http.NewRequestWithContext(sp.ctx, "GET", ackUri, nil)
+		if err != nil {
+			return
+		}
+
+		for k, values := range req.Header {
+			for _, v := range values {
+				ackReq.Header.Add(k, v)
+			}
+		}
+
+		resp, err := sp.httClient.Do(ackReq)
+		if err != nil {
+			return
+		}
+		resp.Body.Close()
+	}()
+
+	return decode(data, sp.encoder, metaData)
+}
+
+func decode(data []byte, encoder string, metaData map[string]interface{}) ([]queryData, error) {
+	var uncompressedSize, compressedSize int64
+
+	if uncompressedSizeNumber, ok := metaData["uncompressedSize"].(json.Number); ok {
+		if val, err := uncompressedSizeNumber.Int64(); err == nil {
+			uncompressedSize = val
+		}
+	}
+
+	if uncompressedSize == 0 {
+		var queryDataList []queryData
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		err := decoder.Decode(&queryDataList)
+		if err != nil {
+			return nil, fmt.Errorf("error unmarshalling JSON: %v", err)
+		}
+		return queryDataList, nil
+	}
+
+	if compressedSizeNumber, ok := metaData["segmentSize"].(json.Number); ok {
+		if val, err := compressedSizeNumber.Int64(); err == nil {
+			compressedSize = val
+		}
+	}
+
+	if int64(len(data)) != compressedSize {
+		return nil, fmt.Errorf("segment size mismatch: expected %d bytes, got %d bytes", compressedSize, len(data))
+	}
+
+	var decompressedData []byte
+	var err error
+	switch encoder {
+	case "json+zstd":
+		zstdReader, err := zstd.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, fmt.Errorf("trino: error creating zstd reader: %w", err)
+		}
+		defer zstdReader.Close()
+		decompressedData, err = io.ReadAll(zstdReader)
+		if err != nil {
+			return nil, fmt.Errorf("error decompressing zstd data: %v", err)
+		}
+	case "json+lz4":
+		decompressedData = make([]byte, uncompressedSize)
+
+		n, err := lz4.UncompressBlock(data, decompressedData)
+		if err != nil {
+			return nil, fmt.Errorf("error decompressing LZ4 data: %v", err)
+		}
+
+		decompressedData = decompressedData[:n]
+	default:
+		return nil, fmt.Errorf("unsupported encoder: %s", encoder)
+	}
+
+	if int64(len(decompressedData)) != uncompressedSize {
+		return nil, fmt.Errorf("decompressed size mismatch: expected %d bytes, got %d bytes", uncompressedSize, len(decompressedData))
+	}
+
+	var queryDataList []queryData
+	decoder := json.NewDecoder(bytes.NewReader(decompressedData))
+	decoder.UseNumber()
+	err = decoder.Decode(&queryDataList)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshalling JSON: %v", err)
+	}
+
+	return queryDataList, nil
 }
 
 type queryColumn struct {
@@ -1326,12 +1515,39 @@ func (qr *driverRows) fetch() error {
 			if qresp.ID == "" {
 				return io.EOF
 			}
+
 			err = qr.initColumns(&qresp)
 			if err != nil {
 				return err
 			}
+
 			qr.rowindex = 0
-			qr.data = qresp.Data
+			switch data := qresp.Data.(type) {
+			case []interface{}:
+				// direct protocol
+				qr.data = make([]queryData, len(data))
+				for i, item := range data {
+					if row, ok := item.([]interface{}); ok {
+						qr.data[i] = row
+					}
+				}
+			case map[string]interface{}:
+				// spooling protocol
+				spollingData := spoolingProtocol{
+					httClient: qr.stmt.conn.httpClient,
+					ctx:       qr.ctx,
+					encoder:   data["encoding"].(string),
+					segments:  data["segments"].([]interface{}),
+				}
+
+				qr.data, err = spollingData.fetch()
+				if err != nil {
+					return err
+				}
+
+			case nil:
+				qr.data = nil
+			}
 			qr.rowsAffected = qresp.UpdateCount
 			qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
 			if len(qr.data) != 0 {
