@@ -1322,22 +1322,17 @@ func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]
 	}
 
 	for k, v := range headers {
-		val := reflect.TypeOf(v)
-		switch val.Kind() {
-		case reflect.String:
-			req.Header.Add(k, v.(string)) // not sure if it can be a string
-		case reflect.Slice:
-			slice, ok := v.([]interface{})
-			if !ok {
-				return nil, fmt.Errorf("trino: invalid header format for key %s", k)
-			}
-			if len(slice) > 1 {
+		headerSlice, ok := v.([]interface{})
+
+		if ok {
+			if len(headerSlice) > 1 {
 				return nil, fmt.Errorf("trino: multiple values for header %s", k)
 			}
-			req.Header.Add(k, slice[0].(string))
-		default:
-			return nil, fmt.Errorf("trino: invalid header format type for key %s", k)
+			req.Header.Add(k, headerSlice[0].(string))
+			continue
 		}
+
+		return nil, fmt.Errorf("trino: unsupported header type %T", v)
 	}
 
 	resp, err := sp.httClient.Do(req)
@@ -1379,7 +1374,7 @@ func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]
 }
 
 func decode(data []byte, encoder string, metaData map[string]interface{}) ([]queryData, error) {
-	var uncompressedSize, compressedSize int64
+	var uncompressedSize, compressedSize, rowsCount int64
 
 	if uncompressedSizeNumber, ok := metaData["uncompressedSize"].(json.Number); ok {
 		if val, err := uncompressedSizeNumber.Int64(); err == nil {
@@ -1387,8 +1382,14 @@ func decode(data []byte, encoder string, metaData map[string]interface{}) ([]que
 		}
 	}
 
+	if rowCountNumber, ok := metaData["rowsCount"].(json.Number); ok {
+		if val, err := rowCountNumber.Int64(); err == nil {
+			rowsCount = val
+		}
+	}
+
 	if uncompressedSize == 0 {
-		var queryDataList []queryData
+		var queryDataList = make([]queryData, rowsCount)
 		decoder := json.NewDecoder(bytes.NewReader(data))
 		decoder.UseNumber()
 		err := decoder.Decode(&queryDataList)
@@ -1438,7 +1439,7 @@ func decode(data []byte, encoder string, metaData map[string]interface{}) ([]que
 		return nil, fmt.Errorf("decompressed size mismatch: expected %d bytes, got %d bytes", uncompressedSize, len(decompressedData))
 	}
 
-	var queryDataList []queryData
+	var queryDataList = make([]queryData, rowsCount)
 	decoder := json.NewDecoder(bytes.NewReader(decompressedData))
 	decoder.UseNumber()
 	err = decoder.Decode(&queryDataList)
