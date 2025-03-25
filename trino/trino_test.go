@@ -1179,7 +1179,7 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 			Segments: []map[string]interface{}{
 				{
 					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 29},
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 29, "rowsCount": 2},
 				},
 			},
 			Encoding:       "json+zstd",
@@ -1191,7 +1191,7 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 			Segments: []map[string]interface{}{
 				{
 					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 18},
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 18, "rowsCount": 2},
 				},
 			},
 			Encoding:       "json+lz4",
@@ -1290,7 +1290,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 				{
 					"type":     "inline",
 					"data":     jsonWithoutCompression,
-					"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 2},
+					"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 2, "rowsCount": 2},
 				},
 			},
 			Encoding:       "json",
@@ -1302,7 +1302,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 				{
 					"type":     "inline",
 					"data":     jsonZstdEncoded,
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 29},
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 29, "rowsCount": 2},
 				},
 			},
 			Encoding:       "json+zstd",
@@ -1314,7 +1314,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 				{
 					"type":     "inline",
 					"data":     jsonLz4Encoded,
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 18},
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 18, "rowsCount": 2},
 				},
 			},
 			Encoding:       "json+lz4",
@@ -1402,6 +1402,7 @@ func TestSpoolingSpooledSegmentErrors(t *testing.T) {
 						"segmentSize":      1,
 						"uncompressedSize": 1,
 						"rowOffset":        0,
+						"rowsCount":        2,
 					},
 				},
 			},
@@ -1417,6 +1418,7 @@ func TestSpoolingSpooledSegmentErrors(t *testing.T) {
 						"segmentSize":      29,
 						"uncompressedSize": 2,
 						"rowOffset":        0,
+						"rowsCount":        2,
 					},
 				},
 			},
@@ -1432,6 +1434,7 @@ func TestSpoolingSpooledSegmentErrors(t *testing.T) {
 						"segmentSize":      3679,
 						"uncompressedSize": 2,
 						"rowOffset":        0,
+						"rowsCount":        2,
 					},
 					"headers": map[string][]interface{}{
 						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
@@ -1441,6 +1444,46 @@ func TestSpoolingSpooledSegmentErrors(t *testing.T) {
 				},
 			},
 			ExpectedError: "trino: multiple values for header x-amz-server-side-encryption-customer-key-md5",
+		},
+		{
+			Name: "rowsCountFieldIsMandatory",
+			Segments: []map[string]interface{}{
+				{
+					"type": "spooled",
+					"data": "fake-data",
+					"metadata": map[string]interface{}{
+						"segmentSize":      3679,
+						"uncompressedSize": 2,
+						"rowOffset":        0,
+					},
+					"headers": map[string][]interface{}{
+						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
+						"x-amz-server-side-encryption-customer-key":       {"key"},
+						"x-amz-server-side-encryption-customer-key-md5":   {"md5"}, // wrong, more then one
+					},
+				},
+			},
+			ExpectedError: "rowsCount missing or invalid",
+		},
+		{
+			Name: "StatusCodeNot200",
+			Segments: []map[string]interface{}{
+				{
+					"type": "spooled",
+					"data": "fake-data",
+					"metadata": map[string]interface{}{
+						"segmentSize":      3679,
+						"uncompressedSize": 2,
+						"rowOffset":        0,
+						"rowsCount":        2,
+					},
+					"headers": map[string][]interface{}{
+						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
+						"x-amz-server-side-encryption-customer-key":       {"key"},
+					},
+				},
+			},
+			ExpectedError: "unexpected status code: 500",
 		},
 	}
 
@@ -1483,7 +1526,7 @@ func TestSpoolingSpooledSegmentErrors(t *testing.T) {
 			}))
 
 			defer ts.Close()
-
+			tc.Segments[0]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc="
 			db, err := sql.Open("trino", ts.URL)
 			require.NoError(t, err)
 			defer db.Close()
