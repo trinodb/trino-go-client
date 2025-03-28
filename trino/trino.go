@@ -1271,17 +1271,72 @@ type queryResponse struct {
 }
 
 type spoolingProtocol struct {
-	httClient http.Client
-	ctx       context.Context
-	encoder   string
-	segments  []interface{}
+	httpClient http.Client
+	ctx        context.Context
+	encoding   string
+	segments   []interface{}
+}
+
+type spoolingMetadata struct {
+	RowOffset        int64
+	RowsCount        int64
+	SegmentSize      int64
+	UncompressedSize int64
+}
+
+func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, error) {
+	rowOffsetAssertion, ok := metadata["rowOffset"].(json.Number)
+	if !ok {
+		return spoolingMetadata{}, fmt.Errorf("rowOffset missing or invalid")
+	}
+
+	rowOffset, err := rowOffsetAssertion.Int64()
+	if err != nil {
+		return spoolingMetadata{}, fmt.Errorf("error converting rowOffset to int64")
+	}
+
+	segmentSizeAssertion, ok := metadata["segmentSize"].(json.Number)
+
+	if !ok {
+		return spoolingMetadata{}, fmt.Errorf("segmentSize missing or invalid")
+	}
+
+	segmentSize, err := segmentSizeAssertion.Int64()
+	if err != nil {
+		return spoolingMetadata{}, fmt.Errorf("error converting segmentSize to int64")
+	}
+
+	var uncompressedSize int64
+	if uncompressedSizeAssertion, ok := metadata["uncompressedSize"].(json.Number); ok {
+		if val, err := uncompressedSizeAssertion.Int64(); err == nil {
+			uncompressedSize = val
+		}
+	}
+
+	var rowsCount int64
+	if rowsCountAssertion, ok := metadata["rowsCount"].(json.Number); ok {
+		if val, err := rowsCountAssertion.Int64(); err == nil {
+			rowsCount = val
+		}
+	}
+
+	return spoolingMetadata{
+		RowOffset:        rowOffset,
+		RowsCount:        rowsCount,
+		SegmentSize:      segmentSize,
+		UncompressedSize: uncompressedSize,
+	}, nil
 }
 
 func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 	var queryData []queryData
 	for _, segment := range sp.segments {
 		segment := segment.(map[string]interface{})
-		metaData, _ := segment["metadata"].(map[string]interface{})
+		metadataAssertion, _ := segment["metadata"].(map[string]interface{})
+		metadata, err := parseSpoolingMetadata(metadataAssertion)
+		if err != nil {
+			return nil, err
+		}
 		switch segment["type"] {
 		case "inline":
 			data := segment["data"].(string)
@@ -1291,7 +1346,7 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 				return nil, fmt.Errorf("error decoding base64: %v", err)
 			}
 
-			decodedData, err := decode(decodedBytes, sp.encoder, metaData)
+			decodedData, err := decode(decodedBytes, sp.encoding, metadata)
 			if err != nil {
 				return nil, err
 			}
@@ -1302,12 +1357,13 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 			ackUri, _ := segment["ackUri"].(string)
 			headers, _ := segment["headers"].(map[string]interface{})
 
-			segmentdata, err := sp.fetchSegment(uri, ackUri, headers, metaData)
+			data, err := sp.fetchSegment(uri, ackUri, headers)
 			if err != nil {
 				return nil, err
 			}
 
-			queryData = append(queryData, segmentdata...)
+			decodedData, err := decode(data, sp.encoding, metadata)
+			queryData = append(queryData, decodedData...)
 		}
 
 	}
@@ -1315,7 +1371,7 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 	return queryData, nil
 }
 
-func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]interface{}, metaData map[string]interface{}) ([]queryData, error) {
+func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]interface{}) ([]byte, error) {
 	req, err := http.NewRequestWithContext(sp.ctx, "GET", uri, nil)
 	if err != nil {
 		return nil, fmt.Errorf("trino: %w", err)
@@ -1335,7 +1391,7 @@ func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]
 		return nil, fmt.Errorf("trino: unsupported header type %T", v)
 	}
 
-	resp, err := sp.httClient.Do(req)
+	resp, err := sp.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("trino: %w", err)
 	}
@@ -1363,33 +1419,19 @@ func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]
 			}
 		}
 
-		resp, err := sp.httClient.Do(ackReq)
+		resp, err := sp.httpClient.Do(ackReq)
 		if err != nil {
 			return
 		}
 		resp.Body.Close()
 	}()
 
-	return decode(data, sp.encoder, metaData)
+	return data, nil
 }
 
-func decode(data []byte, encoder string, metaData map[string]interface{}) ([]queryData, error) {
-	var uncompressedSize, compressedSize, rowsCount int64
-
-	if uncompressedSizeNumber, ok := metaData["uncompressedSize"].(json.Number); ok {
-		if val, err := uncompressedSizeNumber.Int64(); err == nil {
-			uncompressedSize = val
-		}
-	}
-
-	if rowCountNumber, ok := metaData["rowsCount"].(json.Number); ok {
-		if val, err := rowCountNumber.Int64(); err == nil {
-			rowsCount = val
-		}
-	}
-
-	if uncompressedSize == 0 {
-		var queryDataList = make([]queryData, rowsCount)
+func decode(data []byte, encoding string, metadata spoolingMetadata) ([]queryData, error) {
+	if metadata.UncompressedSize == 0 {
+		var queryDataList = make([]queryData, metadata.RowsCount)
 		decoder := json.NewDecoder(bytes.NewReader(data))
 		decoder.UseNumber()
 		err := decoder.Decode(&queryDataList)
@@ -1399,19 +1441,13 @@ func decode(data []byte, encoder string, metaData map[string]interface{}) ([]que
 		return queryDataList, nil
 	}
 
-	if compressedSizeNumber, ok := metaData["segmentSize"].(json.Number); ok {
-		if val, err := compressedSizeNumber.Int64(); err == nil {
-			compressedSize = val
-		}
-	}
-
-	if int64(len(data)) != compressedSize {
-		return nil, fmt.Errorf("segment size mismatch: expected %d bytes, got %d bytes", compressedSize, len(data))
+	if int64(len(data)) != metadata.SegmentSize {
+		return nil, fmt.Errorf("segment size mismatch: expected %d bytes, got %d bytes", metadata.SegmentSize, len(data))
 	}
 
 	var decompressedData []byte
 	var err error
-	switch encoder {
+	switch encoding {
 	case "json+zstd":
 		zstdReader, err := zstd.NewReader(bytes.NewReader(data))
 		if err != nil {
@@ -1423,7 +1459,7 @@ func decode(data []byte, encoder string, metaData map[string]interface{}) ([]que
 			return nil, fmt.Errorf("error decompressing zstd data: %v", err)
 		}
 	case "json+lz4":
-		decompressedData = make([]byte, uncompressedSize)
+		decompressedData = make([]byte, metadata.UncompressedSize)
 
 		n, err := lz4.UncompressBlock(data, decompressedData)
 		if err != nil {
@@ -1432,14 +1468,14 @@ func decode(data []byte, encoder string, metaData map[string]interface{}) ([]que
 
 		decompressedData = decompressedData[:n]
 	default:
-		return nil, fmt.Errorf("unsupported encoder: %s", encoder)
+		return nil, fmt.Errorf("unsupported encoder: %s", encoding)
 	}
 
-	if int64(len(decompressedData)) != uncompressedSize {
-		return nil, fmt.Errorf("decompressed size mismatch: expected %d bytes, got %d bytes", uncompressedSize, len(decompressedData))
+	if int64(len(decompressedData)) != metadata.UncompressedSize {
+		return nil, fmt.Errorf("decompressed size mismatch: expected %d bytes, got %d bytes", metadata.UncompressedSize, len(decompressedData))
 	}
 
-	var queryDataList = make([]queryData, rowsCount)
+	var queryDataList = make([]queryData, metadata.RowsCount)
 	decoder := json.NewDecoder(bytes.NewReader(decompressedData))
 	decoder.UseNumber()
 	err = decoder.Decode(&queryDataList)
@@ -1535,10 +1571,10 @@ func (qr *driverRows) fetch() error {
 			case map[string]interface{}:
 				// spooling protocol
 				spollingData := spoolingProtocol{
-					httClient: qr.stmt.conn.httpClient,
-					ctx:       qr.ctx,
-					encoder:   data["encoding"].(string),
-					segments:  data["segments"].([]interface{}),
+					httpClient: qr.stmt.conn.httpClient,
+					ctx:        qr.ctx,
+					encoding:   data["encoding"].(string),
+					segments:   data["segments"].([]interface{}),
 				}
 
 				qr.data, err = spollingData.fetch()
