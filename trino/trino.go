@@ -1363,6 +1363,10 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 			}
 
 			decodedData, err := decode(data, sp.encoding, metadata)
+			if err != nil {
+				return nil, err
+			}
+
 			queryData = append(queryData, decodedData...)
 		}
 

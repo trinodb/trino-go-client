@@ -83,10 +83,22 @@ var (
 
 func TestMain(m *testing.M) {
 	flag.Parse()
+
 	DefaultQueryTimeout = *integrationServerQueryTimeout
 	DefaultCancelQueryTimeout = *integrationServerQueryTimeout
 	if *trinoImageTagFlag == "" {
 		*trinoImageTagFlag = "latest"
+	}
+
+	var supportSpoolingProtocol bool
+	if *trinoImageTagFlag == "latest" {
+		supportSpoolingProtocol = true
+	} else {
+		version, err := strconv.Atoi(*trinoImageTagFlag)
+		if err != nil {
+			log.Fatalf("Invalid trino_image_tag: %s", *trinoImageTagFlag)
+		}
+		supportSpoolingProtocol = version >= 466
 	}
 
 	var err error
@@ -120,14 +132,17 @@ func TestMain(m *testing.M) {
 
 		var ok bool
 
-		// Start LocalStack (S3-Compatible Storage)
-		_, ok = pool.ContainerByName(DockerLocalStackName)
-		if !ok {
-			_, err = setupLocalStack(pool, networkID)
-			if err != nil {
-				log.Fatalf("Failed to start LocalStack: %s", err)
+		if supportSpoolingProtocol {
+			// Start LocalStack (S3-Compatible Storage)
+			_, ok = pool.ContainerByName(DockerLocalStackName)
+			if !ok {
+				_, err = setupLocalStack(pool, networkID)
+				if err != nil {
+					log.Fatalf("Failed to start LocalStack: %s", err)
+				}
 			}
 		}
+
 		trinoResource, ok = pool.ContainerByName(DockerTrinoName)
 
 		if !ok {
@@ -135,11 +150,26 @@ func TestMain(m *testing.M) {
 			if err != nil {
 				log.Fatalf("Could not generate TLS certificates: %s", err)
 			}
+
+			mounts := []string{
+				wd + "/etc/catalog:/etc/trino/catalog",
+				wd + "/etc/secrets:/etc/trino/secrets",
+				wd + "/etc/jvm.config:/etc/trino/jvm.config",
+				wd + "/etc/node.properties:/etc/trino/node.properties",
+				wd + "/etc/password-authenticator.properties:/etc/trino/password-authenticator.properties",
+			}
+
+			if supportSpoolingProtocol {
+				mounts = append(mounts, wd+"/etc/config.properties:/etc/trino/config.properties")
+				mounts = append(mounts, wd+"/etc/spooling-manager.properties:/etc/trino/spooling-manager.properties")
+			} else {
+				mounts = append(mounts, wd+"/etc/config-pre-466version.properties:/etc/trino/config.properties")
+			}
 			trinoResource, err = pool.RunWithOptions(&dt.RunOptions{
 				Name:       DockerTrinoName,
 				Repository: "trinodb/trino",
 				Tag:        *trinoImageTagFlag,
-				Mounts:     []string{wd + "/etc:/etc/trino"},
+				Mounts:     mounts,
 				ExposedPorts: []string{
 					"8080/tcp",
 					"8443/tcp",
@@ -194,13 +224,17 @@ func TestMain(m *testing.M) {
 				log.Fatalf("Could not purge resource: %s", err)
 			}
 		}
-		// Purge LocalStack container
-		localstackResource, ok := pool.ContainerByName(DockerLocalStackName)
-		if ok {
-			if err := pool.Purge(localstackResource); err != nil {
-				log.Fatalf("Could not purge LocalStack resource: %s", err)
+
+		if supportSpoolingProtocol {
+			// Purge LocalStack container
+			localstackResource, ok := pool.ContainerByName(DockerLocalStackName)
+			if ok {
+				if err := pool.Purge(localstackResource); err != nil {
+					log.Fatalf("Could not purge LocalStack resource: %s", err)
+				}
 			}
 		}
+
 		// Purge Docker network
 		networkExists, networkID, err := networkExists(pool, "trino-network")
 		if err == nil && networkExists {
