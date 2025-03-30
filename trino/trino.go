@@ -135,6 +135,7 @@ const (
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
 
 	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
+	trinoEncoding                = "encoding"
 
 	authorizationHeader = "Authorization"
 
@@ -932,7 +933,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				continue
 			}
 
-			if arg.Name == trinoQueryDataEncodingHeader {
+			if arg.Name == trinoEncoding {
 				hs.Add(trinoQueryDataEncodingHeader, arg.Value.(string))
 				continue
 			}
@@ -1314,6 +1315,7 @@ func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, e
 	}
 
 	var rowsCount int64
+	// Bug: rowsCount was not enforced as a mandatory field on Trino response. Fixed on 475 release
 	if rowsCountAssertion, ok := metadata["rowsCount"].(json.Number); ok {
 		if val, err := rowsCountAssertion.Int64(); err == nil {
 			rowsCount = val
@@ -1331,16 +1333,21 @@ func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, e
 func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 	var queryData []queryData
 	for _, segment := range sp.segments {
-		segment := segment.(map[string]interface{})
-		metadataAssertion, _ := segment["metadata"].(map[string]interface{})
-		metadata, err := parseSpoolingMetadata(metadataAssertion)
+		segment, ok := segment.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("segment is invalid")
+		}
+		typedMetadata, ok := segment["metadata"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("metadata missing or invalid in segment")
+		}
+		metadata, err := parseSpoolingMetadata(typedMetadata)
 		if err != nil {
 			return nil, err
 		}
 		switch segment["type"] {
 		case "inline":
-			data := segment["data"].(string)
-			decodedBytes, err := base64.StdEncoding.DecodeString(data)
+			decodedBytes, err := base64.StdEncoding.DecodeString(segment["data"].(string))
 
 			if err != nil {
 				return nil, fmt.Errorf("error decoding base64: %v", err)

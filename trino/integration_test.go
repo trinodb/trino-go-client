@@ -52,6 +52,7 @@ const (
 	DockerLocalStackName = "localstack"
 	bucketName           = "spooling"
 	DockerTrinoName      = "trino-go-client-tests"
+	MAXRetries           = 10
 )
 
 var (
@@ -83,22 +84,21 @@ var (
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-
 	DefaultQueryTimeout = *integrationServerQueryTimeout
 	DefaultCancelQueryTimeout = *integrationServerQueryTimeout
 	if *trinoImageTagFlag == "" {
 		*trinoImageTagFlag = "latest"
 	}
 
-	var supportSpoolingProtocol bool
+	var spoolingProtocolSupported bool
 	if *trinoImageTagFlag == "latest" {
-		supportSpoolingProtocol = true
+		spoolingProtocolSupported = true
 	} else {
 		version, err := strconv.Atoi(*trinoImageTagFlag)
 		if err != nil {
 			log.Fatalf("Invalid trino_image_tag: %s", *trinoImageTagFlag)
 		}
-		supportSpoolingProtocol = version >= 466
+		spoolingProtocolSupported = version >= 466
 	}
 
 	var err error
@@ -132,7 +132,7 @@ func TestMain(m *testing.M) {
 
 		var ok bool
 
-		if supportSpoolingProtocol {
+		if spoolingProtocolSupported {
 			// Start LocalStack (S3-Compatible Storage)
 			_, ok = pool.ContainerByName(DockerLocalStackName)
 			if !ok {
@@ -159,7 +159,7 @@ func TestMain(m *testing.M) {
 				wd + "/etc/password-authenticator.properties:/etc/trino/password-authenticator.properties",
 			}
 
-			if supportSpoolingProtocol {
+			if spoolingProtocolSupported {
 				mounts = append(mounts, wd+"/etc/config.properties:/etc/trino/config.properties")
 				mounts = append(mounts, wd+"/etc/spooling-manager.properties:/etc/trino/spooling-manager.properties")
 			} else {
@@ -225,7 +225,7 @@ func TestMain(m *testing.M) {
 			}
 		}
 
-		if supportSpoolingProtocol {
+		if spoolingProtocolSupported {
 			// Purge LocalStack container
 			localstackResource, ok := pool.ContainerByName(DockerLocalStackName)
 			if ok {
@@ -293,13 +293,13 @@ func setupLocalStack(pool *dt.Pool, networkID string) (string, error) {
 	}
 
 	// Create S3 bucket for integration tests
-	for i := 0; i < 10; i++ {
+	for retry := 0; retry < MAXRetries; retry++ {
 		err := runLocalStackCommand("test", "test", fmt.Sprintf("aws --endpoint-url=%s s3 mb s3://%s", s3Endpoint, bucketName))
 		if err == nil {
 			log.Println("S3 bucket created successfully")
 			return s3Endpoint, nil
 		}
-		log.Printf("Failed to create S3 bucket, retrying... (%d/10)\n", i+1)
+		log.Printf("Failed to create S3 bucket, retrying... (%d/10)\n", retry+1)
 		time.Sleep(2 * time.Second)
 	}
 
@@ -1539,7 +1539,7 @@ func TestIntegrationTypeConversionSpoolingProtocolInlineJsonEncoder(t *testing.T
 			MAP(ARRAY['a', 'b'], ARRAY['c', 'd']),
 			CAST(NULL AS MAP(ARRAY(INTEGER), ARRAY(INTEGER))),
 			ROW(1, 'a', CAST('2017-07-10 01:02:03.004 UTC' AS TIMESTAMP(6) WITH TIME ZONE), ARRAY['c'])
-	`, sql.Named("X-Trino-Query-Data-Encoding", "json")).Scan(
+	`, sql.Named(trinoEncoding, "json")).Scan(
 		&goTime,
 		&nullTime,
 		&goString,
@@ -1565,7 +1565,7 @@ func TestIntegrationTypeConversionSpoolingProtocolInlineJsonEncoder(t *testing.T
 func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonZstdEncoded(t *testing.T) {
 	db := integrationOpen(t)
 	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named("X-Trino-Query-Data-Encoding", "json+zstd"))
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named(trinoEncoding, "json+zstd"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1599,7 +1599,7 @@ func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonZstdEncoded(t *testi
 func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonEncoded(t *testing.T) {
 	db := integrationOpen(t)
 	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named("X-Trino-Query-Data-Encoding", "json"))
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named(trinoEncoding, "json"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1633,7 +1633,7 @@ func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonEncoded(t *testing.T
 func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonLz4Encoded(t *testing.T) {
 	db := integrationOpen(t)
 	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named("X-Trino-Query-Data-Encoding", "json+lz4"))
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named(trinoEncoding, "json+lz4"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1667,7 +1667,7 @@ func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonLz4Encoded(t *testin
 func TestIntegrationSelectTpch100SpoolingInlineSegmentJsonZstdEncoded(t *testing.T) {
 	db := integrationOpen(t)
 	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 100", sql.Named("X-Trino-Query-Data-Encoding", "json+zstd"))
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 100", sql.Named(trinoEncoding, "json+zstd"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1701,7 +1701,7 @@ func TestIntegrationSelectTpch100SpoolingInlineSegmentJsonZstdEncoded(t *testing
 func TestIntegrationSelectTpch100SpoolingInlineSegmentJsonlz4Encoded(t *testing.T) {
 	db := integrationOpen(t)
 	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 100", sql.Named("X-Trino-Query-Data-Encoding", "json+lz4"))
+	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 100", sql.Named(trinoEncoding, "json+lz4"))
 	if err != nil {
 		t.Fatal(err)
 	}
