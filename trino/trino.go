@@ -1344,6 +1344,13 @@ func (qr *driverRows) fetch() error {
 				err = io.EOF
 			} else if err == context.Canceled {
 				qr.Close()
+			} else {
+				var queryErr *ErrQueryFailed
+				if errors.As(err, &queryErr) {
+					if errors.Is(queryErr.Reason, context.DeadlineExceeded) {
+						qr.Close()
+					}
+				}
 			}
 			qr.err = err
 			return err
