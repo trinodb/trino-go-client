@@ -43,6 +43,10 @@ import (
 	"time"
 
 	"github.com/ahmetb/dlog"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go/aws"
 	"github.com/golang-jwt/jwt/v5"
 	dt "github.com/ory/dockertest/v3"
 	docker "github.com/ory/dockertest/v3/docker"
@@ -53,11 +57,13 @@ const (
 	bucketName           = "spooling"
 	DockerTrinoName      = "trino-go-client-tests"
 	MAXRetries           = 10
+	TrinoNetwork         = "trino-network"
 )
 
 var (
-	pool          *dt.Pool
-	trinoResource *dt.Resource
+	pool               *dt.Pool
+	trinoResource      *dt.Resource
+	localStackResource *dt.Resource
 
 	trinoImageTagFlag = flag.String(
 		"trino_image_tag",
@@ -109,21 +115,7 @@ func TestMain(m *testing.M) {
 		}
 		pool.MaxWait = 1 * time.Minute
 
-		networkName := "trino-network"
-		networkExists, networkID, err := networkExists(pool, networkName)
-		if err != nil {
-			log.Fatalf("Could not check if Docker network exists: %s", err)
-		}
-
-		if !networkExists {
-			network, err := pool.Client.CreateNetwork(docker.CreateNetworkOptions{
-				Name: networkName,
-			})
-			if err != nil {
-				log.Fatalf("Could not create Docker network: %s", err)
-			}
-			networkID = network.ID
-		}
+		networkID := getOrCreateNetwork(pool)
 
 		wd, err := os.Getwd()
 		if err != nil {
@@ -131,16 +123,8 @@ func TestMain(m *testing.M) {
 		}
 
 		var ok bool
-
 		if spoolingProtocolSupported {
-			// Start LocalStack (S3-Compatible Storage)
-			_, ok = pool.ContainerByName(DockerLocalStackName)
-			if !ok {
-				_, err = setupLocalStack(pool, networkID)
-				if err != nil {
-					log.Fatalf("Failed to start LocalStack: %s", err)
-				}
-			}
+			localStackResource = getOrCreateLocalStack(pool, networkID)
 		}
 
 		trinoResource, ok = pool.ContainerByName(DockerTrinoName)
@@ -191,22 +175,8 @@ func TestMain(m *testing.M) {
 			pool.Client.StartContainer(trinoResource.Container.ID, nil)
 		}
 
-		if err := pool.Retry(func() error {
-			c, err := pool.Client.InspectContainer(trinoResource.Container.ID)
-			if err != nil {
-				log.Fatalf("Failed to inspect container %s: %s", trinoResource.Container.ID, err)
-			}
-			if !c.State.Running {
-				log.Fatalf("Container %s is not running: %s\nContainer logs:\n%s", trinoResource.Container.ID, c.State.String(), getLogs(trinoResource.Container.ID))
-			}
-			log.Printf("Waiting for Trino container: %s\n", c.State.String())
-			if c.State.Health.Status != "healthy" {
-				return errors.New("Not ready")
-			}
-			return nil
-		}); err != nil {
-			log.Fatalf("Timed out waiting for container to get ready: %s\nContainer logs:\n%s", err, getLogs(trinoResource.Container.ID))
-		}
+		waitForContainerHealth(trinoResource.Container.ID, "trino")
+
 		*integrationServerFlag = "http://test@localhost:" + trinoResource.GetPort("8080/tcp")
 		tlsServer = "https://admin:admin@localhost:" + trinoResource.GetPort("8443/tcp")
 
@@ -225,18 +195,13 @@ func TestMain(m *testing.M) {
 			}
 		}
 
-		if spoolingProtocolSupported {
-			// Purge LocalStack container
-			localstackResource, ok := pool.ContainerByName(DockerLocalStackName)
-			if ok {
-				if err := pool.Purge(localstackResource); err != nil {
-					log.Fatalf("Could not purge LocalStack resource: %s", err)
-				}
+		if localStackResource != nil {
+			if err := pool.Purge(localStackResource); err != nil {
+				log.Fatalf("Could not purge LocalStack resource: %s", err)
 			}
 		}
 
-		// Purge Docker network
-		networkExists, networkID, err := networkExists(pool, "trino-network")
+		networkExists, networkID, err := networkExists(pool, TrinoNetwork)
 		if err == nil && networkExists {
 			if err := pool.Client.RemoveNetwork(networkID); err != nil {
 				log.Fatalf("Could not remove Docker network: %s", err)
@@ -245,6 +210,40 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+func getOrCreateLocalStack(pool *dt.Pool, networkID string) *dt.Resource {
+	resource, ok := pool.ContainerByName(DockerLocalStackName)
+	if ok {
+		return resource
+	}
+
+	newResource, err := setupLocalStack(pool, networkID)
+	if err != nil {
+		log.Fatalf("Failed to start LocalStack: %s", err)
+	}
+
+	return newResource
+}
+
+func getOrCreateNetwork(pool *dt.Pool) string {
+	networkExists, networkID, err := networkExists(pool, TrinoNetwork)
+	if err != nil {
+		log.Fatalf("Could not check if Docker network exists: %s", err)
+	}
+
+	if networkExists {
+		return networkID
+	}
+
+	network, err := pool.Client.CreateNetwork(docker.CreateNetworkOptions{
+		Name: TrinoNetwork,
+	})
+	if err != nil {
+		log.Fatalf("Could not create Docker network: %s", err)
+	}
+
+	return network.ID
 }
 
 func networkExists(pool *dt.Pool, networkName string) (bool, string, error) {
@@ -260,14 +259,16 @@ func networkExists(pool *dt.Pool, networkName string) (bool, string, error) {
 	return false, "", nil
 }
 
-func setupLocalStack(pool *dt.Pool, networkID string) (string, error) {
-	localstackRes, err := pool.RunWithOptions(&dt.RunOptions{
+func setupLocalStack(pool *dt.Pool, networkID string) (*dt.Resource, error) {
+	localstackResource, err := pool.RunWithOptions(&dt.RunOptions{
 		Name:       DockerLocalStackName,
 		Repository: "localstack/localstack",
 		Tag:        "latest",
 		Env: []string{
 			"SERVICES=s3",
 			"region_name=us-east-1",
+			"AWS_ACCESS_KEY_ID=test",
+			"AWS_SECRET_ACCESS_KEY=test",
 		},
 
 		PortBindings: map[docker.Port][]docker.PortBinding{
@@ -278,32 +279,27 @@ func setupLocalStack(pool *dt.Pool, networkID string) (string, error) {
 		NetworkID: networkID,
 	})
 	if err != nil {
-		return "", fmt.Errorf("could not start LocalStack: %w", err)
+		return nil, fmt.Errorf("could not start LocalStack: %w", err)
 	}
 
-	// Get LocalStack endpoint
-	localstackPort := localstackRes.GetPort("4566/tcp")
+	localstackPort := localstackResource.GetPort("4566/tcp")
 	s3Endpoint := "http://localhost:" + localstackPort
 
 	log.Println("LocalStack started at:", s3Endpoint)
 
-	// Wait for LocalStack to be ready
-	if err := waitForContainerRunning(pool, localstackRes.Container.ID); err != nil {
-		return "", fmt.Errorf("LocalStack did not become ready: %w", err)
-	}
+	waitForContainerHealth(localstackResource.Container.ID, "localstack")
 
-	// Create S3 bucket for integration tests
 	for retry := 0; retry < MAXRetries; retry++ {
-		err := runLocalStackCommand("test", "test", fmt.Sprintf("aws --endpoint-url=%s s3 mb s3://%s", s3Endpoint, bucketName))
+		err := createS3Bucket(s3Endpoint, "test", "test", bucketName)
 		if err == nil {
 			log.Println("S3 bucket created successfully")
-			return s3Endpoint, nil
+			return localstackResource, nil
 		}
 		log.Printf("Failed to create S3 bucket, retrying... (%d/10)\n", retry+1)
 		time.Sleep(2 * time.Second)
 	}
 
-	return "", fmt.Errorf("failed to create S3 bucket after multiple attempts: %w", err)
+	return nil, fmt.Errorf("failed to create S3 bucket after multiple attempts: %w", err)
 }
 
 func runLocalStackCommand(accessKey, secretKey, command string) error {
@@ -318,20 +314,55 @@ func runLocalStackCommand(accessKey, secretKey, command string) error {
 	return cmd.Run()
 }
 
-func waitForContainerRunning(pool *dt.Pool, containerID string) error {
-	log.Println("Waiting for LocalStack container to be in a running state...")
-	for i := 0; i < 10; i++ {
+func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
+	// Load AWS config with LocalStack credentials
+	cfg, err := config.LoadDefaultConfig(context.TODO(),
+		config.WithRegion("us-east-1"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to load AWS config: %w", err)
+	}
+
+	// Use the correct custom resolver
+	s3Client := s3.New(s3.Options{
+		Credentials:  cfg.Credentials,
+		Region:       "us-east-1",
+		BaseEndpoint: &endpoint,
+		UsePathStyle: *aws.Bool(true),
+	})
+
+	// Ensure the bucket name is included in the request URL
+	createBucketInput := &s3.CreateBucketInput{
+		Bucket: aws.String(bucketName),
+	}
+
+	_, err = s3Client.CreateBucket(context.TODO(), createBucketInput)
+	if err != nil {
+		return fmt.Errorf("failed to create S3 bucket: %w", err)
+	}
+
+	log.Printf("Bucket %s created successfully!", bucketName)
+	return nil
+}
+
+func waitForContainerHealth(containerID, containerName string) {
+	if err := pool.Retry(func() error {
 		c, err := pool.Client.InspectContainer(containerID)
 		if err != nil {
-			return fmt.Errorf("failed to inspect container: %w", err)
+			log.Fatalf("Failed to inspect container %s: %s", containerID, err)
 		}
-		if c.State.Running {
-			log.Println("LocalStack container is running!")
-			return nil
+		if !c.State.Running {
+			log.Fatalf("Container %s is not running: %s\nContainer logs:\n%s", containerID, c.State.String(), getLogs(trinoResource.Container.ID))
 		}
-		time.Sleep(2 * time.Second)
+		log.Printf("Waiting for %s container: %s\n", containerName, c.State.String())
+		if c.State.Health.Status != "healthy" {
+			return errors.New("Not ready")
+		}
+		return nil
+	}); err != nil {
+		log.Fatalf("Timed out waiting for container %s to get ready: %s\nContainer logs:\n%s", containerName, err, getLogs(containerID))
 	}
-	return fmt.Errorf("LocalStack container did not start in time")
 }
 
 func generateCerts(dir string) error {
