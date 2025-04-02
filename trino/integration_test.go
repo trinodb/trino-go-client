@@ -315,7 +315,6 @@ func runLocalStackCommand(accessKey, secretKey, command string) error {
 }
 
 func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
-	// Load AWS config with LocalStack credentials
 	cfg, err := config.LoadDefaultConfig(context.TODO(),
 		config.WithRegion("us-east-1"),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
@@ -324,7 +323,6 @@ func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
 		return fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
-	// Use the correct custom resolver
 	s3Client := s3.New(s3.Options{
 		Credentials:  cfg.Credentials,
 		Region:       "us-east-1",
@@ -332,7 +330,6 @@ func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
 		UsePathStyle: *aws.Bool(true),
 	})
 
-	// Ensure the bucket name is included in the request URL
 	createBucketInput := &s3.CreateBucketInput{
 		Bucket: aws.String(bucketName),
 	}

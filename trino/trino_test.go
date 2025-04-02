@@ -1440,7 +1440,7 @@ func TestSpoolingSpooledSegmentErrors(t *testing.T) {
 					},
 				},
 			},
-			ExpectedError: "trino: multiple values for header x-amz-server-side-encryption-customer-key-md5",
+			ExpectedError: "multiple values for header x-amz-server-side-encryption-customer-key-md5",
 		},
 	}
 

@@ -1286,48 +1286,48 @@ type spoolingMetadata struct {
 }
 
 func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, error) {
-	rowOffsetAssertion, ok := metadata["rowOffset"].(json.Number)
-	if !ok {
-		return spoolingMetadata{}, fmt.Errorf("rowOffset missing or invalid")
+	var mt spoolingMetadata
+
+	// mandatory field
+	if val, ok := metadata["rowOffset"].(json.Number); ok {
+		var err error
+		mt.RowOffset, err = val.Int64()
+		if err != nil {
+			return spoolingMetadata{}, fmt.Errorf("error converting rowOffset to int64: %v", err)
+		}
+	} else {
+		return spoolingMetadata{}, fmt.Errorf("rowOffset missing or invalid on segment metada")
 	}
 
-	rowOffset, err := rowOffsetAssertion.Int64()
-	if err != nil {
-		return spoolingMetadata{}, fmt.Errorf("error converting rowOffset to int64")
+	// mandatory field
+	if val, ok := metadata["segmentSize"].(json.Number); ok {
+		var err error
+		mt.SegmentSize, err = val.Int64()
+		if err != nil {
+			return spoolingMetadata{}, fmt.Errorf("error converting segmentSize to int64: %v", err)
+		}
+	} else {
+		return spoolingMetadata{}, fmt.Errorf("segmentSize missing or invalid on segment metada")
 	}
 
-	segmentSizeAssertion, ok := metadata["segmentSize"].(json.Number)
-
-	if !ok {
-		return spoolingMetadata{}, fmt.Errorf("segmentSize missing or invalid")
-	}
-
-	segmentSize, err := segmentSizeAssertion.Int64()
-	if err != nil {
-		return spoolingMetadata{}, fmt.Errorf("error converting segmentSize to int64")
-	}
-
-	var uncompressedSize int64
-	if uncompressedSizeAssertion, ok := metadata["uncompressedSize"].(json.Number); ok {
-		if val, err := uncompressedSizeAssertion.Int64(); err == nil {
-			uncompressedSize = val
+	if val, ok := metadata["uncompressedSize"].(json.Number); ok {
+		var err error
+		mt.UncompressedSize, err = val.Int64()
+		if err != nil {
+			return spoolingMetadata{}, fmt.Errorf("error converting uncompressedSize to int64: %v", err)
 		}
 	}
 
-	var rowsCount int64
 	// Bug: rowsCount was not enforced as a mandatory field on Trino response. Fixed on 475 release
-	if rowsCountAssertion, ok := metadata["rowsCount"].(json.Number); ok {
-		if val, err := rowsCountAssertion.Int64(); err == nil {
-			rowsCount = val
+	if val, ok := metadata["rowsCount"].(json.Number); ok {
+		var err error
+		mt.RowsCount, err = val.Int64()
+		if err != nil {
+			return spoolingMetadata{}, fmt.Errorf("error converting rowsCount to int64: %v", err)
 		}
 	}
 
-	return spoolingMetadata{
-		RowOffset:        rowOffset,
-		RowsCount:        rowsCount,
-		SegmentSize:      segmentSize,
-		UncompressedSize: uncompressedSize,
-	}, nil
+	return mt, nil
 }
 
 func (sp *spoolingProtocol) fetch() ([]queryData, error) {
@@ -1385,31 +1385,29 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]interface{}) ([]byte, error) {
 	req, err := http.NewRequestWithContext(sp.ctx, "GET", uri, nil)
 	if err != nil {
-		return nil, fmt.Errorf("trino: %w", err)
+		return nil, err
 	}
 
 	for k, v := range headers {
 		headerSlice, ok := v.([]interface{})
-
-		if ok {
-			if len(headerSlice) > 1 {
-				return nil, fmt.Errorf("trino: multiple values for header %s", k)
-			}
-			req.Header.Add(k, headerSlice[0].(string))
-			continue
+		if !ok {
+			return nil, fmt.Errorf("unsupported header type %T", v)
 		}
 
-		return nil, fmt.Errorf("trino: unsupported header type %T", v)
+		if len(headerSlice) > 1 {
+			return nil, fmt.Errorf("multiple values for header %s", k)
+		}
+		req.Header.Add(k, headerSlice[0].(string))
 	}
 
 	resp, err := sp.httpClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("trino: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("trino: unexpected status code %d", resp.StatusCode)
+		return nil, fmt.Errorf("unexpected status code %d", resp.StatusCode)
 	}
 
 	data, err := io.ReadAll(resp.Body)
@@ -1447,7 +1445,7 @@ func decode(data []byte, encoding string, metadata spoolingMetadata) ([]queryDat
 		decoder.UseNumber()
 		err := decoder.Decode(&queryDataList)
 		if err != nil {
-			return nil, fmt.Errorf("error unmarshalling JSON: %v", err)
+			return nil, fmt.Errorf("failed to decode uncompressed segment to JSON at rowOffset %d: %v", metadata.RowOffset, err)
 		}
 		return queryDataList, nil
 	}
@@ -1462,24 +1460,24 @@ func decode(data []byte, encoding string, metadata spoolingMetadata) ([]queryDat
 	case "json+zstd":
 		zstdReader, err := zstd.NewReader(bytes.NewReader(data))
 		if err != nil {
-			return nil, fmt.Errorf("trino: error creating zstd reader: %w", err)
+			return nil, fmt.Errorf("error creating zstd reader: %w", err)
 		}
 		defer zstdReader.Close()
 		decompressedData, err = io.ReadAll(zstdReader)
 		if err != nil {
-			return nil, fmt.Errorf("error decompressing zstd data: %v", err)
+			return nil, fmt.Errorf("failed to decompress zstd segment at rowOffset %d: %v", metadata.RowOffset, err)
 		}
 	case "json+lz4":
 		decompressedData = make([]byte, metadata.UncompressedSize)
 
 		n, err := lz4.UncompressBlock(data, decompressedData)
 		if err != nil {
-			return nil, fmt.Errorf("error decompressing LZ4 data: %v", err)
+			return nil, fmt.Errorf("failed to decompress LZ4 segment at rowOffset %d: %v", metadata.RowOffset, err)
 		}
 
 		decompressedData = decompressedData[:n]
 	default:
-		return nil, fmt.Errorf("unsupported encoder: %s", encoding)
+		return nil, fmt.Errorf("unsupported segment encoder: %s", encoding)
 	}
 
 	if int64(len(decompressedData)) != metadata.UncompressedSize {
@@ -1491,7 +1489,7 @@ func decode(data []byte, encoding string, metadata spoolingMetadata) ([]queryDat
 	decoder.UseNumber()
 	err = decoder.Decode(&queryDataList)
 	if err != nil {
-		return nil, fmt.Errorf("error unmarshalling JSON: %v", err)
+		return nil, fmt.Errorf("failed to decode decompressed segment into JSON at rowOffset %d: %v", metadata.RowOffset, err)
 	}
 
 	return queryDataList, nil
@@ -1577,6 +1575,8 @@ func (qr *driverRows) fetch() error {
 				for i, item := range data {
 					if row, ok := item.([]interface{}); ok {
 						qr.data[i] = row
+					} else {
+						return fmt.Errorf("unexpected data type for row at index %d: expected []interface{}, got %T", i, item)
 					}
 				}
 			case map[string]interface{}:
