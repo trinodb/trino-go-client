@@ -1012,39 +1012,34 @@ func TestIntegrationQueryContext(t *testing.T) {
 	tests := []struct {
 		name           string
 		timeout        time.Duration
-		manualCancel   bool
 		expectedErrMsg string
 	}{
 		{
 			name:           "Context Cancellation",
 			timeout:        0,
-			manualCancel:   true,
 			expectedErrMsg: "canceled",
 		},
 		{
 			name:           "Context Deadline Exceeded",
 			timeout:        3 * time.Second,
-			manualCancel:   false,
 			expectedErrMsg: "context deadline exceeded",
 		},
 	}
 
+	if err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}}); err != nil {
+		t.Fatal(err)
+	}
+
+	dsn := *integrationServerFlag + "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=uncompressed"
+	db := integrationOpen(t, dsn)
+	defer db.Close()
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			dsn := *integrationServerFlag
-			dsn += "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=uncompressed"
-			db := integrationOpen(t, dsn)
-			defer db.Close()
-
 			var ctx context.Context
 			var cancel context.CancelFunc
 
-			if tt.manualCancel {
+			if tt.timeout == 0 {
 				ctx, cancel = context.WithCancel(context.Background())
 			} else {
 				ctx, cancel = context.WithTimeout(context.Background(), tt.timeout)
@@ -1091,7 +1086,7 @@ func TestIntegrationQueryContext(t *testing.T) {
 				}
 			}
 
-			if tt.manualCancel {
+			if tt.timeout == 0 {
 				cancel()
 			}
 

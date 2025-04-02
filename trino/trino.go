@@ -1342,15 +1342,8 @@ func (qr *driverRows) fetch() error {
 				// Channel was closed, which means the statement
 				// or rows were closed.
 				err = io.EOF
-			} else if err == context.Canceled {
+			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 				qr.Close()
-			} else {
-				var queryErr *ErrQueryFailed
-				if errors.As(err, &queryErr) {
-					if errors.Is(queryErr.Reason, context.DeadlineExceeded) {
-						qr.Close()
-					}
-				}
 			}
 			qr.err = err
 			return err
