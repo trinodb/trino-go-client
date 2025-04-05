@@ -1617,7 +1617,6 @@ func (qr *driverRows) fetch() error {
 					return fmt.Errorf("invalid or missing 'segments' field on spooling protocol, expected []interface{}")
 				}
 
-				// Create spoolingProtocol struct with validated values
 				spoolingData := spoolingProtocol{
 					httpClient: qr.stmt.conn.httpClient,
 					ctx:        qr.ctx,
