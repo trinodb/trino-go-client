@@ -35,7 +35,6 @@ import (
 	"math/big"
 	"net/http"
 	"os"
-	"os/exec"
 	"reflect"
 	"strconv"
 	"strings"
@@ -188,26 +187,26 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 
-	if !*noCleanup && pool != nil {
-		if trinoResource != nil {
-			if err := pool.Purge(trinoResource); err != nil {
-				log.Fatalf("Could not purge resource: %s", err)
-			}
-		}
+	// if !*noCleanup && pool != nil {
+	// 	if trinoResource != nil {
+	// 		if err := pool.Purge(trinoResource); err != nil {
+	// 			log.Fatalf("Could not purge resource: %s", err)
+	// 		}
+	// 	}
 
-		if localStackResource != nil {
-			if err := pool.Purge(localStackResource); err != nil {
-				log.Fatalf("Could not purge LocalStack resource: %s", err)
-			}
-		}
+	// 	if localStackResource != nil {
+	// 		if err := pool.Purge(localStackResource); err != nil {
+	// 			log.Fatalf("Could not purge LocalStack resource: %s", err)
+	// 		}
+	// 	}
 
-		networkExists, networkID, err := networkExists(pool, TrinoNetwork)
-		if err == nil && networkExists {
-			if err := pool.Client.RemoveNetwork(networkID); err != nil {
-				log.Fatalf("Could not remove Docker network: %s", err)
-			}
-		}
-	}
+	// 	networkExists, networkID, err := networkExists(pool, TrinoNetwork)
+	// 	if err == nil && networkExists {
+	// 		if err := pool.Client.RemoveNetwork(networkID); err != nil {
+	// 			log.Fatalf("Could not remove Docker network: %s", err)
+	// 		}
+	// 	}
+	// }
 
 	os.Exit(code)
 }
@@ -300,18 +299,6 @@ func setupLocalStack(pool *dt.Pool, networkID string) (*dt.Resource, error) {
 	}
 
 	return nil, fmt.Errorf("failed to create S3 bucket after multiple attempts: %w", err)
-}
-
-func runLocalStackCommand(accessKey, secretKey, command string) error {
-	cmd := exec.Command("sh", "-c", command)
-	cmd.Env = append(os.Environ(),
-		"AWS_ACCESS_KEY_ID="+accessKey,
-		"AWS_SECRET_ACCESS_KEY="+secretKey,
-		"AWS_DEFAULT_REGION=us-east-1",
-	)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }
 
 func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
@@ -1590,172 +1577,82 @@ func TestIntegrationTypeConversionSpoolingProtocolInlineJsonEncoder(t *testing.T
 	}
 }
 
-func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonZstdEncoded(t *testing.T) {
-	db := integrationOpen(t)
-	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named(trinoEncoding, "json+zstd"))
-	if err != nil {
-		t.Fatal(err)
+func TestIntegrationSelectTpchSpoolingSegments(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		encoding string
+		expected int
+	}{
+		{
+			name:     "Spooling Spooled Segment JSON+ZSTD Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 1000",
+			encoding: "json+zstd",
+			expected: 1000,
+		},
+		{
+			name:     "Spooling Spooled Segment JSON Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 1000",
+			encoding: "json",
+			expected: 1000,
+		},
+		{
+			name:     "Spooling Spooled Segment JSON+LZ4 Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 1000",
+			encoding: "json+lz4",
+			expected: 1000,
+		},
+		{
+			name:     "Spooling Inline Segment JSON+ZSTD Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 100",
+			encoding: "json+zstd",
+			expected: 100,
+		},
+		{
+			name:     "Spooling Inline Segment JSON+LZ4 Encoded",
+			query:    "SELECT * FROM tpch.sf1.customer LIMIT 100",
+			encoding: "json+lz4",
+			expected: 100,
+		},
 	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		count++
-		var col tpchRow
-		err = rows.Scan(
-			&col.CustKey,
-			&col.Name,
-			&col.Address,
-			&col.NationKey,
-			&col.Phone,
-			&col.AcctBal,
-			&col.MktSegment,
-			&col.Comment,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if rows.Err() != nil {
-		t.Fatal(err)
-	}
-	if count != 1000 {
-		t.Fatal("not enough rows returned:", count)
-	}
-}
 
-func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonEncoded(t *testing.T) {
-	db := integrationOpen(t)
-	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named(trinoEncoding, "json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		count++
-		var col tpchRow
-		err = rows.Scan(
-			&col.CustKey,
-			&col.Name,
-			&col.Address,
-			&col.NationKey,
-			&col.Phone,
-			&col.AcctBal,
-			&col.MktSegment,
-			&col.Comment,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if rows.Err() != nil {
-		t.Fatal(err)
-	}
-	if count != 1000 {
-		t.Fatal("not enough rows returned:", count)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := integrationOpen(t)
+			defer db.Close()
 
-func TestIntegrationSelectTpch1000SpoolingSpolledSegmentJsonLz4Encoded(t *testing.T) {
-	db := integrationOpen(t)
-	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000", sql.Named(trinoEncoding, "json+lz4"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		count++
-		var col tpchRow
-		err = rows.Scan(
-			&col.CustKey,
-			&col.Name,
-			&col.Address,
-			&col.NationKey,
-			&col.Phone,
-			&col.AcctBal,
-			&col.MktSegment,
-			&col.Comment,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if rows.Err() != nil {
-		t.Fatal(err)
-	}
-	if count != 1000 {
-		t.Fatal("not enough rows returned:", count)
-	}
-}
+			rows, err := db.Query(tt.query, sql.Named(trinoEncoding, tt.encoding))
+			if err != nil {
+				t.Fatalf("Query failed: %v", err)
+			}
+			defer rows.Close()
 
-func TestIntegrationSelectTpch100SpoolingInlineSegmentJsonZstdEncoded(t *testing.T) {
-	db := integrationOpen(t)
-	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 100", sql.Named(trinoEncoding, "json+zstd"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		count++
-		var col tpchRow
-		err = rows.Scan(
-			&col.CustKey,
-			&col.Name,
-			&col.Address,
-			&col.NationKey,
-			&col.Phone,
-			&col.AcctBal,
-			&col.MktSegment,
-			&col.Comment,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if rows.Err() != nil {
-		t.Fatal(err)
-	}
-	if count != 100 {
-		t.Fatal("not enough rows returned:", count)
-	}
-}
+			count := 0
+			for rows.Next() {
+				count++
+				var col tpchRow
+				err = rows.Scan(
+					&col.CustKey,
+					&col.Name,
+					&col.Address,
+					&col.NationKey,
+					&col.Phone,
+					&col.AcctBal,
+					&col.MktSegment,
+					&col.Comment,
+				)
+				if err != nil {
+					t.Fatalf("Row scan failed: %v", err)
+				}
+			}
 
-func TestIntegrationSelectTpch100SpoolingInlineSegmentJsonlz4Encoded(t *testing.T) {
-	db := integrationOpen(t)
-	defer db.Close()
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 100", sql.Named(trinoEncoding, "json+lz4"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		count++
-		var col tpchRow
-		err = rows.Scan(
-			&col.CustKey,
-			&col.Name,
-			&col.Address,
-			&col.NationKey,
-			&col.Phone,
-			&col.AcctBal,
-			&col.MktSegment,
-			&col.Comment,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	if rows.Err() != nil {
-		t.Fatal(err)
-	}
-	if count != 100 {
-		t.Fatal("not enough rows returned:", count)
+			if rows.Err() != nil {
+				t.Fatalf("Rows iteration error: %v", rows.Err())
+			}
+
+			if count != tt.expected {
+				t.Fatalf("Expected %d rows, got %d", tt.expected, count)
+			}
+		})
 	}
 }

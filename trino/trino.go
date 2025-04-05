@@ -1296,7 +1296,7 @@ func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, e
 			return spoolingMetadata{}, fmt.Errorf("error converting rowOffset to int64: %v", err)
 		}
 	} else {
-		return spoolingMetadata{}, fmt.Errorf("rowOffset missing or invalid on segment metada")
+		return spoolingMetadata{}, fmt.Errorf("rowOffset missing or invalid on segment metadata")
 	}
 
 	// mandatory field
@@ -1307,24 +1307,34 @@ func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, e
 			return spoolingMetadata{}, fmt.Errorf("error converting segmentSize to int64: %v", err)
 		}
 	} else {
-		return spoolingMetadata{}, fmt.Errorf("segmentSize missing or invalid on segment metada")
+		return spoolingMetadata{}, fmt.Errorf("segmentSize missing or invalid on segment metadata")
 	}
 
-	if val, ok := metadata["uncompressedSize"].(json.Number); ok {
+	if val, exists := metadata["uncompressedSize"]; exists {
+		num, ok := val.(json.Number)
+		if !ok {
+			return spoolingMetadata{}, fmt.Errorf("invalid type for uncompressedSize on segment metadata, expected json.Number")
+		}
 		var err error
-		mt.UncompressedSize, err = val.Int64()
-		if err != nil {
+		if mt.UncompressedSize, err = num.Int64(); err != nil {
 			return spoolingMetadata{}, fmt.Errorf("error converting uncompressedSize to int64: %v", err)
 		}
+	} else {
+		mt.UncompressedSize = 0
 	}
 
 	// Bug: rowsCount was not enforced as a mandatory field on Trino response. Fixed on 475 release
-	if val, ok := metadata["rowsCount"].(json.Number); ok {
+	if val, exists := metadata["rowsCount"]; exists {
+		num, ok := val.(json.Number)
+		if !ok {
+			return spoolingMetadata{}, fmt.Errorf("invalid type for rowsCount on segment metadata, expected json.Number")
+		}
 		var err error
-		mt.RowsCount, err = val.Int64()
-		if err != nil {
+		if mt.RowsCount, err = num.Int64(); err != nil {
 			return spoolingMetadata{}, fmt.Errorf("error converting rowsCount to int64: %v", err)
 		}
+	} else {
+		mt.RowsCount = 0
 	}
 
 	return mt, nil
@@ -1332,15 +1342,16 @@ func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, e
 
 func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 	var queryData []queryData
-	for _, segment := range sp.segments {
+	for segmentIndex, segment := range sp.segments {
 		segment, ok := segment.(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("segment is invalid")
+			return nil, fmt.Errorf("segment at index %d is invalid: expected map[string]interface{}, got %T", segmentIndex, segment)
 		}
 		typedMetadata, ok := segment["metadata"].(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("metadata missing or invalid in segment")
+			return nil, fmt.Errorf("metadata missing or invalid in segment at index %d", segmentIndex)
 		}
+
 		metadata, err := parseSpoolingMetadata(typedMetadata)
 		if err != nil {
 			return nil, err
@@ -1350,28 +1361,37 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 			decodedBytes, err := base64.StdEncoding.DecodeString(segment["data"].(string))
 
 			if err != nil {
-				return nil, fmt.Errorf("error decoding base64: %v", err)
+				return nil, fmt.Errorf("error decoding base64 data in inline segment at index %d: %v", segmentIndex, err)
 			}
 
 			decodedData, err := decode(decodedBytes, sp.encoding, metadata)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to decode inline segment at index %d: %v", segmentIndex, err)
 			}
 
 			queryData = append(queryData, decodedData...)
 		case "spooled":
-			uri, _ := segment["uri"].(string)
-			ackUri, _ := segment["ackUri"].(string)
-			headers, _ := segment["headers"].(map[string]interface{})
+			uri, ok := segment["uri"].(string)
+			if !ok || uri == "" {
+				return nil, fmt.Errorf("missing or invalid 'uri' field in spooled segment at index %d", segmentIndex)
+			}
+			ackUri, ok := segment["ackUri"].(string)
+			if !ok || ackUri == "" { // Is mandatory?
+				return nil, fmt.Errorf("missing or invalid 'ackUri' field in spooled segment at index %d", segmentIndex)
+			}
+			headers, ok := segment["headers"].(map[string]interface{}) // is mandatory?
+			if !ok {
+				return nil, fmt.Errorf("missing or invalid 'headers' field in spooled segment at index %d", segmentIndex)
+			}
 
 			data, err := sp.fetchSegment(uri, ackUri, headers)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to fetch segment from uri '%s' at index %d: %v", uri, segmentIndex, err)
 			}
 
 			decodedData, err := decode(data, sp.encoding, metadata)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("failed to decode spooled segment at index %d: %v", segmentIndex, err)
 			}
 
 			queryData = append(queryData, decodedData...)
@@ -1397,7 +1417,12 @@ func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]
 		if len(headerSlice) > 1 {
 			return nil, fmt.Errorf("multiple values for header %s", k)
 		}
-		req.Header.Add(k, headerSlice[0].(string))
+
+		header, ok := headerSlice[0].(string)
+		if !ok {
+			return nil, fmt.Errorf("unsupported header value type %T for spooled segment", headerSlice[0])
+		}
+		req.Header.Add(k, header)
 	}
 
 	resp, err := sp.httpClient.Do(req)
@@ -1417,6 +1442,7 @@ func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]
 
 	//acknowledge the segment read
 	go func() {
+		// TODO: handle ack erros
 		ackReq, err := http.NewRequestWithContext(sp.ctx, "GET", ackUri, nil)
 		if err != nil {
 			return
@@ -1581,14 +1607,25 @@ func (qr *driverRows) fetch() error {
 				}
 			case map[string]interface{}:
 				// spooling protocol
-				spollingData := spoolingProtocol{
-					httpClient: qr.stmt.conn.httpClient,
-					ctx:        qr.ctx,
-					encoding:   data["encoding"].(string),
-					segments:   data["segments"].([]interface{}),
+				encoding, ok := data["encoding"].(string)
+				if !ok {
+					return fmt.Errorf("invalid or missing 'encoding' field on spooling protocol, expected string")
 				}
 
-				qr.data, err = spollingData.fetch()
+				segments, ok := data["segments"].([]interface{})
+				if !ok {
+					return fmt.Errorf("invalid or missing 'segments' field on spooling protocol, expected []interface{}")
+				}
+
+				// Create spoolingProtocol struct with validated values
+				spoolingData := spoolingProtocol{
+					httpClient: qr.stmt.conn.httpClient,
+					ctx:        qr.ctx,
+					encoding:   encoding,
+					segments:   segments,
+				}
+
+				qr.data, err = spoolingData.fetch()
 				if err != nil {
 					return err
 				}
