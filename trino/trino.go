@@ -1286,58 +1286,59 @@ type spoolingMetadata struct {
 }
 
 func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, error) {
-	var mt spoolingMetadata
-
-	// mandatory field
-	if val, ok := metadata["rowOffset"].(json.Number); ok {
-		var err error
-		mt.RowOffset, err = val.Int64()
-		if err != nil {
-			return spoolingMetadata{}, fmt.Errorf("error converting rowOffset to int64: %v", err)
-		}
-	} else {
-		return spoolingMetadata{}, fmt.Errorf("rowOffset missing or invalid on segment metadata")
+	result := spoolingMetadata{
+		RowOffset:        0,
+		RowsCount:        0,
+		SegmentSize:      0,
+		UncompressedSize: 0,
 	}
 
-	// mandatory field
-	if val, ok := metadata["segmentSize"].(json.Number); ok {
-		var err error
-		mt.SegmentSize, err = val.Int64()
-		if err != nil {
-			return spoolingMetadata{}, fmt.Errorf("error converting segmentSize to int64: %v", err)
-		}
-	} else {
-		return spoolingMetadata{}, fmt.Errorf("segmentSize missing or invalid on segment metadata")
+	// Mandatory field
+	rowOffset, err := convertToInt64(metadata, "rowOffset", true)
+	if err != nil {
+		return spoolingMetadata{}, err
+	}
+	result.RowOffset = rowOffset
+
+	// Mandatory field
+	segmentSize, err := convertToInt64(metadata, "segmentSize", true)
+	if err != nil {
+		return spoolingMetadata{}, err
+	}
+	result.SegmentSize = segmentSize
+
+	if uncompressedSize, err := convertToInt64(metadata, "uncompressedSize", false); err == nil {
+		result.UncompressedSize = uncompressedSize
 	}
 
-	if val, exists := metadata["uncompressedSize"]; exists {
-		num, ok := val.(json.Number)
-		if !ok {
-			return spoolingMetadata{}, fmt.Errorf("invalid type for uncompressedSize on segment metadata, expected json.Number")
-		}
-		var err error
-		if mt.UncompressedSize, err = num.Int64(); err != nil {
-			return spoolingMetadata{}, fmt.Errorf("error converting uncompressedSize to int64: %v", err)
-		}
-	} else {
-		mt.UncompressedSize = 0
+	// Bug: rowsCount was wrongly not enforced as a mandatory field on Trino response. Fixed on 475 release
+	if rowsCount, err := convertToInt64(metadata, "rowsCount", false); err == nil {
+		result.RowsCount = rowsCount
 	}
 
-	// Bug: rowsCount was not enforced as a mandatory field on Trino response. Fixed on 475 release
-	if val, exists := metadata["rowsCount"]; exists {
-		num, ok := val.(json.Number)
-		if !ok {
-			return spoolingMetadata{}, fmt.Errorf("invalid type for rowsCount on segment metadata, expected json.Number")
+	return result, nil
+}
+
+func convertToInt64(metadata map[string]interface{}, key string, required bool) (int64, error) {
+	val, exists := metadata[key]
+	if !exists {
+		if required {
+			return 0, fmt.Errorf("%s is missing in segment metadata", key)
 		}
-		var err error
-		if mt.RowsCount, err = num.Int64(); err != nil {
-			return spoolingMetadata{}, fmt.Errorf("error converting rowsCount to int64: %v", err)
-		}
-	} else {
-		mt.RowsCount = 0
+		return 0, nil
 	}
 
-	return mt, nil
+	num, ok := val.(json.Number)
+	if !ok {
+		return 0, fmt.Errorf("invalid type for %s in segment metadata, expected json.Number", key)
+	}
+
+	n, err := num.Int64()
+	if err != nil {
+		return 0, fmt.Errorf("error converting %s to int64: %v", key, err)
+	}
+
+	return n, nil
 }
 
 func (sp *spoolingProtocol) fetch() ([]queryData, error) {
@@ -1347,9 +1348,14 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 		if !ok {
 			return nil, fmt.Errorf("segment at index %d is invalid: expected map[string]interface{}, got %T", segmentIndex, segment)
 		}
-		typedMetadata, ok := segment["metadata"].(map[string]interface{})
+		segmentMetadata, exists := segment["metadata"]
+		if !exists {
+			return nil, fmt.Errorf("metadata is missing in segment at index %d", segmentIndex)
+		}
+
+		typedMetadata, ok := segmentMetadata.(map[string]interface{})
 		if !ok {
-			return nil, fmt.Errorf("metadata missing or invalid in segment at index %d", segmentIndex)
+			return nil, fmt.Errorf("metadata is invalid or cannot be parsed as map[string]interface{} in segment at index %d", segmentIndex)
 		}
 
 		metadata, err := parseSpoolingMetadata(typedMetadata)
@@ -1376,7 +1382,7 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 				return nil, fmt.Errorf("missing or invalid 'uri' field in spooled segment at index %d", segmentIndex)
 			}
 			ackUri, ok := segment["ackUri"].(string)
-			if !ok || ackUri == "" { // Is mandatory?
+			if !ok || ackUri == "" {
 				return nil, fmt.Errorf("missing or invalid 'ackUri' field in spooled segment at index %d", segmentIndex)
 			}
 			headers, ok := segment["headers"].(map[string]interface{}) // is mandatory?
@@ -1414,13 +1420,17 @@ func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]
 			return nil, fmt.Errorf("unsupported header type %T", v)
 		}
 
+		if len(headerSlice) == 0 {
+			continue
+		}
+
 		if len(headerSlice) > 1 {
 			return nil, fmt.Errorf("multiple values for header %s", k)
 		}
 
 		header, ok := headerSlice[0].(string)
 		if !ok {
-			return nil, fmt.Errorf("unsupported header value type %T for spooled segment", headerSlice[0])
+			return nil, fmt.Errorf("unsupported header value type %T", headerSlice[0])
 		}
 		req.Header.Add(k, header)
 	}
@@ -1464,24 +1474,12 @@ func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]
 	return data, nil
 }
 
-func decode(data []byte, encoding string, metadata spoolingMetadata) ([]queryData, error) {
+func decompressData(data []byte, encoding string, metadata spoolingMetadata) ([]byte, error) {
 	if metadata.UncompressedSize == 0 {
-		var queryDataList = make([]queryData, metadata.RowsCount)
-		decoder := json.NewDecoder(bytes.NewReader(data))
-		decoder.UseNumber()
-		err := decoder.Decode(&queryDataList)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode uncompressed segment to JSON at rowOffset %d: %v", metadata.RowOffset, err)
-		}
-		return queryDataList, nil
-	}
-
-	if int64(len(data)) != metadata.SegmentSize {
-		return nil, fmt.Errorf("segment size mismatch: expected %d bytes, got %d bytes", metadata.SegmentSize, len(data))
+		return data, nil
 	}
 
 	var decompressedData []byte
-	var err error
 	switch encoding {
 	case "json+zstd":
 		zstdReader, err := zstd.NewReader(bytes.NewReader(data))
@@ -1510,12 +1508,26 @@ func decode(data []byte, encoding string, metadata spoolingMetadata) ([]queryDat
 		return nil, fmt.Errorf("decompressed size mismatch: expected %d bytes, got %d bytes", metadata.UncompressedSize, len(decompressedData))
 	}
 
+	return decompressedData, nil
+}
+
+func decode(data []byte, encoding string, metadata spoolingMetadata) ([]queryData, error) {
+	if int64(len(data)) != metadata.SegmentSize {
+		return nil, fmt.Errorf("segment size mismatch: expected %d bytes, got %d bytes", metadata.SegmentSize, len(data))
+	}
+
+	decompressedData, err := decompressData(data, encoding, metadata)
+
+	if err != nil {
+		return nil, err
+	}
+
 	var queryDataList = make([]queryData, metadata.RowsCount)
 	decoder := json.NewDecoder(bytes.NewReader(decompressedData))
 	decoder.UseNumber()
 	err = decoder.Decode(&queryDataList)
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode decompressed segment into JSON at rowOffset %d: %v", metadata.RowOffset, err)
+		return nil, fmt.Errorf("failed to decode segment into JSON at rowOffset %d: %v", metadata.RowOffset, err)
 	}
 
 	return queryDataList, nil

@@ -35,12 +35,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const (
-	jsonWithoutCompression = "W1sxMDAwXSwgWzEwMDAxXV0="
-	jsonZstdEncoded        = "KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="
-	jsonLz4Encoded         = "8AFbWzEwMDBdLFsxMDAwMV1d"
-)
-
 func TestConfig(t *testing.T) {
 	c := &Config{
 		ServerURI:         "http://foobar@localhost:8080",
@@ -1167,7 +1161,7 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 			Segments: []map[string]interface{}{
 				{
 					"type":     "spooled",
-					"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 0, "rowsCount": 2},
+					"metadata": map[string]interface{}{"segmentSize": 16, "rowOffset": 0, "rowsCount": 2},
 					"ackUri":   "test",
 					"headers": map[string]interface{}{
 						"test": []interface{}{"test"},
@@ -1192,7 +1186,7 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 			},
 			Encoding:       "json+zstd",
 			ExpectedResult: []int{1000, 10001},
-			DownloadedData: mustDecodeBase64(jsonZstdEncoded),
+			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
 			Name: "zlibCompression",
@@ -1208,7 +1202,7 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 			},
 			Encoding:       "json+lz4",
 			ExpectedResult: []int{1000, 10001},
-			DownloadedData: mustDecodeBase64(jsonLz4Encoded),
+			DownloadedData: mustDecodeBase64("8AFbWzEwMDBdLFsxMDAwMV1d"),
 		},
 	}
 
@@ -1274,9 +1268,7 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 
 			require.NoError(t, rows.Err())
 
-			expected := []int{1000, 10001}
-
-			assert.Equal(t, expected, results, "Expected query results to match")
+			assert.Equal(t, tc.ExpectedResult, results, "Expected query results to match")
 		})
 	}
 }
@@ -1301,7 +1293,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 			Segments: []map[string]interface{}{
 				{
 					"type":     "inline",
-					"data":     jsonWithoutCompression,
+					"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
 					"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 2},
 				},
 			},
@@ -1313,7 +1305,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 			Segments: []map[string]interface{}{
 				{
 					"type":     "inline",
-					"data":     jsonZstdEncoded,
+					"data":     "KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=",
 					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 29},
 				},
 			},
@@ -1325,7 +1317,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 			Segments: []map[string]interface{}{
 				{
 					"type":     "inline",
-					"data":     jsonLz4Encoded,
+					"data":     "8AFbWzEwMDBdLFsxMDAwMV1d",
 					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 18},
 				},
 			},
@@ -1391,9 +1383,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 
 			require.NoError(t, rows.Err())
 
-			expected := []int{1000, 10001}
-
-			assert.Equal(t, expected, results, "Expected query results to match")
+			assert.Equal(t, tc.ExpectedResult, results, "Expected query results to match")
 		})
 	}
 }
@@ -1407,6 +1397,89 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 		DownloadedDataStatusCodeError bool
 	}{
 		{
+			Name: "MissingRowOffsetMetadata",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": map[string]interface{}{"uncompressedSize": 2, "segmentSize": 11},
+					"ackUri":   "test",
+					"headers": map[string]interface{}{
+						"test": []interface{}{"test"},
+					},
+				},
+			},
+			ExpectedError: "rowOffset is missing in segment metadata",
+		},
+		{
+			Name: "WrongRowOffsetMetadataType",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": "2", "segmentSize": 11},
+					"ackUri":   "test",
+					"headers": map[string]interface{}{
+						"test": []interface{}{"test"},
+					},
+				},
+			},
+			ExpectedError: "invalid type for rowOffset in segment metadata, expected json.Number",
+		},
+		{
+			Name: "MissingSegmentSizeMetadata",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": 2},
+					"ackUri":   "test",
+					"headers": map[string]interface{}{
+						"test": []interface{}{"test"},
+					},
+				},
+			},
+			ExpectedError: "segmentSize is missing in segment metadata",
+		},
+		{
+			Name: "WrongSegmentSizeMetadataType",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": "11"},
+					"ackUri":   "test",
+					"headers": map[string]interface{}{
+						"test": []interface{}{"test"},
+					},
+				},
+			},
+			ExpectedError: "invalid type for segmentSize in segment metadata, expected json.Number",
+		},
+		{
+			Name: "MissingMetadata",
+			Segments: []map[string]interface{}{
+				{
+					"type":   "spooled",
+					"ackUri": "test",
+					"headers": map[string]interface{}{
+						"test": []interface{}{"test"},
+					},
+				},
+			},
+			ExpectedError: "metadata is missing in segment at index 0",
+		},
+		{
+			Name: "WrongMetadataType",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": "fake-metadata",
+					"ackUri":   "test",
+					"headers": map[string]interface{}{
+						"test": []interface{}{"test"},
+					},
+				},
+			},
+			ExpectedError: "metadata is invalid or cannot be parsed as map[string]interface{} in segment at index 0",
+		},
+		{
 			Name: "WrongUncompressSize",
 			Segments: []map[string]interface{}{
 				{
@@ -1419,7 +1492,7 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 				},
 			},
 			ExpectedError:  "failed to decode spooled segment at index 0: segment size mismatch: expected 11 bytes, got 29 byte",
-			DownloadedData: mustDecodeBase64(jsonZstdEncoded),
+			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
 			Name: "WrongCompresSize",
@@ -1434,7 +1507,7 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 				},
 			},
 			ExpectedError:  "decompressed size mismatch: expected 2 bytes, got 16 bytes",
-			DownloadedData: mustDecodeBase64(jsonZstdEncoded),
+			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
 			Name: "MissingUri",
@@ -1537,7 +1610,7 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 					},
 				},
 			},
-			ExpectedError: "unsupported header value type json.Number for spooled segment",
+			ExpectedError: "unsupported header value type json.Number",
 		},
 		{
 			Name: "HeaderTypeInvalid",
@@ -1572,7 +1645,7 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 				},
 			},
 			ExpectedError:                 "at index 0: unexpected status code 500",
-			DownloadedData:                mustDecodeBase64(jsonZstdEncoded),
+			DownloadedData:                mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 			DownloadedDataStatusCodeError: true,
 		},
 	}
@@ -1652,7 +1725,7 @@ func TestSpoolingProtocolInlineSegmentErrorHandling(t *testing.T) {
 			Segments: []map[string]interface{}{
 				{
 					"type":     "inline",
-					"data":     jsonZstdEncoded,
+					"data":     "KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=",
 					"metadata": map[string]interface{}{"uncompressedSize": 1, "rowOffset": 2, "segmentSize": 29},
 				},
 			},
@@ -1663,7 +1736,7 @@ func TestSpoolingProtocolInlineSegmentErrorHandling(t *testing.T) {
 			Segments: []map[string]interface{}{
 				{
 					"type":     "inline",
-					"data":     jsonZstdEncoded,
+					"data":     "KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=",
 					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 1},
 				},
 			},
