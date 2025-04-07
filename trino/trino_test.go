@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -32,6 +33,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+)
+
+const (
+	jsonWithoutCompression = "W1sxMDAwXSwgWzEwMDAxXV0="
+	jsonZstdEncoded        = "KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="
+	jsonLz4Encoded         = "8AFbWzEwMDBdLFsxMDAwMV1d"
 )
 
 func TestConfig(t *testing.T) {
@@ -1160,6 +1167,390 @@ func TestFetchNoStackOverflow(t *testing.T) {
 
 }
 
+func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
+	testcases := []struct {
+		Name           string
+		Segments       []map[string]interface{}
+		ExpectedResult []int
+		Encoding       string
+		DownloadedData []byte
+	}{
+		{
+			Name: "noCompression",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 0, "rowsCount": 2},
+				},
+			},
+			Encoding:       "json",
+			ExpectedResult: []int{1000, 10001},
+			DownloadedData: []byte("[[1000],[10001]]"),
+		},
+		{
+			Name: "zstdCompression",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 29, "rowsCount": 2},
+				},
+			},
+			Encoding:       "json+zstd",
+			ExpectedResult: []int{1000, 10001},
+			DownloadedData: mustDecodeBase64(jsonZstdEncoded),
+		},
+		{
+			Name: "zlibCompression",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 18, "rowsCount": 2},
+				},
+			},
+			Encoding:       "json+lz4",
+			ExpectedResult: []int{1000, 10001},
+			DownloadedData: mustDecodeBase64(jsonLz4Encoded),
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.Name, func(t *testing.T) {
+			var ts *httptest.Server
+			ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/statement" {
+					json.NewEncoder(w).Encode(&stmtResponse{
+						ID:      "fake-query",
+						NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					})
+
+					return
+				}
+				if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+					json.NewEncoder(w).Encode(&queryResponse{
+						ID: "fake-query",
+						Columns: []queryColumn{
+							{
+								Name: "_col0",
+								Type: "integer",
+								TypeSignature: typeSignature{
+									RawType:   "integer",
+									Arguments: []typeArgument{},
+								},
+							},
+						},
+						Data: map[string]interface{}{
+							"encoding": tc.Encoding,
+							"segments": tc.Segments,
+						},
+					})
+					return
+				}
+				if r.URL.Path == "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=" {
+					w.Write(tc.DownloadedData)
+					return
+				}
+
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+			}))
+
+			defer ts.Close()
+
+			tc.Segments[0]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc="
+
+			db, err := sql.Open("trino", ts.URL)
+			require.NoError(t, err)
+			defer db.Close()
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+
+			var results []int
+			for rows.Next() {
+				var value int
+				err := rows.Scan(&value)
+				require.NoError(t, err)
+				results = append(results, value)
+			}
+
+			require.NoError(t, rows.Err())
+
+			expected := []int{1000, 10001}
+
+			assert.Equal(t, expected, results, "Expected query results to match")
+		})
+	}
+}
+
+func mustDecodeBase64(encoded string) []byte {
+	data, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		panic(fmt.Sprintf("Failed to decode base64: %v", err))
+	}
+	return data
+}
+
+func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
+	testcases := []struct {
+		Name           string
+		Segments       []map[string]interface{}
+		ExpectedResult []int
+		Encoding       string
+	}{
+		{
+			Name: "noCompression",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "inline",
+					"data":     jsonWithoutCompression,
+					"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 2, "rowsCount": 2},
+				},
+			},
+			Encoding:       "json",
+			ExpectedResult: []int{1000, 10001},
+		},
+		{
+			Name: "zstdCompression",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "inline",
+					"data":     jsonZstdEncoded,
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 29, "rowsCount": 2},
+				},
+			},
+			Encoding:       "json+zstd",
+			ExpectedResult: []int{1000, 10001},
+		},
+		{
+			Name: "zlibCompression",
+			Segments: []map[string]interface{}{
+				{
+					"type":     "inline",
+					"data":     jsonLz4Encoded,
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 18, "rowsCount": 2},
+				},
+			},
+			Encoding:       "json+lz4",
+			ExpectedResult: []int{1000, 10001},
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.Name, func(t *testing.T) {
+			var ts *httptest.Server
+
+			ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/statement" {
+					json.NewEncoder(w).Encode(&stmtResponse{
+						ID:      "fake-query",
+						NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					})
+
+					return
+				}
+				if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+					json.NewEncoder(w).Encode(&queryResponse{
+						ID: "fake-query",
+						Columns: []queryColumn{
+							{
+								Name: "_col0",
+								Type: "integer",
+								TypeSignature: typeSignature{
+									RawType:   "integer",
+									Arguments: []typeArgument{},
+								},
+							},
+						},
+						Data: map[string]interface{}{
+							"encoding": tc.Encoding,
+							"segments": tc.Segments,
+						},
+					})
+					return
+				}
+
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+			}))
+
+			defer ts.Close()
+
+			db, err := sql.Open("trino", ts.URL)
+			require.NoError(t, err)
+			defer db.Close()
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+
+			var results []int
+			for rows.Next() {
+				var value int
+				err := rows.Scan(&value)
+				require.NoError(t, err)
+				results = append(results, value)
+			}
+
+			require.NoError(t, rows.Err())
+
+			expected := []int{1000, 10001}
+
+			assert.Equal(t, expected, results, "Expected query results to match")
+		})
+	}
+}
+
+func TestSpoolingSpooledSegmentErrors(t *testing.T) {
+	testcases := []struct {
+		Name          string
+		Segments      []map[string]interface{}
+		ExpectedError string
+	}{
+		{
+			Name: "WrongUncompressSize",
+			Segments: []map[string]interface{}{
+				{
+					"type": "inline",
+					"data": jsonZstdEncoded,
+					"metadata": map[string]interface{}{
+						"segmentSize":      1,
+						"uncompressedSize": 1,
+						"rowOffset":        0,
+						"rowsCount":        2,
+					},
+				},
+			},
+			ExpectedError: "segment size mismatch: expected 1 bytes, got 29 bytes",
+		},
+		{
+			Name: "WrongCompresSize",
+			Segments: []map[string]interface{}{
+				{
+					"type": "inline",
+					"data": jsonZstdEncoded,
+					"metadata": map[string]interface{}{
+						"segmentSize":      29,
+						"uncompressedSize": 2,
+						"rowOffset":        0,
+						"rowsCount":        2,
+					},
+				},
+			},
+			ExpectedError: "decompressed size mismatch: expected 2 bytes, got 16 bytes",
+		},
+		{
+			Name: "WrongCompresSize",
+			Segments: []map[string]interface{}{
+				{
+					"type": "spooled",
+					"data": "fake-data",
+					"metadata": map[string]interface{}{
+						"segmentSize":      3679,
+						"uncompressedSize": 2,
+						"rowOffset":        0,
+						"rowsCount":        2,
+					},
+					"headers": map[string][]interface{}{
+						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
+						"x-amz-server-side-encryption-customer-key":       {"key"},
+						"x-amz-server-side-encryption-customer-key-md5":   {"md5", "md5"}, // wrong, more then one
+					},
+				},
+			},
+			ExpectedError: "trino: multiple values for header x-amz-server-side-encryption-customer-key-md5",
+		},
+		{
+			Name: "rowsCountFieldIsMandatory",
+			Segments: []map[string]interface{}{
+				{
+					"type": "spooled",
+					"data": "fake-data",
+					"metadata": map[string]interface{}{
+						"segmentSize":      3679,
+						"uncompressedSize": 2,
+						"rowOffset":        0,
+					},
+					"headers": map[string][]interface{}{
+						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
+						"x-amz-server-side-encryption-customer-key":       {"key"},
+						"x-amz-server-side-encryption-customer-key-md5":   {"md5"}, // wrong, more then one
+					},
+				},
+			},
+			ExpectedError: "rowsCount missing or invalid",
+		},
+		{
+			Name: "StatusCodeNot200",
+			Segments: []map[string]interface{}{
+				{
+					"type": "spooled",
+					"data": "fake-data",
+					"metadata": map[string]interface{}{
+						"segmentSize":      3679,
+						"uncompressedSize": 2,
+						"rowOffset":        0,
+						"rowsCount":        2,
+					},
+					"headers": map[string][]interface{}{
+						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
+						"x-amz-server-side-encryption-customer-key":       {"key"},
+					},
+				},
+			},
+			ExpectedError: "unexpected status code: 500",
+		},
+	}
+
+	for _, tc := range testcases {
+		t.Run(tc.Name, func(t *testing.T) {
+			var ts *httptest.Server
+
+			ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/v1/statement" {
+					json.NewEncoder(w).Encode(&stmtResponse{
+						ID:      "fake-query",
+						NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+					})
+
+					return
+				}
+				if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+					json.NewEncoder(w).Encode(&queryResponse{
+						ID: "fake-query",
+						Columns: []queryColumn{
+							{
+								Name: "_col0",
+								Type: "integer",
+								TypeSignature: typeSignature{
+									RawType:   "integer",
+									Arguments: []typeArgument{},
+								},
+							},
+						},
+						Data: map[string]interface{}{
+							"encoding": "json+zstd",
+							"segments": tc.Segments,
+						},
+					})
+					return
+				}
+
+				w.WriteHeader(http.StatusInternalServerError)
+				json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+			}))
+
+			defer ts.Close()
+			tc.Segments[0]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc="
+			db, err := sql.Open("trino", ts.URL)
+			require.NoError(t, err)
+			defer db.Close()
+
+			_, err = db.Query("SELECT 1")
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tc.ExpectedError)
+		})
+	}
+}
+
 func TestSession(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
@@ -1884,6 +2275,108 @@ func BenchmarkQuery(b *testing.B) {
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
 	for n := 0; n < b.N; n++ {
 		rows, err := db.Query(q)
+		require.NoError(b, err)
+		for rows.Next() {
+		}
+		rows.Close()
+	}
+}
+
+// BenchmarkSpoolingProtocolSpooledSegmentlJsonZstdDecoderQuery benchmarks the performance of querying a large dataset
+// from Trino with JSON encoding and Zstd compression, testing the spooling mechanism. The query retrieves a result set
+// of 10 million rows, exceeding the default inline row limit of 1000 (defined by `protocol.spooling.inlining.max-rows`),
+// triggering the spooling mechanism to handle the large data efficiently.
+//
+// **Session properties & headers:**
+// - **`X-Trino-Query-Data-Encoding: json+zstd`**: Specifies JSON encoding with Zstd compression for the query result.
+// - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets.
+func BenchmarkSpoolingProtocolSpooledSegmentlJsonZstdDecoderQuery(b *testing.B) {
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(b, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(b, err)
+
+	b.Cleanup(func() {
+		assert.NoError(b, db.Close())
+	})
+
+	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
+	for n := 0; n < b.N; n++ {
+		rows, err := db.Query(q, sql.Named("X-Trino-Query-Data-Encoding", "json+zstd"))
+		require.NoError(b, err)
+		for rows.Next() {
+		}
+		rows.Close()
+	}
+}
+
+// BenchmarkSpoolingProtocolSpooledSegmentJsonLz4DecoderQuery benchmarks the performance of querying a large dataset
+// from Trino with JSON encoding and LZ4 compression, testing the spooling mechanism. The query retrieves a result set
+// of 10 million rows, exceeding the default inline row limit of 1000 (defined by `protocol.spooling.inlining.max-rows`),
+// triggering the spooling mechanism to handle the large data efficiently.
+//
+// **Session properties & headers:**
+// - **`X-Trino-Query-Data-Encoding: json+lz4`**: Specifies JSON encoding with LZ4 compression for the query result.
+// - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets.
+func BenchmarkSpoolingProtocolSpooledSegmentJsonLz4DecoderQuery(b *testing.B) {
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(b, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(b, err)
+
+	b.Cleanup(func() {
+		assert.NoError(b, db.Close())
+	})
+
+	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
+	for n := 0; n < b.N; n++ {
+		rows, err := db.Query(q, sql.Named("X-Trino-Query-Data-Encoding", "json+lz4"))
+		require.NoError(b, err)
+		for rows.Next() {
+		}
+		rows.Close()
+	}
+}
+
+// BenchmarkSpoolingProtocolSpooledSegmentJsonDecoderQuery benchmarks the performance of querying a large dataset
+// from Trino with JSON encoding (without compression), testing the spooling mechanism. The query retrieves a result set
+// of 10 million rows, exceeding the default inline row limit of 1000 (defined by `protocol.spooling.inlining.max-rows`),
+// triggering the spooling mechanism to handle the large data efficiently.
+//
+// **Session properties & headers:**
+// - **`X-Trino-Query-Data-Encoding: json`**: Specifies JSON encoding without compression for the query result.
+// - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets
+func BenchmarkSpoolingProtocolSpooledSegmentJsonDecoderQuery(b *testing.B) {
+	c := &Config{
+		ServerURI:         *integrationServerFlag,
+		SessionProperties: map[string]string{"query_priority": "1"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(b, err)
+
+	db, err := sql.Open("trino", dsn)
+	require.NoError(b, err)
+
+	b.Cleanup(func() {
+		assert.NoError(b, db.Close())
+	})
+
+	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
+	for n := 0; n < b.N; n++ {
+		rows, err := db.Query(q, sql.Named("X-Trino-Query-Data-Encoding", "json"))
 		require.NoError(b, err)
 		for rows.Next() {
 		}
