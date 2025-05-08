@@ -1422,7 +1422,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		v = sql.NullFloat64{}
 	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
 		v = sql.NullTime{}
-	case "map":
+	case "map", "hstore":
 		v = NullMap{}
 	case "array":
 		if len(typeNames) <= 1 {
@@ -1519,7 +1519,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Time, err
-	case "map":
+	case "map", "hstore":
 		if err := validateMap(v); err != nil {
 			return nil, err
 		}
