@@ -1370,7 +1370,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		switch typeNames[1] {
 		case "boolean":
 			v = NullSliceBool{}
-		case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+		case "json", "pg_json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 			v = NullSliceString{}
 		case "tinyint", "smallint", "integer", "bigint":
 			v = NullSliceInt64{}
@@ -1434,7 +1434,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bool, err
-	case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+	case "json", "pg_json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 		vv, err := scanNullString(v)
 		if !vv.Valid {
 			return nil, err
