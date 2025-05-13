@@ -2533,7 +2533,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 	switch typeNames[0] {
 	case "boolean":
 		v = sql.NullBool{}
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+	case "json", "pgjson", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 		v = sql.NullString{}
 	case "varbinary":
 		v = []byte{}
@@ -2620,7 +2620,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bool, err
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "Geometry", "SphericalGeography", "unknown":
+	case "json", "pgjson", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "Geometry", "SphericalGeography", "unknown":
 		vv, err := scanNullString(v)
 		if !vv.Valid {
 			return nil, err
