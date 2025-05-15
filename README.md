@@ -289,6 +289,40 @@ dsn, err := config.FormatDSN()
 ```go
 rows, err := db.Query(query, sql.Named("X-Trino-Client-Tags", "tag1,tag2,tag3"))
 ```
+=======
+
+#### `roles`
+
+```
+Type:           string  
+Format:         roles=catalog1:role1;catalog2=role2  
+Valid values:   A semicolon-separated list of catalog-to-role assignments, where each assignment maps a catalog to a role.  
+Default:        empty
+```
+The roles parameter defines authorization roles to assume for one or more catalogs during the Trino session.
+
+##### Example
+``` go
+c := &Config{
+	ServerURI:         "https://foobar@localhost:8090",
+	SessionProperties: map[string]string{"query_priority": "1"},
+	Roles:             map[string]string{"catalog1": "role1", "catalog2": "role2"},
+}
+
+dsn, err := c.FormatDSN()
+```
+
+**Query parameter example (overrides DSN roles):**
+```go
+rows, err := db.Query(
+    query,
+    sql.Named("X-Trino-Role", map[string]string{
+        "catalog1": "role1",
+        "catalog2": "role2",
+    }),
+)
+```
+
 #### Examples
 
 ```
@@ -297,6 +331,11 @@ http://user@localhost:8080?source=hello&catalog=default&schema=foobar
 
 ```
 https://user@localhost:8443?session_properties=query_max_run_time:10m;query_priority:2
+```
+
+
+```
+http://user@localhost:8080?source=hello&catalog=default&schema=foobar&roles=catalog1:role1;catalog2:role2
 ```
 
 ## Data types
