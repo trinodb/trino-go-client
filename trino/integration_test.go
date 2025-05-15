@@ -50,6 +50,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	dt "github.com/ory/dockertest/v3"
 	docker "github.com/ory/dockertest/v3/docker"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -136,11 +137,16 @@ func TestMain(m *testing.M) {
 			}
 
 			mounts := []string{
-				wd + "/etc/catalog:/etc/trino/catalog",
 				wd + "/etc/secrets:/etc/trino/secrets",
 				wd + "/etc/jvm.config:/etc/trino/jvm.config",
 				wd + "/etc/node.properties:/etc/trino/node.properties",
 				wd + "/etc/password-authenticator.properties:/etc/trino/password-authenticator.properties",
+				wd + "/etc/catalog/memory.properties:/etc/trino/catalog/memory.properties",
+				wd + "/etc/catalog/tpch.properties:/etc/trino/catalog/tpch.properties",
+			}
+			version, err := strconv.Atoi(*trinoImageTagFlag)
+			if (err != nil && *trinoImageTagFlag == "latest") || (err == nil && version >= 458) {
+				mounts = append(mounts, wd+"/etc/catalog/hive.properties:/etc/trino/catalog/hive.properties")
 			}
 
 			if spoolingProtocolSupported {
@@ -182,6 +188,11 @@ func TestMain(m *testing.M) {
 
 		waitForContainerHealth(trinoResource.Container.ID, "trino")
 
+		err = grantAdminRoleToTestUser()
+		if err != nil {
+			log.Fatalf("Warning: Failed to grant admin role to test user: %s", err)
+		}
+
 		*integrationServerFlag = "http://test@localhost:" + trinoResource.GetPort("8080/tcp")
 		tlsServer = "https://admin:admin@localhost:" + trinoResource.GetPort("8443/tcp")
 
@@ -215,6 +226,35 @@ func TestMain(m *testing.M) {
 	}
 
 	os.Exit(code)
+}
+
+func grantAdminRoleToTestUser() error {
+	grantSQL := "SET ROLE admin IN hive; GRANT admin TO USER test IN hive;"
+
+	execCmd := []string{
+		"trino",
+		"--user", "admin",
+		"--execute", grantSQL,
+	}
+	exec, err := pool.Client.CreateExec(docker.CreateExecOptions{
+		Container: trinoResource.Container.ID,
+		Cmd:       execCmd,
+	})
+	if err != nil {
+		log.Printf("Warning: Failed to create exec for GRANT: %s", err)
+	} else {
+		var stdout, stderr bytes.Buffer
+		err = pool.Client.StartExec(exec.ID, docker.StartExecOptions{
+			Detach:       false,
+			OutputStream: &stdout,
+			ErrorStream:  &stderr,
+		})
+		if err != nil {
+			log.Printf("Warning: Failed to execute GRANT: %s", err)
+		}
+	}
+
+	return err
 }
 
 func getOrCreateLocalStack(pool *dt.Pool, networkID string) *dt.Resource {
@@ -1028,6 +1068,159 @@ func TestIntegrationNoResults(t *testing.T) {
 	}
 	if err = rows.Err(); err != nil {
 		t.Fatal(err)
+	}
+}
+func TestRoleHeaderSupport(t *testing.T) {
+	version, err := strconv.Atoi(*trinoImageTagFlag)
+	if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 458) {
+		t.Skip("Skipping test when not using Trino 458 or later.")
+	}
+	tests := []struct {
+		name         string
+		config       Config
+		rawDSN       string
+		query        string
+		expectError  bool
+		errorSubstr  string
+		validateRows func(t *testing.T, rows *sql.Rows)
+	}{
+		{
+			name: "Valid hive admin role via Config",
+			config: Config{
+				ServerURI: *integrationServerFlag,
+				Roles:     map[string]string{"hive": "admin"},
+			},
+			query:       "SHOW ROLES FROM hive",
+			expectError: false,
+			validateRows: func(t *testing.T, rows *sql.Rows) {
+				foundAdmin := false
+				for rows.Next() {
+					var roleName string
+					err := rows.Scan(&roleName)
+					require.NoError(t, err)
+					if roleName == "admin" {
+						foundAdmin = true
+					}
+				}
+				require.True(t, foundAdmin, "Expected to find 'admin' role in SHOW ROLES output")
+			},
+		},
+		{
+			config: Config{
+				ServerURI: *integrationServerFlag,
+				Roles:     map[string]string{"tpch": "NONE", "memory": "ALL"},
+			},
+			query:       "SELECT 1",
+			expectError: false,
+		},
+		{
+			name: "Valid special roles via Config",
+			config: Config{
+				ServerURI: *integrationServerFlag,
+				Roles:     map[string]string{"tpch": "NONE", "memory": "ALL"},
+			},
+			query:       "SELECT 1",
+			expectError: false,
+		},
+		{
+			name:        "Valid hive admin role via DSN, not encoded url",
+			rawDSN:      *integrationServerFlag + "?roles=hive:admin",
+			query:       "SHOW ROLES FROM hive",
+			expectError: false,
+			validateRows: func(t *testing.T, rows *sql.Rows) {
+				foundAdmin := false
+				for rows.Next() {
+					var roleName string
+					err := rows.Scan(&roleName)
+					require.NoError(t, err)
+					if roleName == "admin" {
+						foundAdmin = true
+					}
+				}
+				require.True(t, foundAdmin, "Expected to find 'admin' role in SHOW ROLES output")
+			},
+		},
+		{
+			name:        "Valid roles via DSN, url encoded",
+			rawDSN:      *integrationServerFlag + "?roles=hive:admin",
+			query:       "SHOW ROLES FROM hive",
+			expectError: false,
+			validateRows: func(t *testing.T, rows *sql.Rows) {
+				foundAdmin := false
+				for rows.Next() {
+					var roleName string
+					err := rows.Scan(&roleName)
+					require.NoError(t, err)
+					if roleName == "admin" {
+						foundAdmin = true
+					}
+				}
+				require.True(t, foundAdmin, "Expected to find 'admin' role in SHOW ROLES output")
+			},
+		},
+		{
+			name: "No role - should fail to show roles",
+			config: Config{
+				ServerURI: *integrationServerFlag,
+			},
+			query:       "SHOW ROLES FROM hive",
+			expectError: true,
+			errorSubstr: "Access Denied",
+		},
+		{
+			name: "Wrong role - should fail to show roles",
+			config: Config{
+				ServerURI: *integrationServerFlag,
+				Roles:     map[string]string{"hive": "ALL"},
+			},
+			query:       "SHOW ROLES FROM hive",
+			expectError: true,
+			errorSubstr: "Access Denied",
+		},
+		{
+			name: "Non-existent catalog role",
+			config: Config{
+				ServerURI: *integrationServerFlag,
+				Roles:     map[string]string{"not-exist-catalog": "role1"},
+			},
+			query:       "SELECT 1",
+			expectError: true,
+			errorSubstr: "USER_ERROR: Catalog",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var dns string
+			var err error
+
+			if tt.rawDSN != "" {
+				dns = tt.rawDSN
+			} else {
+				dns, err = tt.config.FormatDSN()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			db := integrationOpen(t, dns)
+			defer db.Close()
+
+			rows, err := db.Query(tt.query)
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorSubstr != "" {
+					require.Contains(t, err.Error(), tt.errorSubstr)
+				}
+			} else {
+				require.NoError(t, err)
+				if tt.validateRows != nil && rows != nil {
+					defer rows.Close()
+					tt.validateRows(t, rows)
+				}
+			}
+		})
 	}
 }
 

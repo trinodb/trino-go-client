@@ -128,6 +128,7 @@ const (
 	trinoSetSessionHeader      = trinoHeaderPrefix + `Set-Session`
 	trinoClearSessionHeader    = trinoHeaderPrefix + `Clear-Session`
 	trinoSetRoleHeader         = trinoHeaderPrefix + `Set-Role`
+	trinoRoleHeader            = trinoHeaderPrefix + `Role`
 	trinoExtraCredentialHeader = trinoHeaderPrefix + `Extra-Credential`
 
 	trinoProgressCallbackParam       = trinoHeaderPrefix + `Progress-Callback`
@@ -172,10 +173,10 @@ var (
 	responseToRequestHeaderMap = map[string]string{
 		trinoSetSchemaHeader:  trinoSchemaHeader,
 		trinoSetCatalogHeader: trinoCatalogHeader,
+		trinoSetRoleHeader:    trinoRoleHeader,
 	}
 	unsupportedResponseHeaders = []string{
 		trinoSetPathHeader,
-		trinoSetRoleHeader,
 	}
 )
 
@@ -209,6 +210,7 @@ type Config struct {
 	DisableExplicitPrepare     bool              // Disable the use of explicit prepared statements (optional, default is false)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
+	Roles                      map[string]string // Roles (optional)
 }
 
 func (c *Config) applyDefaults() {
@@ -254,6 +256,14 @@ func ParseDSN(dsn string) (*Config, error) {
 	if extraCreds := query.Get("extra_credentials"); extraCreds != "" {
 		var err error
 		config.ExtraCredentials, err = parseMapParameter(extraCreds, "extra credential", mapEntrySeparator, mapKeySeparator)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if roles := query.Get("roles"); roles != "" {
+		var err error
+		config.Roles, err = parseMapParameter(roles, "role", mapEntrySeparator, mapKeySeparator)
 		if err != nil {
 			return nil, err
 		}
@@ -362,6 +372,13 @@ func (c *Config) FormatDSN() (string, error) {
 		}
 	}
 
+	var roles []string
+	if c.Roles != nil {
+		for k, v := range c.Roles {
+			roles = append(roles, fmt.Sprintf("%s:%s", k, v))
+		}
+	}
+
 	query := make(url.Values)
 	query.Add("source", c.Source)
 
@@ -415,6 +432,7 @@ func (c *Config) FormatDSN() (string, error) {
 	// ensure consistent order of items
 	sort.Strings(sessionkv)
 	sort.Strings(credkv)
+	sort.Strings(roles)
 
 	if c.QueryTimeout != nil {
 		query.Add("query_timeout", c.QueryTimeout.String())
@@ -428,6 +446,7 @@ func (c *Config) FormatDSN() (string, error) {
 		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
 		"custom_client":      c.CustomClientName,
 		accessTokenConfig:    c.AccessToken,
+		"roles":              strings.Join(roles, mapEntrySeparator),
 	} {
 		if v != "" {
 			query[k] = []string{v}
@@ -457,6 +476,41 @@ var (
 	_ driver.Conn               = &Conn{}
 	_ driver.ConnPrepareContext = &Conn{}
 )
+
+// formatRolesFromMap formats roles from a map into the Trino header format
+func formatRolesFromMap(rolesMap map[string]string) string {
+	var formattedRoles []string
+	for catalog, role := range rolesMap {
+		formattedRoles = append(formattedRoles, formatRoleEntry(catalog, role))
+	}
+	sort.Strings(formattedRoles)
+	return strings.Join(formattedRoles, commaSeparator)
+}
+
+// formatRoleEntry formats a single catalog role entry into Trino header format
+func formatRoleEntry(catalog, role string) string {
+	if role == "ALL" || role == "NONE" {
+		return fmt.Sprintf("%s=%s", catalog, role)
+	}
+	return fmt.Sprintf("%s=ROLE{%s}", catalog, role)
+}
+
+// formatHeaderValue converts a named argument value to a string suitable for HTTP headers.
+func formatHeaderValue(headerName string, value interface{}) (string, error) {
+	if headerName == trinoRoleHeader {
+		rolesMap, ok := value.(map[string]string)
+		if !ok {
+			return "", fmt.Errorf("%s must be a map[string]string, got %T", trinoRoleHeader, value)
+		}
+		return formatRolesFromMap(rolesMap), nil
+	}
+
+	headerValue, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("%s must be a string, got %T", headerName, value)
+	}
+	return headerValue, nil
+}
 
 func newConn(dsn string) (*Conn, error) {
 	conf, err := ParseDSN(dsn)
@@ -542,6 +596,13 @@ func newConn(dsn string) (*Conn, error) {
 
 	if tags := conf.ClientTags; tags != nil {
 		c.httpHeaders.Add(trinoTagsHeader, strings.Join(tags, commaSeparator))
+	}
+
+	if conf.Roles != nil {
+		rolesHeader := formatRolesFromMap(conf.Roles)
+		if rolesHeader != "" {
+			c.httpHeaders.Add(trinoRoleHeader, rolesHeader)
+		}
 	}
 
 	for k, v := range map[string]string{
@@ -753,6 +814,7 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 				if v := resp.Header.Get(trinoSetSessionHeader); v != "" {
 					c.httpHeaders.Add(trinoSessionHeader, v)
 				}
+
 				if v := resp.Header.Get(trinoClearSessionHeader); v != "" {
 					values := c.httpHeaders.Values(trinoSessionHeader)
 					c.httpHeaders.Del(trinoSessionHeader)
@@ -981,6 +1043,10 @@ func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
 				return nil
 			}
 
+			if arg.Name == trinoRoleHeader {
+				return nil
+			}
+
 			if arg.Name == trinoProgressCallbackParam {
 				return nil
 			}
@@ -1175,20 +1241,27 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				continue
 			}
 
-			s, err := Serial(arg.Value)
-			if err != nil {
-				return nil, err
-			}
-
 			if strings.HasPrefix(arg.Name, trinoHeaderPrefix) {
-				headerValue := arg.Value.(string)
+				headerValue, err := formatHeaderValue(arg.Name, arg.Value)
+				if err != nil {
+					return nil, err
+				}
 
 				if arg.Name == trinoUserHeader {
 					st.user = headerValue
 				}
 
+				if arg.Name == trinoRoleHeader {
+					st.conn.httpHeaders.Set(trinoRoleHeader, headerValue)
+				}
+
 				hs.Add(arg.Name, headerValue)
 			} else {
+				s, err := Serial(arg.Value)
+				if err != nil {
+					return nil, err
+				}
+
 				if st.conn.useExplicitPrepare && hs.Get(preparedStatementHeader) == "" {
 					for _, v := range st.conn.httpHeaders.Values(preparedStatementHeader) {
 						hs.Add(preparedStatementHeader, v)

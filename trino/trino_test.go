@@ -83,6 +83,7 @@ func TestParseDSNToConfig(t *testing.T) {
 				DisableExplicitPrepare:     true,
 				ForwardAuthorizationHeader: true,
 				QueryTimeout:               &[]time.Duration{5 * time.Minute}[0],
+				Roles:                      map[string]string{"catalog1": "role1", "catalog2": "role2"},
 			},
 		},
 		{
@@ -158,7 +159,8 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"accessToken=jwt-token-here&" +
 		"explicitPrepare=false&" +
 		"forwardAuthorizationHeader=true&" +
-		"query_timeout=5m30s"
+		"query_timeout=5m30s&" +
+		"roles=catalog1%3Arole1%3Bcatalog2%3Arole2"
 
 	config, err := ParseDSN(complexDSN)
 	require.NoError(t, err)
@@ -207,6 +209,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, true, config.ForwardAuthorizationHeader)
 	assert.NotNil(t, config.QueryTimeout)
 	assert.Equal(t, 5*time.Minute+30*time.Second, *config.QueryTimeout)
+	assert.Equal(t, map[string]string{"catalog1": "role1", "catalog2": "role2"}, config.Roles)
 }
 
 func TestConfigFormatDSNTags(t *testing.T) {
@@ -407,6 +410,46 @@ func TestKerberosConfig(t *testing.T) {
 	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&KerberosRemoteServiceName=service&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3A1&source=trino-go-client"
 
 	assert.Equal(t, want, dsn)
+}
+
+func TestFormatDSNWithRoles(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *Config
+		wantDSN     string
+		expectError bool
+	}{
+		{
+			name: "Multiple catalog roles",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				Roles:             map[string]string{"catalog1": "role1", "catalog2": "role2"},
+			},
+			wantDSN: "https://foobar@localhost:8090?roles=catalog1%3Arole1%3Bcatalog2%3Arole2&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "Single catalog role",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				Roles:             map[string]string{"catalog1": "role1"},
+			},
+			wantDSN: "https://foobar@localhost:8090?roles=catalog1%3Arole1&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dsn, err := tt.config.FormatDSN()
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantDSN, dsn)
+			}
+		})
+	}
 }
 
 func TestInvalidKerberosConfig(t *testing.T) {
@@ -1302,6 +1345,61 @@ func TestQueryCancellation(t *testing.T) {
 
 	_, err = db.Query("SELECT 1")
 	assert.EqualError(t, err, ErrQueryCancelled.Error(), "unexpected error")
+}
+
+func TestRoleHeader(t *testing.T) {
+	tests := []struct {
+		name           string
+		roles          map[string]string
+		namedArgRoles  map[string]string
+		expectedHeader string
+	}{
+		{
+			name:           "Roles from config",
+			roles:          map[string]string{"catalog1": "role1", "catalog2": "role2"},
+			namedArgRoles:  nil,
+			expectedHeader: `catalog1=ROLE{role1},catalog2=ROLE{role2}`,
+		},
+		{
+			name:           "Override dsn roles with named argument",
+			roles:          map[string]string{"catalog1": "role1"},
+			namedArgRoles:  map[string]string{"catalog3": "role3", "catalog4": "role4", "catalog5": "ALL"},
+			expectedHeader: `catalog3=ROLE{role3},catalog4=ROLE{role4},catalog5=ALL`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var receivedHeader string
+			var serverURL string
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedHeader = r.Header.Get(trinoRoleHeader)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte(`{"id":"1","nextUri":"` + serverURL + `/1"}`))
+			}))
+			serverURL = ts.URL
+			t.Cleanup(ts.Close)
+
+			c := &Config{
+				ServerURI: ts.URL,
+				Roles:     tt.roles,
+			}
+
+			dsn, err := c.FormatDSN()
+			require.NoError(t, err)
+			db, err := sql.Open("trino", dsn)
+			require.NoError(t, err)
+
+			if tt.namedArgRoles != nil {
+				_, _ = db.Query("SELECT 1", sql.Named("X-Trino-Role", tt.namedArgRoles))
+			} else {
+				_, _ = db.Query("SELECT 1")
+			}
+
+			assert.Equal(t, tt.expectedHeader, receivedHeader, "expected X-Trino-Role header to match")
+		})
+	}
 }
 
 func TestQueryFailure(t *testing.T) {
@@ -2633,9 +2731,84 @@ func TestSession(t *testing.T) {
 	assert.Equal(t, "AUTOMATIC", value)
 }
 
+func TestSetRoleHeader(t *testing.T) {
+	var firstRoleHeader string
+	var secondRoleHeader string
+	var requestCount int
+	var baseURL string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		roleHeader := r.Header.Get(trinoRoleHeader)
+
+		if r.URL.Path == "/v1/statement" {
+			// Capture the initial role from DSN
+			firstRoleHeader = roleHeader
+			w.Header().Set(trinoSetRoleHeader, "ROLE%7Badmin%7D")
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(&stmtResponse{
+				ID:      "query1",
+				NextURI: baseURL + "/v1/statement/query1/1",
+				Stats: stmtStats{
+					State: "RUNNING",
+				},
+			})
+		} else if r.URL.Path == "/v1/statement/query1/1" {
+			// Capture the role in subsequent request(e.g after server set)
+			secondRoleHeader = roleHeader
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(&queryResponse{
+				ID: "query1",
+				Stats: stmtStats{
+					State: "FINISHED",
+				},
+				Data: [][]interface{}{{1}},
+				Columns: []queryColumn{
+					{
+						Name: "_col0",
+						Type: "integer",
+						TypeSignature: typeSignature{
+							RawType:   "integer",
+							Arguments: []typeArgument{},
+						},
+					},
+				},
+			})
+		} else if r.Method == "DELETE" && r.URL.Path == "/v1/query/query1" {
+			w.WriteHeader(http.StatusNoContent)
+		} else {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(&queryResponse{
+				ID: "query1",
+				Stats: stmtStats{
+					State: "FINISHED",
+				},
+			})
+		}
+	}))
+	baseURL = ts.URL
+
+	t.Cleanup(ts.Close)
+
+	db, err := sql.Open("trino", ts.URL+"?roles=catalog%3Auser")
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	require.NoError(t, rows.Close())
+
+	assert.Equal(t, `catalog=ROLE{user}`, firstRoleHeader, "initial role from DSN should be sent in first request")
+	assert.Equal(t, "ROLE%7Badmin%7D", secondRoleHeader, "server-set role should be sent in subsequent requests")
+	assert.NotEqual(t, firstRoleHeader, secondRoleHeader, "role should have changed from DSN value to server-set value")
+}
+
 func TestUnsupportedHeader(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(trinoSetRoleHeader, "foo")
+		w.Header().Set(trinoSetPathHeader, "foo.bar")
 		w.WriteHeader(http.StatusOK)
 	}))
 
