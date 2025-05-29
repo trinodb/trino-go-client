@@ -183,12 +183,18 @@ also known as namespace in some environments.
 
 ```
 Type:           string
-Valid values:   comma-separated list of key=value session properties
+Valid values:   semicolon-separated list of key:value session properties (e.g. key1:value1;key2:value2)
 Default:        empty
 ```
 
 The `session_properties` parameter must contain valid parameters accepted by
 the Trino server. Run `SHOW SESSION` in Trino to get the current list.
+
+Example:
+
+```
+session_properties=query_max_run_time:2s;query_priority:1
+```
 
 ##### `custom_client`
 
@@ -256,7 +262,7 @@ http://user@localhost:8080?source=hello&catalog=default&schema=foobar
 ```
 
 ```
-https://user@localhost:8443?session_properties=query_max_run_time=10m,query_priority=2
+https://user@localhost:8443?session_properties=query_max_run_time:10m;query_priority:2
 ```
 
 ## Data types
