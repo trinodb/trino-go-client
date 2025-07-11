@@ -1348,9 +1348,13 @@ func (sp *spoolingProtocol) fetch() ([]queryData, error) {
 			if !ok || ackUri == "" {
 				return nil, fmt.Errorf("missing or invalid 'ackUri' field in spooled segment at index %d", segmentIndex)
 			}
-			headers, ok := segment["headers"].(map[string]interface{})
-			if !ok {
-				return nil, fmt.Errorf("missing or invalid 'headers' field in spooled segment at index %d", segmentIndex)
+
+			headers := make(map[string]interface{})
+			if rawHeaders, exists := segment["headers"]; exists {
+				headers, ok = rawHeaders.(map[string]interface{})
+				if !ok {
+					return nil, fmt.Errorf("invalid 'headers' field in spooled segment at index %d: expected map[string]interface{}", segmentIndex)
+				}
 			}
 
 			data, err := sp.fetchSegment(uri, ackUri, headers)

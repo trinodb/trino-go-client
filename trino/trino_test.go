@@ -1202,6 +1202,19 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
+			Name: "spooledSegmentWithoutHeadersOnReponse", // headers are optional
+			Segments: []map[string]interface{}{
+				{
+					"type":     "spooled",
+					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 29},
+					"ackUri":   "test",
+				},
+			},
+			Encoding:       "json+zstd",
+			ExpectedResult: []int{1000, 10001},
+			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
+		},
+		{
 			Name: "zlibCompression",
 			Segments: []map[string]interface{}{
 				{
@@ -1565,7 +1578,7 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 			expectedError: "missing or invalid 'ackUri' field in spooled segment at index 0",
 		},
 		{
-			name: "MissingHeaders",
+			name: "wrongHeadersFormat",
 			segments: []map[string]interface{}{
 				{
 					"type":   "spooled",
@@ -1577,9 +1590,13 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 						"uncompressedSize": 2,
 						"rowOffset":        0,
 					},
+					"headers": [][]string{
+						{"x-amz-server-side-encryption-customer-algorithm", "AES256"},
+						{"x-amz-server-side-encryption-customer-key", "key"},
+					},
 				},
 			},
-			expectedError: "missing or invalid 'headers' field in spooled segment at index 0",
+			expectedError: "invalid 'headers' field in spooled segment at index 0: expected map[string]interface{}",
 		},
 		{
 			name: "HeadersWithMultipleValues",
