@@ -203,6 +203,46 @@ func TestKerberosConfig(t *testing.T) {
 	assert.Equal(t, want, dsn)
 }
 
+func TestFormatDSNWithRoles(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      *Config
+		wantDSN     string
+		expectError bool
+	}{
+		{
+			name: "Multiple catalog roles",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				Roles:             map[string]string{"catalog1": "role1", "catalog2": "role2"},
+			},
+			wantDSN: "https://foobar@localhost:8090?roles=catalog1%3DROLE%7B%22role1%22%7D%2Ccatalog2%3DROLE%7B%22role2%22%7D&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "Single catalog role",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				Roles:             map[string]string{"catalog1": "role1"},
+			},
+			wantDSN: "https://foobar@localhost:8090?roles=catalog1%3DROLE%7B%22role1%22%7D&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dsn, err := tt.config.FormatDSN()
+			if tt.expectError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.wantDSN, dsn)
+			}
+		})
+	}
+}
+
 func TestInvalidKerberosConfig(t *testing.T) {
 	c := &Config{
 		ServerURI:       "http://foobar@localhost:8090",
@@ -1096,6 +1136,31 @@ func TestQueryCancellation(t *testing.T) {
 
 	_, err = db.Query("SELECT 1")
 	assert.EqualError(t, err, ErrQueryCancelled.Error(), "unexpected error")
+}
+
+func TestTrinoRoleHeaderSent(t *testing.T) {
+	var receivedHeader string
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHeader = r.Header.Get(trinoRoleHeader)
+	}))
+	t.Cleanup(ts.Close)
+
+	c := &Config{
+		ServerURI:         ts.URL,
+		SessionProperties: map[string]string{"query_priority": "1"},
+		Roles:             map[string]string{"catalog1": "role1", "catalog2": "role2"},
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+
+	_, _ = db.Query("SHOW TABLES")
+	require.NoError(t, err)
+
+	assert.Equal(t, `catalog1=ROLE{"role1"},catalog2=ROLE{"role2"}`, receivedHeader, "expected X-Trino-Role header to be set")
 }
 
 func TestQueryFailure(t *testing.T) {

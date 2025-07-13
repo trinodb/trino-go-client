@@ -249,6 +249,30 @@ Default:        nil
 
 The `queryTimeout` parameter sets a timeout for the query. If the query takes longer than the timeout, it will be cancelled. If it is not set the default context timeout will be used.
 
+
+#### `roles`
+
+```
+Type:           string  
+Format:         roles=catalog1:role1;catalog2=role2  
+Valid values:   A semicolon-separated list of catalog-to-role assignments, where each assignment maps a catalog to a role.  
+Default:        empty
+```
+The roles parameter defines authorization roles to assume for one or more catalogs during the Trino session.
+
+You can assign roles either as a map of catalog-to-role pairs or a string direcly in the dns connection.
+
+##### Example
+``` go
+c := &Config{
+	ServerURI:         "https://foobar@localhost:8090",
+	SessionProperties: map[string]string{"query_priority": "1"},
+	Roles:             map[string]string{"catalog1": "role1", "catalog2": "role2"},
+}
+
+dsn, err := c.FormatDSN()
+```
+
 #### Examples
 
 ```
@@ -257,6 +281,11 @@ http://user@localhost:8080?source=hello&catalog=default&schema=foobar
 
 ```
 https://user@localhost:8443?session_properties=query_max_run_time=10m,query_priority=2
+```
+
+
+```
+http://user@localhost:8080?source=hello&catalog=default&schema=foobar&roles=catalog1:role1;catalog2:role2
 ```
 
 ## Data types

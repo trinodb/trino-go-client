@@ -49,6 +49,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	dt "github.com/ory/dockertest/v3"
 	docker "github.com/ory/dockertest/v3/docker"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -1022,6 +1023,77 @@ func TestIntegrationNoResults(t *testing.T) {
 	}
 	if err = rows.Err(); err != nil {
 		t.Fatal(err)
+	}
+}
+func TestRoleHeaderSupport(t *testing.T) {
+	tests := []struct {
+		name        string
+		config      Config
+		rawDSN      string
+		expectError bool
+		errorSubstr string
+	}{
+		{
+			name: "Valid roles via Config",
+			config: Config{
+				ServerURI: *integrationServerFlag,
+				Roles:     map[string]string{"tpch": "role1", "memory": "role2"},
+			},
+			expectError: false,
+		},
+		{
+			name:        "Valid roles via DSN, not encoded url",
+			rawDSN:      *integrationServerFlag + "?roles=tpch:role1;memory:role2",
+			expectError: false,
+		},
+		{
+			name:        "Valid roles via DSN, url encoded",
+			rawDSN:      *integrationServerFlag + "?roles%3Dtpch%3Arole1%3Bmemory%3Arole2",
+			expectError: false,
+		},
+		{
+			name: "Non-existent catalog role",
+			config: Config{
+				ServerURI: *integrationServerFlag,
+				Roles:     map[string]string{"not-exist-catalog": "role1"},
+			},
+			expectError: true,
+			errorSubstr: "USER_ERROR: Catalog",
+		},
+		{
+			name:        "Invalid role format missing ROLE{}",
+			rawDSN:      *integrationServerFlag + "?roles=catolog%3Drole1",
+			expectError: true,
+			errorSubstr: "Invalid role format: catolog=role1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var dns string
+			var err error
+
+			if tt.rawDSN != "" {
+				dns = tt.rawDSN
+			} else {
+				dns, err = tt.config.FormatDSN()
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			db := integrationOpen(t, dns)
+			_, err = db.Query("SELECT 1")
+
+			if tt.expectError {
+				require.Error(t, err)
+				if tt.errorSubstr != "" {
+					require.Contains(t, err.Error(), tt.errorSubstr)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+		})
 	}
 }
 

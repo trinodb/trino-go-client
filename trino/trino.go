@@ -126,6 +126,7 @@ const (
 	trinoSetSessionHeader      = trinoHeaderPrefix + `Set-Session`
 	trinoClearSessionHeader    = trinoHeaderPrefix + `Clear-Session`
 	trinoSetRoleHeader         = trinoHeaderPrefix + `Set-Role`
+	trinoRoleHeader            = trinoHeaderPrefix + `Role`
 	trinoExtraCredentialHeader = trinoHeaderPrefix + `Extra-Credential`
 
 	trinoProgressCallbackParam       = trinoHeaderPrefix + `Progress-Callback`
@@ -153,6 +154,7 @@ const (
 
 	mapKeySeparator   = ":"
 	mapEntrySeparator = ";"
+	mapCommaSeparator = ","
 )
 
 var (
@@ -194,6 +196,7 @@ type Config struct {
 	AccessToken                string            // An access token (JWT) for authentication (optional)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
+	Roles                      map[string]string // Roles (optional)
 }
 
 // FormatDSN returns a DSN string from the configuration.
@@ -214,6 +217,14 @@ func (c *Config) FormatDSN() (string, error) {
 			credkv = append(credkv, k+mapKeySeparator+v)
 		}
 	}
+
+	var roles []string
+	if c.Roles != nil {
+		for k, v := range c.Roles {
+			roles = append(roles, fmt.Sprintf("%s=ROLE{%q}", k, v))
+		}
+	}
+
 	source := c.Source
 	if source == "" {
 		source = "trino-go-client"
@@ -284,6 +295,7 @@ func (c *Config) FormatDSN() (string, error) {
 		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
 		"custom_client":      c.CustomClientName,
 		accessTokenConfig:    c.AccessToken,
+		"roles":              strings.Join(roles, mapCommaSeparator),
 	} {
 		if v != "" {
 			query[k] = []string{v}
@@ -307,6 +319,7 @@ type Conn struct {
 	useExplicitPrepare         bool
 	forwardAuthorizationHeader bool
 	queryTimeout               *time.Duration
+	Roles                      string
 }
 
 var (
@@ -390,6 +403,26 @@ func newConn(dsn string) (*Conn, error) {
 		queryTimeout = &d
 	}
 
+	var formatedRoles string
+	if rolesStr := query.Get("roles"); rolesStr != "" {
+		if !strings.Contains(rolesStr, "=ROLE{") {
+			roles := []string{}
+			rolesToFormat := strings.Split(rolesStr, ";")
+
+			for _, role := range rolesToFormat {
+				parts := strings.Split(role, ":")
+				if len(parts) != 2 {
+					return nil, fmt.Errorf("Invalid role format: %s", role)
+				}
+				roles = append(roles, fmt.Sprintf("%s=ROLE{%q}", parts[0], parts[1]))
+			}
+
+			formatedRoles = strings.Join(roles, mapCommaSeparator)
+		} else {
+			formatedRoles = rolesStr
+		}
+	}
+
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
 		httpClient:                 *httpClient,
@@ -400,6 +433,7 @@ func newConn(dsn string) (*Conn, error) {
 		useExplicitPrepare:         useExplicitPrepare,
 		forwardAuthorizationHeader: forwardAuthorizationHeader,
 		queryTimeout:               queryTimeout,
+		Roles:                      formatedRoles,
 	}
 
 	var user string
@@ -930,6 +964,10 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	hs := make(http.Header)
 	// Ensure the server returns timestamps preserving their precision, without truncating them to timestamp(3).
 	hs.Add("X-Trino-Client-Capabilities", "PARAMETRIC_DATETIME")
+
+	if st.conn.Roles != "" {
+		hs.Add(trinoRoleHeader, st.conn.Roles)
+	}
 
 	if len(args) > 0 {
 		var ss []string
