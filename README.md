@@ -341,6 +341,64 @@ following types:
 > `VARBINARY` columns are returned as base64-encoded strings when used within
 > `ROW`, `MAP`, or `ARRAY` values.
 
+## Spooling Protocol
+
+The client supports the [Trino spooling protocol](https://trino.io/docs/current/client/client-protocol.html#spooling-protocol), which enables efficient retrieval of large result sets by downloading data in segments, optionally in parallel and out-of-order.
+
+If the Trino server has the spooling protocol enabled, the client will use it by default with the `json` encoding.
+
+You can configure other encodings:
+
+- Supported encodings: `json`, `json+lz4`, `json+zstd`
+
+```go
+rows, err := db.Query(query, sql.Named("encoding", "json+zstd"))
+```
+
+Or specify a list of supported encodings in order of preference:
+
+```go
+rows, err := db.Query(query, sql.Named("encoding", "json+zstd, json+lz4, json"))
+```
+
+### Configuration Options
+
+You can tune the spooling protocol using the following parameters, passed as `sql.Named` arguments to your query:
+
+- **Spooling Worker Count**  
+  `sql.Named("spooling_worker_count", "N")`  
+  Sets the number of parallel workers used to download spooled segments.  
+  **Default:** `5`  
+  **Considerations:**  
+  - Increasing this value can improve throughput for large result sets, especially on high-latency networks.
+  - Higher values increase parallelism but may also increase memory usage.
+
+- **Max Out-of-Order Segments**  
+  `sql.Named("max_out_of_order_segments", "N")`  
+  Sets the maximum number of segments that can be downloaded and buffered out-of-order before blocking further downloads.  
+  **Default:** `10`  
+  **Considerations:**  
+  - Higher values increase the potential memory usage, but actual usage depends on download behavior and may be lower in practice.
+  - Higher values reduce the chance that one slow or stalled segment will block the download of additional segments.
+  - Lower values reduce memory usage but may limit parallelism and throughput.
+
+**Note:**  
+It is **not allowed** to set `spooling_worker_count` higher than `max_out_of_order_segments` — doing so will result in an error.
+
+Each download worker must reserve a slot for the segment it fetches, and a slot is only released when that segment can be processed in order. The total number of slots corresponds to max_out_of_order_segments.
+If you configure more workers than allowed out-of-order segments, the extra workers would immediately block while waiting for a slot — defeating the purpose of parallelism and potentially wasting resources.
+
+#### Example: Customizing Spooling Parameters
+
+```go
+rows, err := db.Query(
+    query,
+    sql.Named("encoding", "json+zstd"),
+    sql.Named("spooling_worker_count", "8"),
+    sql.Named("max_out_of_order_segments", "20"),
+)
+```
+
 ## License
 
 Apache License V2.0, as described in the [LICENSE](./LICENSE) file.

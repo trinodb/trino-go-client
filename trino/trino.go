@@ -63,10 +63,12 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -136,6 +138,8 @@ const (
 
 	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
 	trinoEncoding                = "encoding"
+	trinoSpoolingWorkerCount     = `spooling_worker_count`
+	trinoMaxOutOfOrdersSegments  = `max_out_of_order_segments`
 
 	authorizationHeader = "Authorization"
 
@@ -153,6 +157,17 @@ const (
 
 	mapKeySeparator   = ":"
 	mapEntrySeparator = ";"
+
+	defaultallowedOutOfOrder       = 10
+	defaultSpoolingDownloadWorkers = 5
+	defaulttrinoEncoding           = "json"
+)
+
+type SegmentType int
+
+const (
+	Inline SegmentType = iota
+	Spooled
 )
 
 var (
@@ -690,15 +705,44 @@ func newErrQueryFailedFromResponse(resp *http.Response) *ErrQueryFailed {
 }
 
 type driverStmt struct {
-	conn           *Conn
-	query          string
-	user           string
-	nextURIs       chan string
-	httpResponses  chan *http.Response
-	queryResponses chan queryResponse
-	statsCh        chan QueryProgressInfo
-	errors         chan error
-	doneCh         chan struct{}
+	conn                          *Conn
+	query                         string
+	user                          string
+	nextURIs                      chan string
+	httpResponses                 chan *http.Response
+	queryResponses                chan queryResponse
+	statsCh                       chan QueryProgressInfo
+	usingSpooledProtocol          bool
+	spoolingMaxOutOfOrderSegments int
+	spoolingWorkerCount           int
+	spooledSegmentsMetadata       chan spooledMetadata
+	spooledSegmentsToDecode       chan segmentToDecode
+	decodedSegments               chan decodedSegment
+	segmentsToProccess            chan segmentToProccess
+	waitSegmentDecodersWorkers    sync.WaitGroup
+	waitDownloadSegmentsWorkers   sync.WaitGroup
+	cancelDownloadWorkers         context.CancelFunc
+	cancelDecodersWorkers         context.CancelFunc
+	spoolingRowsChannel           chan []queryData
+	spoolingProcesserDone         chan struct{}
+	segmentThrottleCh             chan struct{}
+	errors                        chan error
+	doneCh                        chan struct{}
+	segmentDispatcherDoneCh       chan struct{}
+}
+
+type segmentToDecode struct {
+	segmentIndex int
+	encoding     string
+	data         []byte
+	metadata     segmentMetadata
+	SegmentType  SegmentType
+}
+
+type decodedSegment struct {
+	rowOffset   int64
+	queryData   []queryData
+	segmentType SegmentType
 }
 
 var (
@@ -723,13 +767,61 @@ func (st *driverStmt) Close() error {
 		for range st.errors {
 		}
 	}()
+
 	for range st.queryResponses {
 	}
 	for range st.httpResponses {
 	}
+
+	if st.cancelDownloadWorkers != nil {
+		st.cancelDownloadWorkers()
+	}
+
+	if st.cancelDecodersWorkers != nil {
+		st.cancelDecodersWorkers()
+	}
+
+	if st.spoolingRowsChannel != nil {
+		for range st.spoolingRowsChannel {
+		}
+	}
+
+	if st.decodedSegments != nil {
+		for range st.decodedSegments {
+		}
+	}
+
+	if st.spooledSegmentsToDecode != nil {
+		for range st.spooledSegmentsToDecode {
+		}
+	}
+
+	if st.spooledSegmentsMetadata != nil {
+		for range st.spooledSegmentsMetadata {
+		}
+	}
+
+	if st.segmentsToProccess != nil {
+		for range st.segmentsToProccess {
+		}
+	}
+
+	st.waitDownloadSegmentsWorkers.Wait()
+
+	st.waitSegmentDecodersWorkers.Wait()
+
 	close(st.nextURIs)
 	close(st.errors)
+
 	st.doneCh = nil
+	st.cancelDownloadWorkers = nil
+	st.spooledSegmentsMetadata = nil
+	st.spooledSegmentsToDecode = nil
+	st.cancelDecodersWorkers = nil
+	st.segmentsToProccess = nil
+	st.decodedSegments = nil
+	st.spoolingRowsChannel = nil
+
 	return nil
 }
 
@@ -954,6 +1046,24 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				continue
 			}
 
+			if arg.Name == trinoSpoolingWorkerCount {
+				numberOfWorkers, err := strconv.Atoi(arg.Value.(string))
+				if err != nil {
+					return nil, err
+				}
+				st.spoolingWorkerCount = numberOfWorkers
+				continue
+			}
+
+			if arg.Name == trinoMaxOutOfOrdersSegments {
+				maxSegmentsOutOfOrder, err := strconv.Atoi(arg.Value.(string))
+				if err != nil {
+					return nil, err
+				}
+				st.spoolingMaxOutOfOrderSegments = maxSegmentsOutOfOrder
+				continue
+			}
+
 			s, err := Serial(arg.Value)
 			if err != nil {
 				return nil, err
@@ -987,6 +1097,14 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				query = "EXECUTE IMMEDIATE " + formatStringLiteral(st.query) + " USING " + strings.Join(ss, ", ")
 			}
 		}
+	}
+
+	if st.spoolingWorkerCount > st.spoolingMaxOutOfOrderSegments {
+		return nil, fmt.Errorf("spooling worker cannot be greater than max out of order segments allowed. spooling workers: %d, allowed out of order segments: %d", st.spoolingWorkerCount, st.spoolingMaxOutOfOrderSegments)
+	}
+
+	if hs.Get(trinoQueryDataEncodingHeader) == "" {
+		hs.Add(trinoQueryDataEncodingHeader, defaulttrinoEncoding)
 	}
 
 	var cancel context.CancelFunc = func() {}
@@ -1136,6 +1254,122 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	return &sr, handleResponseError(resp.StatusCode, sr.Error)
 }
 
+type SegmentFetcher struct {
+	ctx             context.Context
+	httpClient      http.Client
+	spooledMetadata spooledMetadata
+}
+
+func (sf *SegmentFetcher) roundTrip(req *http.Request) (*http.Response, error) {
+	delay := 200 * time.Millisecond
+	const maxRetries = 5
+
+	retries := 0
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			resp, err := sf.httpClient.Do(req)
+			if err != nil {
+				var netErr net.Error
+
+				if errors.As(err, &netErr) && netErr.Timeout() {
+					retries++
+					if retries > maxRetries {
+						return nil, &ErrQueryFailed{Reason: fmt.Errorf("max retries reached: %w", err)}
+					}
+					delay = time.Duration(float64(delay) * math.Phi)
+					timer.Reset(delay)
+					continue
+				}
+
+				return nil, &ErrQueryFailed{Reason: err}
+			}
+
+			switch resp.StatusCode {
+			case http.StatusOK:
+				return resp, nil
+
+			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+				resp.Body.Close()
+				retries++
+				if retries > maxRetries {
+					return nil, &ErrQueryFailed{Reason: fmt.Errorf("max retries reached for status code %d", resp.StatusCode)}
+				}
+				delay = time.Duration(float64(delay) * math.Phi)
+				timer.Reset(delay)
+				continue
+
+			default:
+				return nil, newErrQueryFailedFromResponse(resp)
+			}
+		}
+	}
+}
+
+func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
+	req, err := http.NewRequestWithContext(sf.ctx, "GET", sf.spooledMetadata.uri, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	for k, v := range sf.spooledMetadata.headers {
+		headerSlice, ok := v.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("unsupported header type %T", v)
+		}
+
+		if len(headerSlice) == 0 {
+			continue
+		}
+
+		if len(headerSlice) > 1 {
+			return nil, fmt.Errorf("multiple values for header %s", k)
+		}
+
+		header, ok := headerSlice[0].(string)
+		if !ok {
+			return nil, fmt.Errorf("unsupported header value type %T", headerSlice[0])
+		}
+		req.Header.Add(k, header)
+	}
+
+	resp, err := sf.roundTrip(req)
+	if err != nil {
+		return nil, fmt.Errorf("error fetching segment from uri '%s': %v", sf.spooledMetadata.uri, err)
+	}
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %v", err)
+	}
+
+	//acknowledge the segment read
+	go func() {
+		// TODO: handle ack erros
+		ackReq, err := http.NewRequestWithContext(sf.ctx, "GET", sf.spooledMetadata.ackUri, nil)
+		if err != nil {
+			return
+		}
+
+		for k, values := range req.Header {
+			for _, v := range values {
+				ackReq.Header.Add(k, v)
+			}
+		}
+
+		resp, err := sf.httpClient.Do(ackReq)
+		if err != nil {
+			return
+		}
+		resp.Body.Close()
+	}()
+
+	return data, nil
+}
+
 func formatStringLiteral(query string) string {
 	return "'" + strings.ReplaceAll(query, "'", "''") + "'"
 }
@@ -1236,7 +1470,7 @@ func (qr *driverRows) Next(dest []driver.Value) error {
 	if qr.err != nil {
 		return qr.err
 	}
-	if qr.columns == nil || qr.rowindex >= len(qr.data) {
+	if !qr.stmt.usingSpooledProtocol && (qr.columns == nil || qr.rowindex >= len(qr.data)) {
 		if qr.nextURI == "" {
 			qr.err = io.EOF
 			return qr.err
@@ -1245,7 +1479,41 @@ func (qr *driverRows) Next(dest []driver.Value) error {
 			qr.err = err
 			return err
 		}
+	} else if qr.stmt.usingSpooledProtocol && (qr.rowindex >= len(qr.data) || qr.data == nil) {
+		var ok bool
+		select {
+		// The spoolingRowsChannel is initialized in startSpoolingProtocolWorkers,
+		// which is called by fetch() when the first query response indicates
+		// the spooling protocol (i.e., the response contains segments).
+		// At that point, usingSpooledProtocol is set to true and the channel is created.
+		case qr.data, ok = <-qr.stmt.spoolingRowsChannel:
+			if !ok {
+				qr.err = io.EOF
+				return qr.err
+			}
+
+			qr.rowindex = 0
+
+		case err := <-qr.stmt.errors:
+			if err == nil {
+				// Channel was closed, which means the statement
+				// or rows were closed.
+				qr.err = io.EOF
+				return qr.err
+			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				qr.Close()
+			}
+			qr.stmt.cancelDecodersWorkers()
+			qr.stmt.cancelDownloadWorkers()
+			qr.err = err
+			return qr.err
+		}
 	}
+
+	return qr.next(dest)
+}
+
+func (qr *driverRows) next(dest []driver.Value) error {
 	if len(qr.coltype) == 0 {
 		qr.err = sql.ErrNoRows
 		return qr.err
@@ -1290,93 +1558,53 @@ type queryResponse struct {
 	UpdateCount      int64         `json:"updateCount"`
 }
 
-type spoolingProtocol struct {
-	httpClient http.Client
-	ctx        context.Context
-	encoding   string
-	segments   []interface{}
-}
-
-type spoolingMetadata struct {
+type segmentMetadata struct {
 	rowOffset        int64
 	rowsCount        int64
 	segmentSize      int64
 	uncompressedSize int64
 }
 
-func (sp *spoolingProtocol) fetch() ([]queryData, error) {
-	var queryData []queryData
-	for segmentIndex, segment := range sp.segments {
-		segment, ok := segment.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("segment at index %d is invalid: expected map[string]interface{}, got %T", segmentIndex, segment)
-		}
-		segmentMetadata, exists := segment["metadata"]
-		if !exists {
-			return nil, fmt.Errorf("metadata is missing in segment at index %d", segmentIndex)
-		}
-
-		typedMetadata, ok := segmentMetadata.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("metadata is invalid or cannot be parsed as map[string]interface{} in segment at index %d", segmentIndex)
-		}
-
-		metadata, err := parseSpoolingMetadata(typedMetadata)
-		if err != nil {
-			return nil, err
-		}
-		switch segment["type"] {
-		case "inline":
-			decodedBytes, err := base64.StdEncoding.DecodeString(segment["data"].(string))
-
-			if err != nil {
-				return nil, fmt.Errorf("error decoding base64 data in inline segment at index %d: %v", segmentIndex, err)
-			}
-
-			decodedData, err := decodeSegment(decodedBytes, sp.encoding, metadata)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decode inline segment at index %d: %v", segmentIndex, err)
-			}
-
-			queryData = append(queryData, decodedData...)
-		case "spooled":
-			uri, ok := segment["uri"].(string)
-			if !ok || uri == "" {
-				return nil, fmt.Errorf("missing or invalid 'uri' field in spooled segment at index %d", segmentIndex)
-			}
-			ackUri, ok := segment["ackUri"].(string)
-			if !ok || ackUri == "" {
-				return nil, fmt.Errorf("missing or invalid 'ackUri' field in spooled segment at index %d", segmentIndex)
-			}
-
-			headers := make(map[string]interface{})
-			if rawHeaders, exists := segment["headers"]; exists {
-				headers, ok = rawHeaders.(map[string]interface{})
-				if !ok {
-					return nil, fmt.Errorf("invalid 'headers' field in spooled segment at index %d: expected map[string]interface{}", segmentIndex)
-				}
-			}
-
-			data, err := sp.fetchSegment(uri, ackUri, headers)
-			if err != nil {
-				return nil, fmt.Errorf("failed to fetch segment from uri '%s' at index %d: %v", uri, segmentIndex, err)
-			}
-
-			decodedData, err := decodeSegment(data, sp.encoding, metadata)
-			if err != nil {
-				return nil, fmt.Errorf("failed to decode spooled segment at index %d: %v", segmentIndex, err)
-			}
-
-			queryData = append(queryData, decodedData...)
-		}
-
-	}
-
-	return queryData, nil
+type spooledMetadata struct {
+	SegmentType SegmentType
+	uri         string
+	ackUri      string
+	encoding    string
+	headers     map[string]interface{}
+	metadata    segmentMetadata
 }
 
-func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, error) {
-	result := spoolingMetadata{
+func parseSpooledMetadata(segment map[string]interface{}, segmentIndex int, segmentMetadata segmentMetadata, encoding string) (spooledMetadata, error) {
+	result := spooledMetadata{
+		metadata:    segmentMetadata,
+		encoding:    encoding,
+		SegmentType: Spooled,
+		headers:     make(map[string]interface{}),
+	}
+
+	var ok bool
+	result.uri, ok = segment["uri"].(string)
+	if !ok || result.uri == "" {
+		return spooledMetadata{}, fmt.Errorf("missing or invalid 'uri' field in spooled segment at index %d", segmentIndex)
+	}
+
+	result.ackUri, ok = segment["ackUri"].(string)
+	if !ok || result.ackUri == "" {
+		return spooledMetadata{}, fmt.Errorf("missing or invalid 'ackUri' field in spooled segment at index %d", segmentIndex)
+	}
+
+	if rawHeaders, exists := segment["headers"]; exists {
+		result.headers, ok = rawHeaders.(map[string]interface{})
+		if !ok {
+			return spooledMetadata{}, fmt.Errorf("invalid 'headers' field in spooled segment at index %d: expected map[string]interface{}", segmentIndex)
+		}
+	}
+
+	return result, nil
+}
+
+func parseSegmentMetadata(metadata map[string]interface{}) (segmentMetadata, error) {
+	result := segmentMetadata{
 		rowOffset:        0,
 		rowsCount:        0,
 		segmentSize:      0,
@@ -1386,21 +1614,21 @@ func parseSpoolingMetadata(metadata map[string]interface{}) (spoolingMetadata, e
 	var err error
 	// Mandatory field
 	if result.rowOffset, err = getInt64(metadata, "rowOffset"); err != nil {
-		return spoolingMetadata{}, err
+		return segmentMetadata{}, err
 	}
 
 	// Mandatory field
 	if result.segmentSize, err = getInt64(metadata, "segmentSize"); err != nil {
-		return spoolingMetadata{}, err
+		return segmentMetadata{}, err
 	}
 
 	if result.uncompressedSize, err = getOptionalInt64(metadata, "uncompressedSize"); err != nil {
-		return spoolingMetadata{}, err
+		return segmentMetadata{}, err
 	}
 
 	// Bug: rowsCount was wrongly not enforced as a mandatory field on Trino response. Fixed on 475 release
 	if result.rowsCount, err = getOptionalInt64(metadata, "rowsCount"); err != nil {
-		return spoolingMetadata{}, err
+		return segmentMetadata{}, err
 	}
 
 	return result, nil
@@ -1438,100 +1666,7 @@ func parseInt64(val interface{}, key string) (int64, error) {
 	return n, nil
 }
 
-func (sp *spoolingProtocol) fetchSegment(uri, ackUri string, headers map[string]interface{}) ([]byte, error) {
-	req, err := http.NewRequestWithContext(sp.ctx, "GET", uri, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	for k, v := range headers {
-		headerSlice, ok := v.([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("unsupported header type %T", v)
-		}
-
-		if len(headerSlice) == 0 {
-			continue
-		}
-
-		if len(headerSlice) > 1 {
-			return nil, fmt.Errorf("multiple values for header %s", k)
-		}
-
-		header, ok := headerSlice[0].(string)
-		if !ok {
-			return nil, fmt.Errorf("unsupported header value type %T", headerSlice[0])
-		}
-		req.Header.Add(k, header)
-	}
-
-	resp, err := sp.roundTrip(req)
-	if err != nil {
-		return nil, fmt.Errorf("error fetching segment from uri '%s': %v", uri, err)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %v", err)
-	}
-
-	//acknowledge the segment read
-	go func() {
-		// TODO: handle ack erros
-		ackReq, err := http.NewRequestWithContext(sp.ctx, "GET", ackUri, nil)
-		if err != nil {
-			return
-		}
-
-		for k, values := range req.Header {
-			for _, v := range values {
-				ackReq.Header.Add(k, v)
-			}
-		}
-
-		resp, err := sp.httpClient.Do(ackReq)
-		if err != nil {
-			return
-		}
-		resp.Body.Close()
-	}()
-
-	return data, nil
-}
-
-func (sp *spoolingProtocol) roundTrip(req *http.Request) (*http.Response, error) {
-	delay := 100 * time.Millisecond
-	const maxDelayBetweenRequests = float64(15 * time.Second)
-	timer := time.NewTimer(0)
-	defer timer.Stop()
-	for {
-		select {
-		case <-sp.ctx.Done():
-			return nil, sp.ctx.Err()
-		case <-timer.C:
-			resp, err := sp.httpClient.Do(req)
-			if err != nil {
-				return nil, &ErrQueryFailed{Reason: err}
-			}
-			switch resp.StatusCode {
-			case http.StatusOK:
-				return resp, nil
-			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-				resp.Body.Close()
-				timer.Reset(delay)
-				delay = time.Duration(math.Min(
-					float64(delay)*math.Phi,
-					maxDelayBetweenRequests,
-				))
-				continue
-			default:
-				return nil, newErrQueryFailedFromResponse(resp)
-			}
-		}
-	}
-}
-
-func decodeSegment(data []byte, encoding string, metadata spoolingMetadata) ([]queryData, error) {
+func decodeSegment(data []byte, encoding string, metadata segmentMetadata) ([]queryData, error) {
 	if int64(len(data)) != metadata.segmentSize {
 		return nil, fmt.Errorf("segment size mismatch: expected %d bytes, got %d bytes", metadata.segmentSize, len(data))
 	}
@@ -1552,7 +1687,7 @@ func decodeSegment(data []byte, encoding string, metadata spoolingMetadata) ([]q
 	return queryDataList, nil
 }
 
-func decompressSegment(data []byte, encoding string, metadata spoolingMetadata) ([]byte, error) {
+func decompressSegment(data []byte, encoding string, metadata segmentMetadata) ([]byte, error) {
 	if metadata.uncompressedSize == 0 {
 		return data, nil
 	}
@@ -1646,6 +1781,75 @@ func handleResponseError(status int, respErr ErrTrino) error {
 	}
 }
 
+func (qr *driverRows) startOrderedSegmentStreamer() {
+	go func() {
+		defer close(qr.stmt.spoolingRowsChannel)
+		defer close(qr.stmt.spoolingProcesserDone)
+
+		consumed := 0
+		buffer := make([]decodedSegment, 0, qr.stmt.spoolingMaxOutOfOrderSegments)
+		var nextExpectedOffset int64 = 0
+
+		for {
+			select {
+			case segment, ok := <-qr.stmt.decodedSegments:
+				if !ok {
+					return
+				}
+
+				buffer = append(buffer, segment)
+
+				if nextExpectedOffset != segment.rowOffset {
+					if len(buffer) >= qr.stmt.spoolingMaxOutOfOrderSegments {
+						qr.stmt.errors <- fmt.Errorf(
+							"all %d out-of-order segments buffered (limit: %d). This indicates a bug or inconsistency in the segments metadata response (e.g., missing, duplicate, or misordered segments, or row offsets not matching the expected sequence)",
+							len(buffer), qr.stmt.spoolingMaxOutOfOrderSegments)
+					}
+
+					continue
+				}
+
+				consumed = 0
+				slices.SortFunc(buffer, func(a, b decodedSegment) int {
+					if a.rowOffset < b.rowOffset {
+						return -1
+					}
+					if a.rowOffset > b.rowOffset {
+						return 1
+					}
+					return 0
+				})
+
+				for consumed < len(buffer) && buffer[consumed].rowOffset == nextExpectedOffset {
+					select {
+					case qr.stmt.spoolingRowsChannel <- buffer[consumed].queryData:
+					case <-qr.doneCh:
+						return
+					}
+
+					if buffer[consumed].segmentType == Spooled {
+						// release reserved slot from download worker
+						select {
+						case <-qr.stmt.segmentThrottleCh:
+						case <-qr.doneCh:
+							return
+						}
+					}
+
+					nextExpectedOffset += int64(len(buffer[consumed].queryData))
+					consumed++
+				}
+
+				copy(buffer[0:], buffer[consumed:])
+				buffer = buffer[:len(buffer)-consumed]
+
+			case <-qr.doneCh:
+				return
+			}
+		}
+	}()
+}
+
 func (qr *driverRows) fetch() error {
 	var qresp queryResponse
 	var err error
@@ -1675,28 +1879,13 @@ func (qr *driverRows) fetch() error {
 				}
 			case map[string]interface{}:
 				// spooling protocol
-				encoding, ok := data["encoding"].(string)
-				if !ok {
-					return fmt.Errorf("invalid or missing 'encoding' field on spooling protocol, expected string")
-				}
+				qr.stmt.startSpoolingProtocolWorkers(qr.ctx)
+				qr.startOrderedSegmentStreamer()
 
-				segments, ok := data["segments"].([]interface{})
-				if !ok {
-					return fmt.Errorf("invalid or missing 'segments' field on spooling protocol, expected []interface{}")
-				}
+				err := qr.queueSpoolingSegments(data)
+				qr.proccessSpollingSegments()
 
-				spoolingData := spoolingProtocol{
-					httpClient: qr.stmt.conn.httpClient,
-					ctx:        qr.ctx,
-					encoding:   encoding,
-					segments:   segments,
-				}
-
-				qr.data, err = spoolingData.fetch()
-				if err != nil {
-					return err
-				}
-
+				return err
 			case nil:
 				qr.data = nil
 			}
@@ -1717,6 +1906,272 @@ func (qr *driverRows) fetch() error {
 			return err
 		}
 	}
+}
+
+func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
+	st.usingSpooledProtocol = true
+
+	if st.spoolingWorkerCount == 0 {
+		st.spoolingWorkerCount = defaultSpoolingDownloadWorkers
+	}
+
+	if st.spoolingMaxOutOfOrderSegments == 0 {
+		st.spoolingMaxOutOfOrderSegments = defaultallowedOutOfOrder
+	}
+
+	downloadSegmentsCtx, cancelDownloadWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	st.cancelDownloadWorkers = cancelDownloadWorkers
+	decodeSegmentCtx, cancelDecodersWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	st.cancelDecodersWorkers = cancelDecodersWorkers
+
+	st.segmentsToProccess = make(chan segmentToProccess, 1000)
+	st.spooledSegmentsMetadata = make(chan spooledMetadata, st.spoolingMaxOutOfOrderSegments)
+	st.spooledSegmentsToDecode = make(chan segmentToDecode, st.spoolingMaxOutOfOrderSegments)
+	st.spoolingRowsChannel = make(chan []queryData)
+	st.spoolingProcesserDone = make(chan struct{})
+	st.segmentDispatcherDoneCh = make(chan struct{})
+	st.segmentThrottleCh = make(chan struct{}, st.spoolingMaxOutOfOrderSegments)
+	st.decodedSegments = make(chan decodedSegment)
+
+	st.startSegmentDispatcher()
+	st.startDownloadSegmentsWorkers(downloadSegmentsCtx)
+	st.startSegmentsDecodersWorkers(decodeSegmentCtx)
+}
+
+func (st *driverStmt) startSegmentDispatcher() {
+	go func() {
+		defer close(st.segmentDispatcherDoneCh)
+		defer close(st.segmentThrottleCh)
+		for {
+			select {
+			case segmentToProccess, ok := <-st.segmentsToProccess:
+				if !ok {
+					return
+				}
+
+				// segmentThrottleCh blocks if there are too many out-of-order segments.
+				// Once all currently downloaded segments are downloaded, decoded,
+				// and can be ordered, this channel will be drained.
+				select {
+				case st.segmentThrottleCh <- struct{}{}:
+				case <-st.doneCh:
+					return
+				}
+
+				segmentMetadata, exists := segmentToProccess.segment["metadata"]
+				if !exists {
+					st.errors <- fmt.Errorf("metadata is missing in segment at index %d", segmentToProccess.segmentIndex)
+				}
+
+				typedMetadata, ok := segmentMetadata.(map[string]interface{})
+				if !ok {
+					st.errors <- fmt.Errorf("metadata is invalid or cannot be parsed as map[string]interface{} in segment at index %d", segmentToProccess.segmentIndex)
+				}
+
+				metadata, err := parseSegmentMetadata(typedMetadata)
+
+				if err != nil {
+					st.errors <- err
+				}
+				switch segmentToProccess.segment["type"] {
+				case "inline":
+					decodedBytes, err := base64.StdEncoding.DecodeString(segmentToProccess.segment["data"].(string))
+
+					if err != nil {
+						st.errors <- fmt.Errorf("error decoding base64 data in inline segment at index %d: %v", segmentToProccess.segmentIndex, err)
+					}
+
+					st.spooledSegmentsToDecode <- segmentToDecode{
+						segmentIndex: 0,
+						encoding:     segmentToProccess.encoding,
+						data:         decodedBytes,
+						metadata:     metadata,
+						SegmentType:  Inline,
+					}
+
+				case "spooled":
+					spooledMetadata, err := parseSpooledMetadata(segmentToProccess.segment, 0, metadata, segmentToProccess.encoding)
+					if err != nil {
+						st.errors <- err
+					}
+
+					st.spooledSegmentsMetadata <- spooledMetadata
+				}
+
+			case <-st.doneCh:
+				return
+			}
+		}
+	}()
+}
+
+func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
+	st.waitDownloadSegmentsWorkers.Add(st.spoolingWorkerCount)
+	for i := 0; i < st.spoolingWorkerCount; i++ {
+		go func() {
+			defer st.waitDownloadSegmentsWorkers.Done()
+			for {
+				select {
+				case metadata, ok := <-st.spooledSegmentsMetadata:
+					if !ok {
+						return
+					}
+
+					segmentFetcher := &SegmentFetcher{
+						ctx:             ctx,
+						httpClient:      st.conn.httpClient,
+						spooledMetadata: metadata,
+					}
+
+					segment, err := segmentFetcher.fetchSegment()
+					if err != nil {
+						st.errors <- err
+						return
+					}
+
+					select {
+					case st.spooledSegmentsToDecode <- segmentToDecode{
+						encoding:    metadata.encoding,
+						data:        segment,
+						metadata:    metadata.metadata,
+						SegmentType: metadata.SegmentType,
+					}:
+					case <-st.doneCh:
+						return
+					case <-ctx.Done():
+						return
+					}
+
+				case <-st.doneCh:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+}
+
+func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context) {
+	st.waitSegmentDecodersWorkers.Add(st.spoolingWorkerCount)
+	for i := 0; i < st.spoolingWorkerCount; i++ {
+		go func() {
+			defer st.waitSegmentDecodersWorkers.Done()
+			for {
+				select {
+				case segmentToDecode, ok := <-st.spooledSegmentsToDecode:
+
+					if !ok {
+						return
+					}
+
+					segment, err := decodeSegment(segmentToDecode.data, segmentToDecode.encoding, segmentToDecode.metadata)
+					if err != nil {
+						st.cancelDecodersWorkers()
+						st.errors <- fmt.Errorf("failed to decode spooled segment at index %d: %v", segmentToDecode.segmentIndex, err)
+						return
+					}
+
+					select {
+					case st.decodedSegments <- decodedSegment{
+						rowOffset:   segmentToDecode.metadata.rowOffset,
+						queryData:   segment,
+						segmentType: segmentToDecode.SegmentType,
+					}:
+					case <-st.doneCh:
+						return
+					case <-ctx.Done():
+						return
+					}
+
+				case <-st.doneCh:
+					return
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+}
+
+func (qr *driverRows) proccessSpollingSegments() {
+	go func() {
+		var qresp queryResponse
+		var err error
+		for {
+			select {
+			case qresp = <-qr.stmt.queryResponses:
+
+				if qresp.ID == "" {
+					qr.waitForAllSpoolingWorkersFinish()
+					return
+				}
+
+				err = qr.initColumns(&qresp)
+				if err != nil {
+					qr.stmt.errors <- err
+				}
+
+				switch data := qresp.Data.(type) {
+				case map[string]interface{}:
+					if err := qr.queueSpoolingSegments(data); err != nil {
+						qr.stmt.errors <- err
+					}
+
+				case nil:
+					// do nothing: trino response without data (e.g only status information)
+				default:
+					qr.stmt.errors <- fmt.Errorf("unexpected data type for row at index %s: expected map[string]interface{}, got %T", qresp.ID, data)
+				}
+				qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
+			}
+		}
+	}()
+}
+
+func (qr *driverRows) waitForAllSpoolingWorkersFinish() {
+	close(qr.stmt.segmentsToProccess)
+	<-qr.stmt.segmentDispatcherDoneCh
+	close(qr.stmt.spooledSegmentsMetadata)
+	qr.stmt.waitDownloadSegmentsWorkers.Wait()
+	close(qr.stmt.spooledSegmentsToDecode)
+	qr.stmt.waitSegmentDecodersWorkers.Wait()
+	close(qr.stmt.decodedSegments)
+	<-qr.stmt.spoolingProcesserDone
+}
+
+type segmentToProccess struct {
+	segmentIndex int
+	encoding     string
+	segment      map[string]interface{}
+}
+
+func (qr *driverRows) queueSpoolingSegments(data map[string]interface{}) error {
+	encoding, ok := data["encoding"].(string)
+	if !ok {
+		return fmt.Errorf("invalid or missing 'encoding' field on spooling protocol, expected string")
+	}
+
+	segments, ok := data["segments"].([]interface{})
+	if !ok {
+		return fmt.Errorf("invalid or missing 'segments' field on spooling protocol, expected []interface{}")
+	}
+
+	for segmentIndex, segment := range segments {
+		segment, ok := segment.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("segment at index %d is invalid: expected map[string]interface{}, got %T", segmentIndex, segment)
+		}
+
+		qr.stmt.segmentsToProccess <- segmentToProccess{
+			segmentIndex: segmentIndex,
+			encoding:     encoding,
+			segment:      segment,
+		}
+
+	}
+
+	return nil
 }
 
 func unmarshalArguments(signature *typeSignature) error {
