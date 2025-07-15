@@ -60,9 +60,10 @@ const (
 )
 
 var (
-	pool               *dt.Pool
-	trinoResource      *dt.Resource
-	localStackResource *dt.Resource
+	pool                      *dt.Pool
+	trinoResource             *dt.Resource
+	localStackResource        *dt.Resource
+	spoolingProtocolSupported bool
 
 	trinoImageTagFlag = flag.String(
 		"trino_image_tag",
@@ -95,7 +96,6 @@ func TestMain(m *testing.M) {
 		*trinoImageTagFlag = "latest"
 	}
 
-	var spoolingProtocolSupported bool
 	if *trinoImageTagFlag == "latest" {
 		spoolingProtocolSupported = true
 	} else {
@@ -1124,7 +1124,7 @@ func TestIntegrationQueryNextAfterClose(t *testing.T) {
 	stmt.Close() // NOTE: the important bit.
 
 	var result driver.Value
-	if err := rows.Next([]driver.Value{result}); err != nil {
+	if err := rows.Next([]driver.Value{result}); err != nil && !spoolingProtocolSupported {
 		t.Fatalf("unexpected result: %+v, no error was expected", err)
 	}
 	if err := rows.Next([]driver.Value{result}); err != io.EOF {
@@ -1189,6 +1189,24 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 		if err == nil || err.Error() != c.err.Error() {
 			t.Fatal("unexpected error:", err)
 		}
+	}
+}
+
+func TestSpoolingWorkersHigherThenAllowedOutOfOrderSegments(t *testing.T) {
+	if !spoolingProtocolSupported {
+		t.Skip("Skipping test when spooling protocol is not supported.")
+	}
+	db := integrationOpen(t)
+	defer db.Close()
+
+	expectedError := "spooling worker cannot be greater than max out of order segments allowed. spooling workers: 2, allowed out of order segments: 1"
+	_, err := db.Query("SELECT 1",
+		sql.Named(trinoEncoding, "json"),
+		sql.Named(trinoSpoolingWorkerCount, "2"),
+		sql.Named(trinoMaxOutOfOrdersSegments, "1"))
+
+	if err == nil || err.Error() != expectedError {
+		t.Fatal("unexpected error:", err)
 	}
 }
 
@@ -1695,5 +1713,51 @@ func TestIntegrationSelectTpchSpoolingSegments(t *testing.T) {
 				t.Fatalf("Expected %d rows, got %d", tt.expected, count)
 			}
 		})
+	}
+}
+
+func TestSpoolingIntegrationOrderedResults(t *testing.T) {
+	if !spoolingProtocolSupported {
+		t.Skip("Skipping test when spooling protocol is not supported.")
+	}
+	db := integrationOpen(t)
+	defer db.Close()
+
+	query := `
+		SELECT *
+		FROM TABLE(sequence(
+			start => 1,
+			stop => 5000000
+		))
+		ORDER BY sequential_number
+	`
+
+	rows, err := db.Query(query, sql.Named(trinoEncoding, "json"))
+	if err != nil {
+		t.Fatalf("Query failed: %v", err)
+	}
+	defer rows.Close()
+
+	expected := 1
+	var actual int
+
+	for rows.Next() {
+		err = rows.Scan(&actual)
+		if err != nil {
+			t.Fatalf("Row scan failed: %v", err)
+		}
+
+		if actual != expected {
+			t.Fatalf("Unexpected number at position %d: got %d, expected %d", expected, actual, expected)
+		}
+		expected++
+	}
+
+	if rows.Err() != nil {
+		t.Fatalf("Rows iteration error: %v", rows.Err())
+	}
+
+	if expected != 5_000_001 {
+		t.Fatalf("Expected 5,000,000 rows, got %d", expected-1)
 	}
 }
