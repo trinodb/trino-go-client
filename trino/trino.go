@@ -1896,12 +1896,13 @@ func decompressSegment(data []byte, encoding string, metadata segmentMetadata) (
 	var decompressedData []byte
 	switch encoding {
 	case "json+zstd":
-		zstdReader, err := zstd.NewReader(bytes.NewReader(data))
+		zstdDecoder, err := zstd.NewReader(nil)
 		if err != nil {
 			return nil, fmt.Errorf("error creating zstd reader: %w", err)
 		}
-		defer zstdReader.Close()
-		decompressedData, err = io.ReadAll(zstdReader)
+		defer zstdDecoder.Close()
+		dst := make([]byte, 0, metadata.uncompressedSize)
+		decompressedData, err = zstdDecoder.DecodeAll(data, dst)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decompress zstd segment at rowOffset %d: %v", metadata.rowOffset, err)
 		}
