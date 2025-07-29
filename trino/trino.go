@@ -163,13 +163,6 @@ const (
 	defaulttrinoEncoding           = "json"
 )
 
-type SegmentType int
-
-const (
-	Inline SegmentType = iota
-	Spooled
-)
-
 var (
 	responseToRequestHeaderMap = map[string]string{
 		trinoSetSchemaHeader:  trinoSchemaHeader,
@@ -736,13 +729,11 @@ type segmentToDecode struct {
 	encoding     string
 	data         []byte
 	metadata     segmentMetadata
-	SegmentType  SegmentType
 }
 
 type decodedSegment struct {
-	rowOffset   int64
-	queryData   []queryData
-	segmentType SegmentType
+	rowOffset int64
+	queryData []queryData
 }
 
 var (
@@ -1566,20 +1557,18 @@ type segmentMetadata struct {
 }
 
 type spooledMetadata struct {
-	SegmentType SegmentType
-	uri         string
-	ackUri      string
-	encoding    string
-	headers     map[string]interface{}
-	metadata    segmentMetadata
+	uri      string
+	ackUri   string
+	encoding string
+	headers  map[string]interface{}
+	metadata segmentMetadata
 }
 
 func parseSpooledMetadata(segment map[string]interface{}, segmentIndex int, segmentMetadata segmentMetadata, encoding string) (spooledMetadata, error) {
 	result := spooledMetadata{
-		metadata:    segmentMetadata,
-		encoding:    encoding,
-		SegmentType: Spooled,
-		headers:     make(map[string]interface{}),
+		metadata: segmentMetadata,
+		encoding: encoding,
+		headers:  make(map[string]interface{}),
 	}
 
 	var ok bool
@@ -1827,13 +1816,11 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 						return
 					}
 
-					if buffer[consumed].segmentType == Spooled {
-						// release reserved slot from download worker
-						select {
-						case <-qr.stmt.segmentThrottleCh:
-						case <-qr.doneCh:
-							return
-						}
+					// release reserved slot
+					select {
+					case <-qr.stmt.segmentThrottleCh:
+					case <-qr.doneCh:
+						return
 					}
 
 					nextExpectedOffset += int64(len(buffer[consumed].queryData))
@@ -1986,7 +1973,6 @@ func (st *driverStmt) startSegmentDispatcher() {
 						encoding:     segmentToProccess.encoding,
 						data:         decodedBytes,
 						metadata:     metadata,
-						SegmentType:  Inline,
 					}
 
 				case "spooled":
@@ -2031,10 +2017,9 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 
 					select {
 					case st.spooledSegmentsToDecode <- segmentToDecode{
-						encoding:    metadata.encoding,
-						data:        segment,
-						metadata:    metadata.metadata,
-						SegmentType: metadata.SegmentType,
+						encoding: metadata.encoding,
+						data:     segment,
+						metadata: metadata.metadata,
 					}:
 					case <-st.doneCh:
 						return
@@ -2074,9 +2059,8 @@ func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context) {
 
 					select {
 					case st.decodedSegments <- decodedSegment{
-						rowOffset:   segmentToDecode.metadata.rowOffset,
-						queryData:   segment,
-						segmentType: segmentToDecode.SegmentType,
+						rowOffset: segmentToDecode.metadata.rowOffset,
+						queryData: segment,
 					}:
 					case <-st.doneCh:
 						return
