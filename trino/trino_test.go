@@ -1684,6 +1684,86 @@ func mustDecodeBase64(encoded string) []byte {
 	return data
 }
 
+func TestSpoolingProtocolOnlyWithInlineSegments(t *testing.T) {
+	var ts *httptest.Server
+
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statement" {
+			json.NewEncoder(w).Encode(&stmtResponse{
+				ID:      "fake-query",
+				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+			})
+
+			return
+		}
+		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
+			json.NewEncoder(w).Encode(&queryResponse{
+				ID: "fake-query",
+				Columns: []queryColumn{
+					{
+						Name: "_col0",
+						Type: "integer",
+						TypeSignature: typeSignature{
+							RawType:   "integer",
+							Arguments: []typeArgument{},
+						},
+					},
+				},
+				Data: map[string]interface{}{
+					"encoding": "json",
+					"segments": []map[string]interface{}{
+						{
+							"type":     "inline",
+							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
+							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 0},
+						},
+						{
+							"type":     "inline",
+							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
+							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 2},
+						},
+						{
+							"type":     "inline",
+							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
+							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 4},
+						},
+						{
+							"type":     "inline",
+							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
+							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 6},
+						},
+					},
+				},
+			})
+			return
+		}
+
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+	}))
+
+	defer ts.Close()
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+	defer db.Close()
+
+	rows, err := db.Query("SELECT 1", sql.Named(trinoSpoolingWorkerCount, "2"), sql.Named(trinoMaxOutOfOrdersSegments, "2"))
+	require.NoError(t, err)
+
+	var results []int
+	for rows.Next() {
+		var value int
+		err := rows.Scan(&value)
+		require.NoError(t, err)
+		results = append(results, value)
+	}
+
+	require.NoError(t, rows.Err())
+
+	assert.Equal(t, []int{1000, 10001, 1000, 10001, 1000, 10001, 1000, 10001}, results, "Expected query results to match")
+}
+
 func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 	testcases := []struct {
 		Name           string
