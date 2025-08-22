@@ -2331,7 +2331,9 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		v = sql.NullInt64{}
 	case "real", "double":
 		v = sql.NullFloat64{}
-	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+	case "date":
+		v = sql.NullString{}
+	case "time", "time with time zone", "timestamp", "timestamp with time zone":
 		v = sql.NullTime{}
 	case "map":
 		v = NullMap{}
@@ -2342,13 +2344,13 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		switch typeNames[1] {
 		case "boolean":
 			v = NullSliceBool{}
-		case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+		case "date", "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 			v = NullSliceString{}
 		case "tinyint", "smallint", "integer", "bigint":
 			v = NullSliceInt64{}
 		case "real", "double":
 			v = NullSliceFloat64{}
-		case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+		case "time", "time with time zone", "timestamp", "timestamp with time zone":
 			v = NullSliceTime{}
 		case "map":
 			v = NullSliceMap{}
@@ -2359,13 +2361,13 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 			switch typeNames[2] {
 			case "boolean":
 				v = NullSlice2Bool{}
-			case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+			case "date", "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 				v = NullSlice2String{}
 			case "tinyint", "smallint", "integer", "bigint":
 				v = NullSlice2Int64{}
 			case "real", "double":
 				v = NullSlice2Float64{}
-			case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+			case "time", "time with time zone", "timestamp", "timestamp with time zone":
 				v = NullSlice2Time{}
 			case "map":
 				v = NullSlice2Map{}
@@ -2376,13 +2378,13 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				switch typeNames[3] {
 				case "boolean":
 					v = NullSlice3Bool{}
-				case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
+				case "date", "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "unknown":
 					v = NullSlice3String{}
 				case "tinyint", "smallint", "integer", "bigint":
 					v = NullSlice3Int64{}
 				case "real", "double":
 					v = NullSlice3Float64{}
-				case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+				case "time", "time with time zone", "timestamp", "timestamp with time zone":
 					v = NullSlice3Time{}
 				case "map":
 					v = NullSlice3Map{}
@@ -2406,7 +2408,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bool, err
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "Geometry", "SphericalGeography", "unknown":
+	case "date", "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "ipaddress", "uuid", "Geometry", "SphericalGeography", "unknown":
 		vv, err := scanNullString(v)
 		if !vv.Valid {
 			return nil, err
@@ -2426,7 +2428,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Float64, err
-	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+	case "time", "time with time zone", "timestamp", "timestamp with time zone":
 		vv, err := scanNullTime(v)
 		if !vv.Valid {
 			return nil, err
