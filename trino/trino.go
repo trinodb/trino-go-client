@@ -135,9 +135,11 @@ const (
 
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
+	trinoTagsHeader               = trinoHeaderPrefix + `Client-Tags`
 
 	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
 	trinoEncoding                = "encoding"
+	trinoTags                    = "tags"
 	trinoSpoolingWorkerCount     = `spooling_worker_count`
 	trinoMaxOutOfOrdersSegments  = `max_out_of_order_segments`
 
@@ -190,6 +192,7 @@ type Config struct {
 	Schema                     string            // Schema (optional)
 	SessionProperties          map[string]string // Session properties (optional)
 	ExtraCredentials           map[string]string // Extra credentials (optional)
+	ClientTags                 []string          // A comma-separated list of “tag” strings, used to identify Trino resource groups (optional)
 	CustomClientName           string            // Custom client name (optional)
 	KerberosEnabled            string            // KerberosEnabled (optional, default is false)
 	KerberosKeytabPath         string            // Kerberos Keytab Path (optional)
@@ -287,6 +290,7 @@ func (c *Config) FormatDSN() (string, error) {
 
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
+		"tags":               strings.Join(c.ClientTags, mapEntrySeparator),
 		"schema":             c.Schema,
 		"session_properties": strings.Join(sessionkv, mapEntrySeparator),
 		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
@@ -417,6 +421,11 @@ func newConn(dsn string) (*Conn, error) {
 		if pass != "" && serverURL.Scheme == "https" {
 			c.auth = serverURL.User
 		}
+	}
+
+	if rawTags := query.Get("tags"); rawTags != "" {
+		tags := strings.Split(rawTags, ";")
+		c.httpHeaders.Add(trinoTagsHeader, strings.Join(tags, ","))
 	}
 
 	for k, v := range map[string]string{
@@ -1034,6 +1043,11 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 
 			if arg.Name == trinoEncoding {
 				hs.Add(trinoQueryDataEncodingHeader, arg.Value.(string))
+				continue
+			}
+
+			if arg.Name == trinoTags {
+				hs.Add(trinoTagsHeader, arg.Value.(string))
 				continue
 			}
 
