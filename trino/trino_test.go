@@ -63,6 +63,52 @@ func TestPreserveExplicitPrepareQueryParameterConfig(t *testing.T) {
 	assert.Equal(t, want, dsn)
 }
 
+func TestConfigFormatDSNTags(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *Config
+		want   string
+	}{
+		{
+			name: "multiple tags",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				ClientTags:        []string{"test1", "test2", "test3"},
+			},
+			want: "http://foobar@localhost:8080?clientTags=test1%2Ctest2%2Ctest3&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "single tag",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				ClientTags:        []string{"test1"},
+			},
+			want: "http://foobar@localhost:8080?clientTags=test1&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "multiple tags with special characters",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				ClientTags:        []string{"foo %20", "bar=test", "baz#tag"},
+			},
+			want: "http://foobar@localhost:8080?clientTags=foo+%2520%2Cbar%3Dtest%2Cbaz%23tag&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := tt.config.FormatDSN()
+
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+
+		})
+	}
+}
+
 func TestConfigSSLCertPath(t *testing.T) {
 	c := &Config{
 		ServerURI:         "https://foobar@localhost:8080",

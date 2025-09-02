@@ -259,6 +259,36 @@ Default:        "true"
 
 The `explicitPrepare` parameter controls how queries are sent to the Trino server. When set to `false`, the client uses `EXECUTE IMMEDIATE` which sends the query text in the HTTP request body instead of HTTP headers. This allows sending large query text that would otherwise exceed HTTP header size limits. When set to `true` (default), queries use explicit prepared statements sent via HTTP headers.
 
+##### `clientTags`
+
+```
+Type:           string
+Valid values:   comma-separated list of tags (e.g. tag1,tag2)
+Default:        empty
+```
+
+The `clientTags` parameter is optional and is used to identify Trino resource groups. 
+This helps with query tracking and resource management in Trino clusters.
+
+**DSN parameter example:**
+```
+clientTags=tag1,tag2
+```
+
+**Config struct example:**
+```go
+config := &Config{
+    ServerURI:  "http://foobar@localhost:8080",
+    ClientTags: []string{"tag1", "tag2", "tag3"},
+}
+
+dsn, err := config.FormatDSN()
+```
+
+**Query parameter example (overrides DSN client tags):**
+```go
+rows, err := db.Query(query, sql.Named("X-Trino-Client-Tags", "tag1,tag2,tag3"))
+```
 #### Examples
 
 ```
