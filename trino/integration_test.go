@@ -34,6 +34,7 @@ import (
 	"math"
 	"math/big"
 	"net/http"
+	"net/url"
 	"os"
 	"reflect"
 	"strconv"
@@ -1765,4 +1766,172 @@ func TestSpoolingIntegrationOrderedResults(t *testing.T) {
 	if expected != 5_000_001 {
 		t.Fatalf("Expected 5,000,000 rows, got %d", expected-1)
 	}
+}
+
+func TestDsnClientTags(t *testing.T) {
+	tests := []struct {
+		name         string
+		dsnSuffix    string
+		source       string
+		expectedTags []string
+	}{
+		{
+			name:         "Single tag",
+			dsnSuffix:    "?clientTags=test&source=single-tag-test",
+			source:       "single-tag-test",
+			expectedTags: []string{"test"},
+		},
+		{
+			name:         "Multiple tags with special characters",
+			dsnSuffix:    "?clientTags=foo+%2520%2Cbar%3Dtest%2Cbaz%23tag&source=multiple-tags-test-special-characters",
+			source:       "multiple-tags-test-special-characters",
+			expectedTags: []string{"foo %20", "bar=test", "baz#tag"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dsn := *integrationServerFlag + tt.dsnSuffix
+			db := integrationOpen(t, dsn)
+			defer db.Close()
+
+			query := "SELECT 1"
+			rows, err := db.Query(query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+
+			if rows.Next() {
+			}
+
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+
+			var queryID string
+			err = db.QueryRowContext(context.Background(),
+				"SELECT query_id FROM system.runtime.queries WHERE source = ? AND query = ?", tt.source, query,
+			).Scan(&queryID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			queryInfo, err := getQueryInfo(dsn, queryID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !reflect.DeepEqual(queryInfo.Session.ClientTags, tt.expectedTags) {
+				t.Fatalf("Expected client tags %v, got %v", tt.expectedTags, queryInfo.Session.ClientTags)
+			}
+		})
+	}
+}
+
+func TestParametersClientTags(t *testing.T) {
+	tests := []struct {
+		name         string
+		dsnSuffix    string
+		Tags         string
+		source       string
+		expectedTags []string
+	}{
+		{
+			name:         "Single tag",
+			dsnSuffix:    "?clientTags=query-parameter-single-tag-test&source=query-parameter-single-tag-test",
+			Tags:         "single-tag",
+			source:       "query-parameter-single-tag-test",
+			expectedTags: []string{"single-tag"},
+		},
+		{
+			name:         "Multiple tags with special characters",
+			dsnSuffix:    "?clientTags=query-parameter-multiple-tags-test&source=query-parameter-multiple-tags-test",
+			Tags:         "foo %20,bar=test,baz#tag",
+			source:       "query-parameter-multiple-tags-test",
+			expectedTags: []string{"foo %20", "bar=test", "baz#tag"},
+		},
+		{
+			name:         "Override dsn tags",
+			dsnSuffix:    "?clientTags=foo%2B%2520%3Bbar%3Dtest%3Bbaz%23tag&source=query-parameter-override-tags",
+			Tags:         "query-parameter-override-tag-test",
+			source:       "query-parameter-override-tags",
+			expectedTags: []string{"query-parameter-override-tag-test"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dsn := *integrationServerFlag + tt.dsnSuffix
+			db := integrationOpen(t, dsn)
+			defer db.Close()
+
+			query := "SELECT 1"
+			rows, err := db.Query(query, sql.Named(trinoTagsHeader, tt.Tags))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+
+			if rows.Next() {
+			}
+
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+
+			var queryID string
+			err = db.QueryRowContext(context.Background(),
+				"SELECT query_id FROM system.runtime.queries WHERE source = ? AND query = ?", tt.source, query,
+			).Scan(&queryID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			queryInfo, err := getQueryInfo(dsn, queryID)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !reflect.DeepEqual(queryInfo.Session.ClientTags, tt.expectedTags) {
+				t.Fatalf("Expected client tags %v, got %v", tt.expectedTags, queryInfo.Session.ClientTags)
+			}
+		})
+	}
+}
+
+type QuerySession struct {
+	ClientTags []string `json:"clientTags"`
+}
+type QueryInfo struct {
+	Session QuerySession `json:"session"`
+}
+
+func getQueryInfo(dsn, queryId string) (QueryInfo, error) {
+
+	serverURL, err := url.Parse(dsn)
+	if err != nil {
+		return QueryInfo{}, err
+	}
+	queryInfoURL := serverURL.Scheme + "://" + serverURL.Host + "/v1/query/" + url.PathEscape(queryId)
+
+	req, err := http.NewRequest("GET", queryInfoURL, nil)
+	if err != nil {
+		return QueryInfo{}, err
+	}
+	req.Header.Set("X-Trino-User", serverURL.User.Username())
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return QueryInfo{}, err
+	}
+
+	defer resp.Body.Close()
+
+	var queryInfo QueryInfo
+	if err := json.NewDecoder(resp.Body).Decode(&queryInfo); err != nil {
+		return QueryInfo{}, err
+	}
+
+	return queryInfo, nil
 }

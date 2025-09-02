@@ -135,11 +135,13 @@ const (
 
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
+	trinoTagsHeader               = trinoHeaderPrefix + `Client-Tags`
 
 	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
 	trinoEncoding                = "encoding"
-	trinoSpoolingWorkerCount     = `spooling_worker_count`
-	trinoMaxOutOfOrdersSegments  = `max_out_of_order_segments`
+
+	trinoSpoolingWorkerCount    = `spooling_worker_count`
+	trinoMaxOutOfOrdersSegments = `max_out_of_order_segments`
 
 	authorizationHeader = "Authorization"
 
@@ -157,6 +159,7 @@ const (
 
 	mapKeySeparator   = ":"
 	mapEntrySeparator = ";"
+	commaSeparator    = ","
 
 	defaultallowedOutOfOrder       = 10
 	defaultSpoolingDownloadWorkers = 5
@@ -190,6 +193,7 @@ type Config struct {
 	Schema                     string            // Schema (optional)
 	SessionProperties          map[string]string // Session properties (optional)
 	ExtraCredentials           map[string]string // Extra credentials (optional)
+	ClientTags                 []string          // A comma-separated list of “tag” strings, used to identify Trino resource groups (optional)
 	CustomClientName           string            // Custom client name (optional)
 	KerberosEnabled            string            // KerberosEnabled (optional, default is false)
 	KerberosKeytabPath         string            // Kerberos Keytab Path (optional)
@@ -292,6 +296,7 @@ func (c *Config) FormatDSN() (string, error) {
 
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
+		"clientTags":         strings.Join(c.ClientTags, commaSeparator),
 		"schema":             c.Schema,
 		"session_properties": strings.Join(sessionkv, mapEntrySeparator),
 		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
@@ -422,6 +427,10 @@ func newConn(dsn string) (*Conn, error) {
 		if pass != "" && serverURL.Scheme == "https" {
 			c.auth = serverURL.User
 		}
+	}
+
+	if tags := query.Get("clientTags"); tags != "" {
+		c.httpHeaders.Add(trinoTagsHeader, tags)
 	}
 
 	for k, v := range map[string]string{
