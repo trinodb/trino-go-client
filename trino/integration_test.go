@@ -1772,13 +1772,13 @@ func TestDsnClientTags(t *testing.T) {
 	}{
 		{
 			name:         "Single tag",
-			dsnSuffix:    "?tags=test&source=single-tag-test",
+			dsnSuffix:    "?client_tags=test&source=single-tag-test",
 			source:       "single-tag-test",
 			expectedTags: []string{"test"},
 		},
 		{
 			name:         "Multiple tags with special characters",
-			dsnSuffix:    "?tags=foo+%2520%3Bbar%3Dtest%3Bbaz%23tag&source=multiple-tags-test-special-characters",
+			dsnSuffix:    "?client_tags=foo+%2520%3Bbar%3Dtest%3Bbaz%23tag&source=multiple-tags-test-special-characters",
 			source:       "multiple-tags-test-special-characters",
 			expectedTags: []string{"foo %20", "bar=test", "baz#tag"},
 		},
@@ -1848,7 +1848,7 @@ func TestParametersClientTags(t *testing.T) {
 		},
 		{
 			name:         "Override dsn tags",
-			dsnSuffix:    "?tags=foo+%2520%3Bbar%3Dtest%3Bbaz%23tag&source=query-parameter-override-tags",
+			dsnSuffix:    "?client_tags=foo+%2520%3Bbar%3Dtest%3Bbaz%23tag&source=query-parameter-override-tags",
 			Tags:         "query-parameter-override-tag-test",
 			source:       "query-parameter-override-tags",
 			expectedTags: []string{"query-parameter-override-tag-test"},
@@ -1862,7 +1862,7 @@ func TestParametersClientTags(t *testing.T) {
 			defer db.Close()
 
 			query := "SELECT 1"
-			rows, err := db.Query(query, sql.Named(trinoTags, tt.Tags))
+			rows, err := db.Query(query, sql.Named(trinoTagsHeader, tt.Tags))
 			if err != nil {
 				t.Fatal(err)
 			}

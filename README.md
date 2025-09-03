@@ -249,7 +249,7 @@ Default:        nil
 
 The `queryTimeout` parameter sets a timeout for the query. If the query takes longer than the timeout, it will be cancelled. If it is not set the default context timeout will be used.
 
-##### `tags`
+##### `client_tags`
 
 ```
 Type:           string
@@ -257,12 +257,12 @@ Valid values:   semicolon-separated list of tags (e.g. tag1;tag2)
 Default:        empty
 ```
 
-The `tags` parameter is optional and is used to identify Trino resource groups. 
+The `client_tags` parameter is optional and is used to identify Trino resource groups. 
 This helps with query tracking and resource management in Trino clusters.
 
 **DSN parameter example:**
 ```
-tags=tag1;tag2
+client_tags=tag1;tag2
 ```
 
 **Config struct example:**
@@ -273,9 +273,9 @@ config := &Config{
 }
 ```
 
-**Query parameter example (overrides DSN tags):**
+**Client Tags as NamedArg (overrides DSN client_tags):**
 ```go
-rows, err := db.Query(query, sql.Named("tags", "tag1,tag2,tag3"))
+rows, err := db.Query(query, sql.Named("X-Trino-Client-Tags", "tag1,tag2,tag3"))
 ```
 #### Examples
 
