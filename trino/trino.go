@@ -139,7 +139,7 @@ const (
 
 	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
 	trinoEncoding                = "encoding"
-	trinoTags                    = "client_tags"
+	trinoTags                    = "clientTags"
 	trinoSpoolingWorkerCount     = `spooling_worker_count`
 	trinoMaxOutOfOrdersSegments  = `max_out_of_order_segments`
 
@@ -290,7 +290,7 @@ func (c *Config) FormatDSN() (string, error) {
 
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
-		"client_tags":        strings.Join(c.ClientTags, mapEntrySeparator),
+		"clientTags":         strings.Join(c.ClientTags, mapEntrySeparator),
 		"schema":             c.Schema,
 		"session_properties": strings.Join(sessionkv, mapEntrySeparator),
 		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
@@ -423,7 +423,7 @@ func newConn(dsn string) (*Conn, error) {
 		}
 	}
 
-	if rawTags := query.Get("client_tags"); rawTags != "" {
+	if rawTags := query.Get("clientTags"); rawTags != "" {
 		tags := strings.Split(rawTags, ";")
 		c.httpHeaders.Add(trinoTagsHeader, strings.Join(tags, ","))
 	}

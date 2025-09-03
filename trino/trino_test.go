@@ -62,7 +62,7 @@ func TestConfigFormatDSNTags(t *testing.T) {
 				SessionProperties: map[string]string{"query_priority": "1"},
 				ClientTags:        []string{"test1", "test2", "test3"},
 			},
-			want: "http://foobar@localhost:8080?client_tags=test1%3Btest2%3Btest3&session_properties=query_priority%3A1&source=trino-go-client",
+			want: "http://foobar@localhost:8080?clientTags=test1%3Btest2%3Btest3&session_properties=query_priority%3A1&source=trino-go-client",
 		},
 		{
 			name: "single tag",
@@ -71,7 +71,7 @@ func TestConfigFormatDSNTags(t *testing.T) {
 				SessionProperties: map[string]string{"query_priority": "1"},
 				ClientTags:        []string{"test1"},
 			},
-			want: "http://foobar@localhost:8080?client_tags=test1&session_properties=query_priority%3A1&source=trino-go-client",
+			want: "http://foobar@localhost:8080?clientTags=test1&session_properties=query_priority%3A1&source=trino-go-client",
 		},
 		{
 			name: "multiple tags with special characters",
@@ -80,7 +80,7 @@ func TestConfigFormatDSNTags(t *testing.T) {
 				SessionProperties: map[string]string{"query_priority": "1"},
 				ClientTags:        []string{"foo %20", "bar=test", "baz#tag"},
 			},
-			want: "http://foobar@localhost:8080?client_tags=foo+%2520%3Bbar%3Dtest%3Bbaz%23tag&session_properties=query_priority%3A1&source=trino-go-client",
+			want: "http://foobar@localhost:8080?clientTags=foo+%2520%3Bbar%3Dtest%3Bbaz%23tag&session_properties=query_priority%3A1&source=trino-go-client",
 		},
 	}
 
