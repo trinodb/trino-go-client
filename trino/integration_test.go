@@ -349,6 +349,23 @@ func waitForContainerHealth(containerID, containerName string) {
 	}
 }
 
+func waitForTrinoReady(t *testing.T, db *sql.DB) {
+	if err := pool.Retry(func() error {
+		row := db.QueryRow("SELECT count(*) FROM system.runtime.nodes WHERE state = 'active'")
+		var count int
+		if row.Scan(&count) != nil {
+			t.Logf("Failed to query nodes: %v", row.Err())
+			return errors.New("Not ready")
+		}
+		if count > 0 {
+			return nil
+		}
+		return errors.New("Not ready")
+	}); err != nil {
+		log.Fatal("Timed out waiting for Trino to be ready")
+	}
+}
+
 func generateCerts(dir string) error {
 	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -474,6 +491,7 @@ func integrationOpen(t *testing.T, dsn ...string) *sql.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitForTrinoReady(t, db)
 	return db
 }
 
