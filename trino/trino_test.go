@@ -3350,3 +3350,19 @@ func TestQueryTimeoutDeadline(t *testing.T) {
 		})
 	}
 }
+
+func TestPreserveExplicitPrepareQueryParameterConfig(t *testing.T) {
+	c := &Config{
+		ServerURI: "https://foobar@localhost:8090?explicitPrepare=false",
+		// Ideally I would prefer a specific field for ExplicitPrepare, given that it's true by default
+		// il would suggest `DisableExplicitPrepare` in the config
+
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	want := "https://foobar@localhost:8090?explicitPrepare=false&source=trino-go-client"
+
+	assert.Equal(t, want, dsn)
+}
