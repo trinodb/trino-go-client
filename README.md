@@ -249,6 +249,16 @@ Default:        nil
 
 The `queryTimeout` parameter sets a timeout for the query. If the query takes longer than the timeout, it will be cancelled. If it is not set the default context timeout will be used.
 
+##### `explicitPrepare`
+
+```
+Type:           string
+Valid values:   "true", "false"
+Default:        "true"
+```
+
+The `explicitPrepare` parameter controls how queries are sent to the Trino server. When set to `false`, the client uses `EXECUTE IMMEDIATE` which sends the query text in the HTTP request body instead of HTTP headers. This allows sending large query text that would otherwise exceed HTTP header size limits. When set to `true` (default), queries use explicit prepared statements sent via HTTP headers.
+
 #### Examples
 
 ```

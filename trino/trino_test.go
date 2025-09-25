@@ -49,6 +49,20 @@ func TestConfig(t *testing.T) {
 	assert.Equal(t, want, dsn)
 }
 
+func TestPreserveExplicitPrepareQueryParameterConfig(t *testing.T) {
+	c := &Config{
+		ServerURI:              "https://foobar@localhost:8090",
+		DisableExplicitPrepare: true,
+	}
+
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	want := "https://foobar@localhost:8090?explicitPrepare=false&source=trino-go-client"
+
+	assert.Equal(t, want, dsn)
+}
+
 func TestConfigSSLCertPath(t *testing.T) {
 	c := &Config{
 		ServerURI:         "https://foobar@localhost:8080",

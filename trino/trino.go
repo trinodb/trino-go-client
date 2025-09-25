@@ -200,6 +200,7 @@ type Config struct {
 	SSLCertPath                string            // The SSL cert path for TLS verification (optional)
 	SSLCert                    string            // The SSL cert for TLS verification (optional)
 	AccessToken                string            // An access token (JWT) for authentication (optional)
+	DisableExplicitPrepare     bool              // Disable the use of explicit prepared statements (optional, default is false)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
 }
@@ -235,6 +236,10 @@ func (c *Config) FormatDSN() (string, error) {
 
 	KerberosEnabled, _ := strconv.ParseBool(c.KerberosEnabled)
 	isSSL := serverURL.Scheme == "https"
+
+	if c.DisableExplicitPrepare {
+		query.Add(explicitPrepareConfig, "false")
+	}
 
 	if c.CustomClientName != "" {
 		if c.SSLCert != "" || c.SSLCertPath != "" {
