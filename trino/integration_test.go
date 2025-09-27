@@ -143,7 +143,12 @@ func TestMain(m *testing.M) {
 			}
 
 			if spoolingProtocolSupported {
-				mounts = append(mounts, wd+"/etc/config.properties:/etc/trino/config.properties")
+				version, err := strconv.Atoi(*trinoImageTagFlag)
+				if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 477) {
+					mounts = append(mounts, wd+"/etc/config-pre-477version.properties:/etc/trino/config.properties")
+				} else {
+					mounts = append(mounts, wd+"/etc/config.properties:/etc/trino/config.properties")
+				}
 				mounts = append(mounts, wd+"/etc/spooling-manager.properties:/etc/trino/spooling-manager.properties")
 			} else {
 				mounts = append(mounts, wd+"/etc/config-pre-466version.properties:/etc/trino/config.properties")
