@@ -2533,7 +2533,11 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 		}
 		return vv.String, err
 	case "varbinary":
-		return scanNullBytes(v)
+		vv, err := scanNullBytes(v)
+		if !vv.Valid {
+			return nil, err
+		}
+		return vv.Bytes, err
 	case "tinyint", "smallint", "integer", "bigint":
 		vv, err := scanNullInt64(v)
 		if !vv.Valid {
@@ -2703,24 +2707,31 @@ func scanNullString(v interface{}) (sql.NullString, error) {
 	return sql.NullString{Valid: true, String: vv}, nil
 }
 
-func scanNullBytes(v interface{}) ([]byte, error) {
+// NullBinary represents a []byte that may be null.
+// This follows the same pattern as sql.NullString, sql.NullInt64, etc.
+type NullBinary struct {
+	Bytes []byte
+	Valid bool // Valid is true if Bytes is not NULL
+}
+
+func scanNullBytes(v interface{}) (NullBinary, error) {
 	if v == nil {
-		return nil, nil
+		return NullBinary{}, nil // Valid: false, Bytes: nil
 	}
 
 	// VARBINARY values come back as a base64 encoded string.
 	vv, ok := v.(string)
 	if !ok {
-		return nil, fmt.Errorf("cannot convert %v (%T) to []byte", v, v)
+		return NullBinary{}, fmt.Errorf("cannot convert %v (%T) to []byte", v, v)
 	}
 
 	// Decode the base64 encoded string into a []byte.
 	decoded, err := base64.StdEncoding.DecodeString(vv)
 	if err != nil {
-		return nil, fmt.Errorf("cannot decode base64 string into []byte: %w", err)
+		return NullBinary{}, fmt.Errorf("cannot decode base64 string into []byte: %w", err)
 	}
 
-	return decoded, nil
+	return NullBinary{Bytes: decoded, Valid: true}, nil
 }
 
 // NullSliceString represents a slice of string that may be null.
