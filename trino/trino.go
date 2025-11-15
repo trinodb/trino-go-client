@@ -164,6 +164,8 @@ const (
 	defaultallowedOutOfOrder       = 10
 	defaultSpoolingDownloadWorkers = 5
 	defaulttrinoEncoding           = "json"
+	defaultSourceName              = "trino-go-client"
+	defaultKerberosServiceName     = "trino"
 )
 
 var (
@@ -195,7 +197,7 @@ type Config struct {
 	ExtraCredentials           map[string]string // Extra credentials (optional)
 	ClientTags                 []string          // A comma-separated list of “tag” strings, used to identify Trino resource groups (optional)
 	CustomClientName           string            // Custom client name (optional)
-	KerberosEnabled            string            // KerberosEnabled (optional, default is false)
+	KerberosEnabled            bool              // KerberosEnabled (optional, default is false)
 	KerberosKeytabPath         string            // Kerberos Keytab Path (optional)
 	KerberosPrincipal          string            // Kerberos Principal used to authenticate to KDC (optional)
 	KerberosRemoteServiceName  string            // Trino coordinator Kerberos service name (optional)
@@ -209,8 +211,140 @@ type Config struct {
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
 }
 
-// FormatDSN returns a DSN string from the configuration.
+func (c *Config) applyDefaults() {
+	if c.Source == "" {
+		c.Source = defaultSourceName
+	}
+
+	if c.KerberosRemoteServiceName == "" && c.KerberosEnabled {
+		c.KerberosRemoteServiceName = defaultKerberosServiceName
+	}
+}
+
+func ParseDSN(dsn string) (*Config, error) {
+	serverURL, err := url.Parse(dsn)
+	if err != nil {
+		return nil, fmt.Errorf("invalid DSN: %w", err)
+	}
+
+	query := serverURL.Query()
+	config := &Config{}
+
+	serverURI := serverURL.Scheme + "://"
+	if serverURL.User != nil {
+		serverURI += serverURL.User.String() + "@"
+	}
+
+	serverURI += serverURL.Host
+
+	config.ServerURI = serverURI
+	config.Source = query.Get("source")
+
+	config.Catalog = query.Get("catalog")
+	config.Schema = query.Get("schema")
+
+	if sessionProps := query.Get("session_properties"); sessionProps != "" {
+		var err error
+		config.SessionProperties, err = parseMapParameter(sessionProps, "session property", mapEntrySeparator, mapKeySeparator)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if extraCreds := query.Get("extra_credentials"); extraCreds != "" {
+		var err error
+		config.ExtraCredentials, err = parseMapParameter(extraCreds, "extra credential", mapEntrySeparator, mapKeySeparator)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if clientTags := query.Get("clientTags"); clientTags != "" {
+		config.ClientTags = strings.Split(clientTags, commaSeparator)
+	}
+
+	config.CustomClientName = query.Get("custom_client")
+	config.AccessToken = query.Get(accessTokenConfig)
+
+	if explicitPrepare := query.Get(explicitPrepareConfig); explicitPrepare != "" {
+		explicitPrepareValue, err := strconv.ParseBool(explicitPrepare)
+		if err != nil {
+			return nil, fmt.Errorf("invalid boolean for %s: %q", explicitPrepareConfig, explicitPrepare)
+		}
+		config.DisableExplicitPrepare = !explicitPrepareValue
+	}
+
+	if forwardAuth := query.Get(forwardAuthorizationHeaderConfig); forwardAuth != "" {
+		forwardAuthValue, err := strconv.ParseBool(forwardAuth)
+		if err != nil {
+			return nil, fmt.Errorf("invalid boolean for %s: %q", forwardAuthorizationHeaderConfig, forwardAuth)
+		}
+		config.ForwardAuthorizationHeader = forwardAuthValue
+	}
+
+	if queryTimeoutStr := query.Get("query_timeout"); queryTimeoutStr != "" {
+		queryTimeout, err := time.ParseDuration(queryTimeoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid timeout for query_timeout: %q", queryTimeoutStr)
+		}
+		config.QueryTimeout = &queryTimeout
+	}
+
+	if kerberosParam := query.Get(kerberosEnabledConfig); kerberosParam != "" {
+		enabled, err := strconv.ParseBool(kerberosParam)
+		if err != nil {
+			return nil, fmt.Errorf("invalid boolean for %s: %q", kerberosEnabledConfig, kerberosParam)
+		}
+		config.KerberosEnabled = enabled
+	}
+
+	if kp := query.Get(kerberosKeytabPathConfig); kp != "" {
+		config.KerberosKeytabPath = kp
+	}
+
+	if p := query.Get(kerberosPrincipalConfig); p != "" {
+		config.KerberosPrincipal = p
+	}
+
+	if r := query.Get(kerberosRealmConfig); r != "" {
+		config.KerberosRealm = r
+	}
+
+	if kp := query.Get(kerberosConfigPathConfig); kp != "" {
+		config.KerberosConfigPath = kp
+	}
+
+	if rsn := query.Get(kerberosRemoteServiceNameConfig); rsn != "" {
+		config.KerberosRemoteServiceName = rsn
+	}
+
+	if sslCertPath := query.Get(sslCertPathConfig); sslCertPath != "" {
+		config.SSLCertPath = sslCertPath
+	}
+
+	if sslCert := query.Get(sslCertConfig); sslCert != "" {
+		config.SSLCert = sslCert
+	}
+
+	config.applyDefaults()
+	return config, nil
+}
+
+func parseMapParameter(value, paramName, entrySeparator, keyValueSeparator string) (map[string]string, error) {
+	result := make(map[string]string)
+	for _, entry := range strings.Split(value, entrySeparator) {
+		parts := strings.SplitN(entry, keyValueSeparator, 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid %s entry: %q", paramName, entry)
+		}
+		result[parts[0]] = parts[1]
+	}
+	return result, nil
+}
+
 func (c *Config) FormatDSN() (string, error) {
+	c.applyDefaults()
+
 	serverURL, err := url.Parse(c.ServerURI)
 	if err != nil {
 		return "", err
@@ -227,18 +361,14 @@ func (c *Config) FormatDSN() (string, error) {
 			credkv = append(credkv, k+mapKeySeparator+v)
 		}
 	}
-	source := c.Source
-	if source == "" {
-		source = "trino-go-client"
-	}
+
 	query := make(url.Values)
-	query.Add("source", source)
+	query.Add("source", c.Source)
 
 	if c.ForwardAuthorizationHeader {
 		query.Add(forwardAuthorizationHeaderConfig, "true")
 	}
 
-	KerberosEnabled, _ := strconv.ParseBool(c.KerberosEnabled)
 	isSSL := serverURL.Scheme == "https"
 
 	if c.DisableExplicitPrepare {
@@ -270,7 +400,7 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add(sslCertConfig, c.SSLCert)
 	}
 
-	if KerberosEnabled {
+	if c.KerberosEnabled {
 		if !isSSL {
 			return "", fmt.Errorf("trino: client configuration error, SSL must be enabled for secure env")
 		}
@@ -279,11 +409,7 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add(kerberosPrincipalConfig, c.KerberosPrincipal)
 		query.Add(kerberosRealmConfig, c.KerberosRealm)
 		query.Add(kerberosConfigPathConfig, c.KerberosConfigPath)
-		remoteServiceName := c.KerberosRemoteServiceName
-		if remoteServiceName == "" {
-			remoteServiceName = "trino"
-		}
-		query.Add(kerberosRemoteServiceNameConfig, remoteServiceName)
+		query.Add(kerberosRemoteServiceNameConfig, c.KerberosRemoteServiceName)
 	}
 
 	// ensure consistent order of items
@@ -333,52 +459,46 @@ var (
 )
 
 func newConn(dsn string) (*Conn, error) {
-	serverURL, err := url.Parse(dsn)
+	conf, err := ParseDSN(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("trino: malformed dsn: %w", err)
-	}
-
-	query := serverURL.Query()
-
-	kerberosEnabled, _ := strconv.ParseBool(query.Get(kerberosEnabledConfig))
-
-	forwardAuthorizationHeader, _ := strconv.ParseBool(query.Get(forwardAuthorizationHeaderConfig))
-
-	useExplicitPrepare := true
-	if query.Get(explicitPrepareConfig) != "" {
-		useExplicitPrepare, _ = strconv.ParseBool(query.Get(explicitPrepareConfig))
+		return nil, err
 	}
 
 	var kerberosClient *client.Client
 
-	if kerberosEnabled {
-		kt, err := keytab.Load(query.Get(kerberosKeytabPathConfig))
+	if conf.KerberosEnabled {
+		kt, err := keytab.Load(conf.KerberosKeytabPath)
 		if err != nil {
 			return nil, fmt.Errorf("trino: Error loading Keytab: %w", err)
 		}
-		conf, err := config.Load(query.Get(kerberosConfigPathConfig))
+		confKerb, err := config.Load(conf.KerberosConfigPath)
 		if err != nil {
 			return nil, fmt.Errorf("trino: Error loading krb config: %w", err)
 		}
 
-		kerberosClient = client.NewWithKeytab(query.Get(kerberosPrincipalConfig), query.Get(kerberosRealmConfig), kt, conf)
+		kerberosClient = client.NewWithKeytab(conf.KerberosPrincipal, conf.KerberosRealm, kt, confKerb)
 		loginErr := kerberosClient.Login()
 		if loginErr != nil {
 			return nil, fmt.Errorf("trino: Error login to KDC: %v", loginErr)
 		}
 	}
 
+	serverURL, err := url.Parse(conf.ServerURI)
+	if err != nil {
+		return nil, fmt.Errorf("trino: invalid server URL: %w", err)
+	}
+
 	var httpClient = http.DefaultClient
-	if clientKey := query.Get("custom_client"); clientKey != "" {
+	if clientKey := conf.CustomClientName; clientKey != "" {
 		httpClient = getCustomClient(clientKey)
 		if httpClient == nil {
 			return nil, fmt.Errorf("trino: custom client not registered: %q", clientKey)
 		}
 	} else if serverURL.Scheme == "https" {
 
-		cert := []byte(query.Get(sslCertConfig))
+		cert := []byte(conf.SSLCert)
 
-		if certPath := query.Get(sslCertPathConfig); certPath != "" {
+		if certPath := conf.SSLCertPath; certPath != "" {
 			cert, err = os.ReadFile(certPath)
 			if err != nil {
 				return nil, fmt.Errorf("trino: Error loading SSL Cert File: %w", err)
@@ -399,25 +519,16 @@ func newConn(dsn string) (*Conn, error) {
 		}
 	}
 
-	var queryTimeout *time.Duration
-	if timeoutStr := query.Get("query_timeout"); timeoutStr != "" {
-		d, err := time.ParseDuration(timeoutStr)
-		if err != nil {
-			return nil, fmt.Errorf("trino: invalid timeout: %w", err)
-		}
-		queryTimeout = &d
-	}
-
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
 		httpClient:                 *httpClient,
 		httpHeaders:                make(http.Header),
 		kerberosClient:             kerberosClient,
-		kerberosEnabled:            kerberosEnabled,
-		kerberosRemoteServiceName:  query.Get(kerberosRemoteServiceNameConfig),
-		useExplicitPrepare:         useExplicitPrepare,
-		forwardAuthorizationHeader: forwardAuthorizationHeader,
-		queryTimeout:               queryTimeout,
+		kerberosEnabled:            conf.KerberosEnabled,
+		kerberosRemoteServiceName:  conf.KerberosRemoteServiceName,
+		useExplicitPrepare:         !conf.DisableExplicitPrepare,
+		forwardAuthorizationHeader: conf.ForwardAuthorizationHeader,
+		queryTimeout:               conf.QueryTimeout,
 	}
 
 	var user string
@@ -429,46 +540,42 @@ func newConn(dsn string) (*Conn, error) {
 		}
 	}
 
-	if tags := query.Get("clientTags"); tags != "" {
-		c.httpHeaders.Add(trinoTagsHeader, tags)
+	if tags := conf.ClientTags; tags != nil {
+		c.httpHeaders.Add(trinoTagsHeader, strings.Join(tags, commaSeparator))
 	}
 
 	for k, v := range map[string]string{
 		trinoUserHeader:     user,
-		trinoSourceHeader:   query.Get("source"),
-		trinoCatalogHeader:  query.Get("catalog"),
-		trinoSchemaHeader:   query.Get("schema"),
-		authorizationHeader: getAuthorization(query.Get(accessTokenConfig)),
+		trinoSourceHeader:   conf.Source,
+		trinoCatalogHeader:  conf.Catalog,
+		trinoSchemaHeader:   conf.Schema,
+		authorizationHeader: getAuthorization(conf.AccessToken),
 	} {
 		if v != "" {
 			c.httpHeaders.Add(k, v)
 		}
 	}
-	for header, param := range map[string]string{
-		trinoSessionHeader:         "session_properties",
-		trinoExtraCredentialHeader: "extra_credentials",
-	} {
-		v := query.Get(param)
-		if v != "" {
-			c.httpHeaders[header], err = decodeMapHeader(param, v)
-			if err != nil {
-				return c, err
-			}
+
+	if conf.ExtraCredentials != nil {
+		c.httpHeaders[trinoExtraCredentialHeader], err = decodeMapHeader("extra_credentials", conf.ExtraCredentials)
+		if err != nil {
+			return c, err
+		}
+	}
+
+	if conf.SessionProperties != nil {
+		c.httpHeaders[trinoSessionHeader], err = decodeMapHeader("session_properties", conf.SessionProperties)
+		if err != nil {
+			return c, err
 		}
 	}
 
 	return c, nil
 }
 
-func decodeMapHeader(name, input string) ([]string, error) {
-	result := []string{}
-	for _, entry := range strings.Split(input, mapEntrySeparator) {
-		parts := strings.SplitN(entry, mapKeySeparator, 2)
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("trino: Malformed %s: %s", name, input)
-		}
-		key := parts[0]
-		value := parts[1]
+func decodeMapHeader(name string, m map[string]string) ([]string, error) {
+	result := make([]string, 0, len(m))
+	for key, value := range m {
 		if len(key) == 0 {
 			return nil, fmt.Errorf("trino: %s key is empty", name)
 		}
@@ -479,7 +586,6 @@ func decodeMapHeader(name, input string) ([]string, error) {
 			return nil, fmt.Errorf("trino: %s key '%s' contains spaces or is not printable ASCII", name, key)
 		}
 		if !isASCII(value) {
-			// do not log value as it may contain sensitive information
 			return nil, fmt.Errorf("trino: %s value for key '%s' contains spaces or is not printable ASCII", name, key)
 		}
 		result = append(result, key+"="+url.QueryEscape(value))
