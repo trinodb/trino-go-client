@@ -63,6 +63,152 @@ func TestPreserveExplicitPrepareQueryParameterConfig(t *testing.T) {
 	assert.Equal(t, want, dsn)
 }
 
+func TestParseDSNToConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config *Config
+	}{
+		{
+			name: "HTTP with custom client and full configuration",
+			config: &Config{
+				ServerURI:                  "http://foobar@localhost:8080",
+				Source:                     "trino-go-client",
+				Catalog:                    "test_catalog",
+				Schema:                     "test_schema",
+				SessionProperties:          map[string]string{"session_property_one": "1", "session_property_two": "2"},
+				ExtraCredentials:           map[string]string{"extra_credential_one": "1", "extra_credential_two": "2"},
+				ClientTags:                 []string{"tag1", "tag2", "tag3"},
+				CustomClientName:           "client_name",
+				AccessToken:                "token_test",
+				DisableExplicitPrepare:     true,
+				ForwardAuthorizationHeader: true,
+				QueryTimeout:               &[]time.Duration{5 * time.Minute}[0],
+			},
+		},
+		{
+			name: "HTTPS with Kerberos and SSL cert path",
+			config: &Config{
+				ServerURI:                  "https://foobar@localhost:8080",
+				Source:                     "trino-go-client",
+				Catalog:                    "test_catalog",
+				Schema:                     "test_schema",
+				SessionProperties:          map[string]string{"session_property_one": "1", "session_property_two": "2"},
+				ExtraCredentials:           map[string]string{"extra_credential_one": "1", "extra_credential_two": "2"},
+				ClientTags:                 []string{"tag1", "tag2", "tag3"},
+				KerberosEnabled:            true, // Requires HTTPS
+				KerberosKeytabPath:         "kerberos-path",
+				KerberosPrincipal:          "kerberos-pricipal",
+				KerberosRemoteServiceName:  "kerberos-remote-service-name",
+				KerberosRealm:              "kerberos-realm",
+				KerberosConfigPath:         "kerberos-config-path",
+				SSLCertPath:                "ssl-cert-path",
+				AccessToken:                "token_test",
+				DisableExplicitPrepare:     true,
+				ForwardAuthorizationHeader: true,
+				QueryTimeout:               &[]time.Duration{5 * time.Minute}[0],
+			},
+		},
+		{
+			name: "HTTPS with SSL cert string (alternative to cert path)",
+			config: &Config{
+				ServerURI: "https://localhost:8080",
+				Source:    "trino-go-client",
+				SSLCert:   "-----BEGIN CERTIFICATE-----\ntest-cert-data\n-----END CERTIFICATE-----",
+			},
+		},
+		{
+			name: "HTTP with explicit default boolean values",
+			config: &Config{
+				ServerURI:                  "http://localhost:8080",
+				Source:                     "trino-go-client",
+				DisableExplicitPrepare:     false,
+				ForwardAuthorizationHeader: false,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dsn, err := tt.config.FormatDSN()
+			require.NoError(t, err)
+			got, err := ParseDSN(dsn)
+			require.NoError(t, err)
+			assert.Equal(t, tt.config, got)
+		})
+	}
+}
+
+func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
+	complexDSN := "https://user:pass@localhost:8080/?" +
+		"source=test-source&" +
+		"catalog=test_catalog&" +
+		"schema=test_schema&" +
+		"session_properties=prop1%3Avalue1%3Bprop2%3Avalue2&" +
+		"extra_credentials=cred1%3Asecret1%3Bcred2%3Asecret2&" +
+		"clientTags=tag1%2Ctag2%2Ctag3&" +
+		"custom_client=test_client&" +
+		"KerberosEnabled=true&" +
+		"KerberosKeytabPath=/path/to/keytab&" +
+		"KerberosPrincipal=user%40REALM.COM&" +
+		"KerberosRemoteServiceName=trino-service&" +
+		"KerberosRealm=REALM.COM&" +
+		"KerberosConfigPath=/etc/krb5.conf&" +
+		"SSLCertPath=/path/to/cert.pem&" +
+		"SSLCert=-----BEGIN%20CERTIFICATE-----test-cert-----END%20CERTIFICATE-----&" +
+		"accessToken=jwt-token-here&" +
+		"explicitPrepare=false&" +
+		"forwardAuthorizationHeader=true&" +
+		"query_timeout=5m30s"
+
+	config, err := ParseDSN(complexDSN)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+
+	v := reflect.ValueOf(config).Elem()
+	configType := v.Type()
+
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Field(i)
+		fieldName := configType.Field(i).Name
+		fieldType := field.Type()
+
+		switch fieldType.Kind() {
+		case reflect.String:
+			assert.NotEmpty(t, field.String(), "Field %s should not be empty - add it to the test DSN and ParseDSNToConfig", fieldName)
+		case reflect.Slice:
+			assert.Greater(t, field.Len(), 0, "Field %s should not be empty slice - add it to the test DSN and ParseDSNToConfig", fieldName)
+		case reflect.Map:
+			assert.Greater(t, field.Len(), 0, "Field %s should not be empty map - add it to the test DSN and ParseDSNToConfig", fieldName)
+		case reflect.Bool:
+			assert.True(t, field.Bool(), "Field %s should be true - add it to the test DSN and ParseDSNToConfig", fieldName)
+		case reflect.Ptr:
+			assert.NotNil(t, field.Interface(), "Field %s should not be nil - add it to the test DSN and ParseDSNToConfig", fieldName)
+		}
+	}
+
+	assert.Equal(t, "https://user:pass@localhost:8080", config.ServerURI)
+	assert.Equal(t, "test-source", config.Source)
+	assert.Equal(t, "test_catalog", config.Catalog)
+	assert.Equal(t, "test_schema", config.Schema)
+	assert.Equal(t, map[string]string{"prop1": "value1", "prop2": "value2"}, config.SessionProperties)
+	assert.Equal(t, map[string]string{"cred1": "secret1", "cred2": "secret2"}, config.ExtraCredentials)
+	assert.Equal(t, []string{"tag1", "tag2", "tag3"}, config.ClientTags)
+	assert.Equal(t, "test_client", config.CustomClientName)
+	assert.Equal(t, true, config.KerberosEnabled)
+	assert.Equal(t, "/path/to/keytab", config.KerberosKeytabPath)
+	assert.Equal(t, "user@REALM.COM", config.KerberosPrincipal)
+	assert.Equal(t, "trino-service", config.KerberosRemoteServiceName)
+	assert.Equal(t, "REALM.COM", config.KerberosRealm)
+	assert.Equal(t, "/etc/krb5.conf", config.KerberosConfigPath)
+	assert.Equal(t, "/path/to/cert.pem", config.SSLCertPath)
+	assert.Equal(t, "-----BEGIN CERTIFICATE-----test-cert-----END CERTIFICATE-----", config.SSLCert)
+	assert.Equal(t, "jwt-token-here", config.AccessToken)
+	assert.Equal(t, true, config.DisableExplicitPrepare)
+	assert.Equal(t, true, config.ForwardAuthorizationHeader)
+	assert.NotNil(t, config.QueryTimeout)
+	assert.Equal(t, 5*time.Minute+30*time.Second, *config.QueryTimeout)
+}
+
 func TestConfigFormatDSNTags(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -246,7 +392,7 @@ func TestKerberosConfig(t *testing.T) {
 	c := &Config{
 		ServerURI:                 "https://foobar@localhost:8090",
 		SessionProperties:         map[string]string{"query_priority": "1"},
-		KerberosEnabled:           "true",
+		KerberosEnabled:           true,
 		KerberosKeytabPath:        "/opt/test.keytab",
 		KerberosPrincipal:         "trino/testhost",
 		KerberosRealm:             "example.com",
@@ -266,7 +412,7 @@ func TestKerberosConfig(t *testing.T) {
 func TestInvalidKerberosConfig(t *testing.T) {
 	c := &Config{
 		ServerURI:       "http://foobar@localhost:8090",
-		KerberosEnabled: "true",
+		KerberosEnabled: true,
 	}
 
 	_, err := c.FormatDSN()
