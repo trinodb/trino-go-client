@@ -1515,6 +1515,9 @@ func (qr *driverRows) Close() error {
 		return nil
 	}
 	qr.err = io.EOF
+	if !qr.stmt.usingSpooledProtocol && qr.nextURI == "" {
+		return qr.err
+	}
 	hs := make(http.Header)
 	if qr.stmt.user != "" {
 		hs.Add(trinoUserHeader, qr.stmt.user)
@@ -1973,6 +1976,7 @@ func (qr *driverRows) fetch() error {
 			}
 
 			qr.rowindex = 0
+			qr.nextURI = qresp.NextURI
 			switch data := qresp.Data.(type) {
 			case []interface{}:
 				// direct protocol
