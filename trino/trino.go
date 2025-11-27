@@ -1515,8 +1515,24 @@ func (qr *driverRows) Close() error {
 		return nil
 	}
 	qr.err = io.EOF
-	if !qr.stmt.usingSpooledProtocol && qr.nextURI == "" {
-		return qr.err
+	if !qr.stmt.usingSpooledProtocol {
+		err := qr.fetch()
+		if err != nil && err != io.EOF {
+			return err
+		}
+		if qr.nextURI == "" {
+			return nil
+		}
+	} else {
+		select {
+		case _, ok := <-qr.stmt.spoolingRowsChannel:
+			if !ok {
+				// channel is closed, all data has been consumed
+				return nil
+			}
+		case <-time.NewTimer(100 * time.Millisecond).C:
+			// no data is ready
+		}
 	}
 	hs := make(http.Header)
 	if qr.stmt.user != "" {
