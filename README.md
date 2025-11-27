@@ -183,7 +183,7 @@ also known as namespace in some environments.
 
 ```
 Type:           string
-Valid values:   comma-separated list of key=value session properties
+Valid values:   semicolon-separated list of key:value session properties
 Default:        empty
 ```
 
@@ -296,7 +296,7 @@ http://user@localhost:8080?source=hello&catalog=default&schema=foobar
 ```
 
 ```
-https://user@localhost:8443?session_properties=query_max_run_time=10m,query_priority=2
+https://user@localhost:8443?session_properties=query_max_run_time:10m;query_priority:2
 ```
 
 ## Data types
