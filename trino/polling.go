@@ -17,6 +17,10 @@ import (
 	_ "unsafe" // for go:linkname
 )
 
+const (
+	pollingUserName = "trino-polling-user"
+)
+
 // PollingConn provides a polling-based interface to Trino queries.
 // Unlike the standard sql.DB interface which blocks until the query completes,
 // this allows starting a query and polling for results incrementally.
@@ -124,6 +128,33 @@ func (pc *PollingConn) PollQuery(ctx context.Context, nextURI string) (*PollingR
 	}
 
 	return pc.buildPollingResult(qresp)
+}
+
+// CancelQuery cancels an in-progress query by sending a DELETE request to the
+// nextURI. This is safe to call even after a query has completed.
+func (pc *PollingConn) CancelQuery(ctx context.Context, nextURI string) error {
+	hs := http.Header{trinoUserHeader: {pollingUserName}}
+
+	if nextURI == "" {
+		return errors.New("trino: cannot cancel query with empty nextURI")
+	}
+
+	req, err := pc.conn.newRequest(ctx, "DELETE", nextURI, nil, hs)
+	if err != nil {
+		return err
+	}
+
+	resp, err := pc.conn.roundTrip(ctx, req)
+	if err != nil {
+		// If the error is StatusNoContent, the query was successfully cancelled
+		qferr, ok := err.(*ErrQueryFailed)
+		if ok && qferr.StatusCode == http.StatusNoContent {
+			return nil
+		}
+		return err
+	}
+	resp.Body.Close()
+	return nil
 }
 
 // convertQueryArgsToDriverArgs converts query args (including `X-Trino-*` named args)
@@ -243,8 +274,7 @@ func (pc *PollingConn) startQuery(ctx context.Context, st *driverStmt, query str
 
 // pollQuery implements the polling logic to get more results.
 func (pc *PollingConn) pollQuery(ctx context.Context, st *driverStmt, nextURI string) (*queryResponse, error) {
-	hs := make(http.Header)
-	hs.Add(trinoUserHeader, "trino-polling-client")
+	hs := http.Header{trinoUserHeader: {pollingUserName}}
 
 	req, err := st.conn.newRequest(ctx, "GET", nextURI, nil, hs)
 	if err != nil {

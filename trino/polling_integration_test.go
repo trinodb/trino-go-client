@@ -98,6 +98,69 @@ func TestIntegrationPollingSelectTpch1000(t *testing.T) {
 	}
 }
 
+func TestIntegrationPollingCancelQuery(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
+
+	dsn := *integrationServerFlag
+	pollingConn, err := NewPollingConn(dsn, nil)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	// Use triple CROSS JOIN to create a very large result set that takes time to execute
+	longQuery := "SELECT COUNT(*) FROM tpch.sf1.customer c1 CROSS JOIN tpch.sf1.customer c2 CROSS JOIN tpch.sf1.customer c3"
+
+	result, err := pollingConn.StartQuery(ctx, longQuery)
+	require.NoError(t, err)
+	assert.NotEmpty(t, result.QueryID)
+	assert.NotEmpty(t, result.NextURI)
+
+	t.Logf("Query %s started, cancelling immediately", result.QueryID)
+
+	err = pollingConn.CancelQuery(ctx, result.NextURI)
+	require.NoError(t, err)
+
+	t.Logf("Cancel request sent successfully for query %s", result.QueryID)
+
+	// Try to poll the cancelled query - it should either return with an error or show as finished
+	pollResult, pollErr := pollingConn.PollQuery(ctx, result.NextURI)
+	if pollErr != nil {
+		t.Logf("Polling after cancel returned error (expected): %v", pollErr)
+		return
+	}
+
+	assert.True(t, pollResult.Finished, "Expected query to be finished after cancellation")
+	t.Logf("Query %s successfully cancelled", result.QueryID)
+}
+
+func TestIntegrationPollingCancelQueryAfterCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
+
+	dsn := *integrationServerFlag
+	pollingConn, err := NewPollingConn(dsn, nil)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	result, err := pollingConn.StartQuery(ctx, "SELECT 1")
+	require.NoError(t, err)
+
+	nextURI := result.NextURI
+
+	for !result.Finished {
+		result, err = pollingConn.PollQuery(ctx, result.NextURI)
+		require.NoError(t, err)
+		if result.NextURI != "" {
+			nextURI = result.NextURI
+		}
+	}
+
+	err = pollingConn.CancelQuery(ctx, nextURI)
+	assert.NoError(t, err, "Cancelling completed query should not error")
+}
+
 func TestIntegrationPollingQueryWithNoResults(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
