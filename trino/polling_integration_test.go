@@ -265,6 +265,117 @@ func TestIntegrationPollingQueryWithNamedArgs(t *testing.T) {
 	assert.Equal(t, [][]interface{}{{int64(1)}}, rows)
 }
 
+// Tests comparing sync (standard SQL) vs polling client results
+
+func TestIntegrationSyncAndPollingReturnSimilarFormat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
+
+	dsn := *integrationServerFlag
+	query := `
+		SELECT n as col1, CAST(n as varchar) as col2
+		FROM UNNEST(sequence(1, 3)) as t(n)
+	`
+
+	t.Run("Sync", func(t *testing.T) {
+		columns, columnTypes, rows := executeSync(t, dsn, query)
+		assert.Equal(t, columns, []string{"col1", "col2"})
+		assert.Equal(t, columnTypes, []string{"BIGINT", "VARCHAR"})
+		assert.Equal(t, rows, [][]interface{}{{int64(1), "1"}, {int64(2), "2"}, {int64(3), "3"}})
+	})
+
+	t.Run("Polling", func(t *testing.T) {
+		columns, columnTypes, rows := executePolling(t, dsn, query)
+		assert.Equal(t, columns, []string{"col1", "col2"})
+		assert.Equal(t, columnTypes, []string{"BIGINT", "VARCHAR"})
+		assert.Equal(t, rows, [][]interface{}{{int64(1), "1"}, {int64(2), "2"}, {int64(3), "3"}})
+	})
+}
+
+func TestIntegrationCompareSyncAndPollingResults(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping test in short mode.")
+	}
+
+	dsn := *integrationServerFlag
+
+	testCases := []struct {
+		name  string
+		query string
+		args  []interface{}
+	}{
+		{
+			name:  "ARRAY of integers and strings",
+			query: `SELECT ARRAY[1, 2, 3] AS col1, ARRAY['a', 'b', 'c'] AS col2`,
+		},
+		{
+			name:  "Query with parameters",
+			query: `SELECT ? AS col1, ? AS col2`,
+			args:  []interface{}{1, "a"},
+		},
+		{
+			name:  "EXPLAIN query",
+			query: `EXPLAIN SELECT 1`,
+		},
+		{
+			name:  "Nested ARRAY",
+			query: `SELECT ARRAY[ARRAY[ARRAY[1.4]]]`,
+		},
+		{
+			name:  "MAP with nested values",
+			query: `SELECT MAP(ARRAY['foo'], ARRAY[MAP(ARRAY['key1'], ARRAY[CAST(1 AS INTEGER)])]) as col`,
+		},
+		{
+			name:  "ROW with mixed types",
+			query: `SELECT ROW(1, 5.12, 'foo', false, NULL)`,
+		},
+		{
+			name:  "ROW with DECIMAL and NULL",
+			query: `SELECT ROW(CAST(5 AS INTEGER), CAST(1 AS DECIMAL(10, 2)), CAST(NULL AS VARCHAR))`,
+		},
+		{
+			name:  "ARRAY of REAL",
+			query: `SELECT ARRAY[CAST(2.3 AS REAL)]`,
+		},
+		{
+			name:  "ARRAY of DOUBLE",
+			query: `SELECT ARRAY[CAST(2.3 AS DOUBLE)]`,
+		},
+		{
+			name:  "ARRAY of TINYINT",
+			query: `SELECT ARRAY[CAST(2.3 AS TINYINT)]`,
+		},
+		{
+			name:  "ARRAY of INTEGER",
+			query: `SELECT ARRAY[CAST(2.3 AS INTEGER)]`,
+		},
+		{
+			name:  "ARRAY of BIGINT",
+			query: `SELECT ARRAY[CAST(2.3 AS BIGINT)]`,
+		},
+		{
+			name:  "ARRAY of SMALLINT",
+			query: `SELECT ARRAY[CAST(2.3 AS SMALLINT)]`,
+		},
+		{
+			name:  "SELECT from sequence with filter",
+			query: `SELECT n FROM UNNEST(sequence(1, 100)) as t(n) WHERE n <= 5`,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			syncCols, syncColTypes, syncRows := executeSync(t, dsn, tc.query, tc.args...)
+			pollingCols, pollingColTypes, pollingRows := executePolling(t, dsn, tc.query, tc.args...)
+
+			assert.Equal(t, syncCols, pollingCols, "Column names should match")
+			assert.Equal(t, syncColTypes, pollingColTypes, "Column types should match")
+			assert.Equal(t, syncRows, pollingRows, "Rows should match")
+		})
+	}
+}
+
 // collectAllResults is a helper that polls until the query finishes and collects all results.
 func collectAllResults(ctx context.Context, pc *PollingConn, result *PollingResult) ([][]interface{}, []string, []*PollingColumnType, error) {
 	var err error
@@ -314,4 +425,74 @@ func scanAllRows(pr *PollingRows) ([][]interface{}, error) {
 	}
 
 	return rows, pr.Err()
+}
+
+// Execute a sync query using standard SQL interface and return its results
+func executeSync(
+	t *testing.T,
+	dsn string,
+	query string,
+	args ...interface{},
+) (columns []string, columnTypes []string, rows [][]interface{}) {
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+	defer db.Close()
+
+	sqlRows, err := db.Query(query, args...)
+	require.NoError(t, err)
+	defer sqlRows.Close()
+
+	// Get column names
+	columns, err = sqlRows.Columns()
+	require.NoError(t, err)
+
+	// Get column types
+	sqlColumnTypes, err := sqlRows.ColumnTypes()
+	require.NoError(t, err)
+	columnTypes = make([]string, len(sqlColumnTypes))
+	for i, ct := range sqlColumnTypes {
+		columnTypes[i] = ct.DatabaseTypeName()
+	}
+
+	// Collect rows
+	rows = make([][]interface{}, 0)
+	for sqlRows.Next() {
+		row := make([]interface{}, len(columns))
+		dest := make([]interface{}, len(columns))
+		for i := range dest {
+			dest[i] = &row[i]
+		}
+		err := sqlRows.Scan(dest...)
+		require.NoError(t, err)
+		rows = append(rows, row)
+	}
+	require.NoError(t, sqlRows.Err())
+
+	return columns, columnTypes, rows
+}
+
+// Execute a polling query until completion and return all results
+func executePolling(
+	t *testing.T,
+	dsn string,
+	query string,
+	args ...interface{},
+) (columns []string, columnTypes []string, rows [][]interface{}) {
+	pollingConn, err := NewPollingConn(dsn, nil)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	result, err := pollingConn.StartQuery(ctx, query, args...)
+	require.NoError(t, err)
+
+	allRows, cols, colTypes, err := collectAllResults(ctx, pollingConn, result)
+	require.NoError(t, err)
+
+	// Convert column types to string names
+	columnTypes = make([]string, len(colTypes))
+	for i, ct := range colTypes {
+		columnTypes[i] = ct.DatabaseTypeName()
+	}
+
+	return cols, columnTypes, allRows
 }
