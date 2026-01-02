@@ -1,8 +1,11 @@
 package trino
 
 import (
+	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,77 +55,141 @@ func TestConvertQueryArgsToDriverArgs(t *testing.T) {
 	})
 }
 
-func TestPollingRows(t *testing.T) {
-	t.Run("Next and Scan iterate through rows", func(t *testing.T) {
-		pr := newPollingRows(
-			[]string{"id", "name"},
-			[]*PollingColumnType{
-				{name: "id", databaseType: "INTEGER"},
-				{name: "name", databaseType: "VARCHAR"},
+func TestDirectPollingRows(t *testing.T) {
+	validQresp := &queryResponse{
+		ID: "query123",
+		Columns: []queryColumn{
+			{
+				Name: "id",
+				Type: "bigint",
+				TypeSignature: typeSignature{
+					RawType: "bigint",
+				},
 			},
-			[][]interface{}{
-				{int64(1), "Alice"},
-				{int64(2), "Bob"},
-				{int64(3), "Charlie"},
+			{
+				Name: "name",
+				Type: "varchar",
+				TypeSignature: typeSignature{
+					RawType: "varchar",
+				},
 			},
-		)
+		},
+		Data: []interface{}{
+			[]interface{}{json.Number("1"), "Alice"},
+			[]interface{}{json.Number("2"), "Bob"},
+		},
+	}
+	t.Run("parses direct protocol response correctly", func(t *testing.T) {
+		rows, err := newDirectPollingRows(validQresp, validQresp.Data.([]interface{}))
+		require.NoError(t, err)
+		require.NotNil(t, rows)
 
-		// Read first row
-		require.True(t, pr.Next())
+		// Verify columns
+		cols, err := rows.Columns()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"id", "name"}, cols)
+
+		// Verify data
+		require.True(t, rows.Next())
 		var id int64
 		var name string
-		err := pr.Scan(&id, &name)
+		err = rows.Scan(&id, &name)
 		require.NoError(t, err)
 		assert.Equal(t, int64(1), id)
 		assert.Equal(t, "Alice", name)
 
-		// Read second row
-		require.True(t, pr.Next())
-		err = pr.Scan(&id, &name)
+		require.True(t, rows.Next())
+		err = rows.Scan(&id, &name)
 		require.NoError(t, err)
 		assert.Equal(t, int64(2), id)
 		assert.Equal(t, "Bob", name)
 
-		// Read third row
-		require.True(t, pr.Next())
-		err = pr.Scan(&id, &name)
-		require.NoError(t, err)
-		assert.Equal(t, int64(3), id)
-		assert.Equal(t, "Charlie", name)
-
-		// No more rows
-		require.False(t, pr.Next())
+		require.False(t, rows.Next())
 	})
 
 	t.Run("Scan returns error for mismatched column count", func(t *testing.T) {
-		pr := newPollingRows(
-			[]string{"id", "name"},
-			[]*PollingColumnType{
-				{name: "id", databaseType: "INTEGER"},
-				{name: "name", databaseType: "VARCHAR"},
-			},
-			[][]interface{}{
-				{int64(1), "Alice"},
-			},
-		)
+		rows, err := newDirectPollingRows(validQresp, validQresp.Data.([]interface{}))
+		require.NoError(t, err)
+		require.NotNil(t, rows)
 
-		require.True(t, pr.Next())
+		require.True(t, rows.Next())
 
 		var id int64
-		err := pr.Scan(&id) // Only one destination, but two columns
+		err = rows.Scan(&id) // Only one destination, but two columns
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "expected 2 destination arguments")
 	})
 
-	t.Run("Columns returns column names", func(t *testing.T) {
-		pr := newPollingRows(
-			[]string{"id", "name", "age"},
-			[]*PollingColumnType{},
-			[][]interface{}{},
-		)
+	t.Run("returns error for invalid row data", func(t *testing.T) {
+		invalidQresp := &queryResponse{
+			ID: "query123",
+			Columns: []queryColumn{
+				{
+					Name: "id",
+					Type: "bigint",
+					TypeSignature: typeSignature{
+						RawType: "bigint",
+					},
+				},
+			},
+			Data: []interface{}{
+				"invalid_row_data", // Should be []interface{}
+			},
+		}
 
-		columns, err := pr.Columns()
+		rows, err := newDirectPollingRows(invalidQresp, invalidQresp.Data.([]interface{}))
+		assert.Error(t, err)
+		assert.Nil(t, rows)
+		assert.Contains(t, err.Error(), "unexpected data type for row")
+	})
+}
+
+func TestNewSpoolingPollingRowsFromResponse(t *testing.T) {
+	t.Run("parses spooling protocol response structure correctly", func(t *testing.T) {
+		qresp := &queryResponse{
+			ID: "query123",
+			Columns: []queryColumn{
+				{
+					Name: "id",
+					Type: "bigint",
+					TypeSignature: typeSignature{
+						RawType: "bigint",
+					},
+				},
+				{
+					Name: "name",
+					Type: "varchar",
+					TypeSignature: typeSignature{
+						RawType: "varchar",
+					},
+				},
+			},
+			Data: map[string]interface{}{
+				"encoding": "json",
+				"segments": []interface{}{
+					map[string]interface{}{
+						"type":   "spooled",
+						"uri":    "http://example.com/segment/0",
+						"ackUri": "http://example.com/ack/0",
+						"metadata": map[string]interface{}{
+							"rowOffset":   json.Number("0"),
+							"rowsCount":   json.Number("2"),
+							"segmentSize": json.Number("100"),
+						},
+					},
+				},
+			},
+		}
+
+		conn := &PollingConn{conn: &Conn{httpClient: http.Client{}}}
+		ctx := context.Background()
+
+		rows, err := newSpoolingPollingRows(conn, ctx, qresp, qresp.Data.(map[string]interface{}))
 		require.NoError(t, err)
-		assert.Equal(t, []string{"id", "name", "age"}, columns)
+		require.NotNil(t, rows)
+
+		cols, err := rows.Columns()
+		require.NoError(t, err)
+		assert.Equal(t, []string{"id", "name"}, cols)
 	})
 }

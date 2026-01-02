@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -37,13 +39,25 @@ type PollingResult struct {
 	NextURI string
 
 	// Partial results of DQL statements (SELECT, EXPLAIN, EXECUTE) returned in
-	// this poll, if any.
-	Rows *PollingRows
+	// this poll, if any (null when there was no data to return).
+	Rows PollingRows
 
 	// Partial results of DML statements (INSERT, UPDATE, DELETE) returned in
 	// this poll, if any.
 	UpdateType  string
 	UpdateCount int64
+}
+
+// PollingRows provides an interface for iterating over query result rows.
+// Both direct protocol (directPollingRows) and spooling protocol (spoolingPollingRows)
+// implement this interface.
+type PollingRows interface {
+	Next() bool
+	Scan(dest ...any) error
+	Columns() ([]string, error)
+	ColumnTypes() ([]*PollingColumnType, error)
+	Close() error
+	Err() error
 }
 
 // PollingColumnType provides type information for a column. It is a copy of database/sql.ColumnType,
@@ -114,7 +128,7 @@ func (pc *PollingConn) StartQuery(ctx context.Context, query string, args ...any
 		return nil, err
 	}
 
-	return pc.buildPollingResult(qresp)
+	return pc.buildPollingResult(ctx, qresp)
 }
 
 // PollQuery polls for more query results using the NextURI from a previous
@@ -127,7 +141,7 @@ func (pc *PollingConn) PollQuery(ctx context.Context, nextURI string) (*PollingR
 		return nil, err
 	}
 
-	return pc.buildPollingResult(qresp)
+	return pc.buildPollingResult(ctx, qresp)
 }
 
 // CancelQuery cancels an in-progress query by sending a DELETE request to the
@@ -215,19 +229,57 @@ func (pc *PollingConn) startQuery(ctx context.Context, st *driverStmt, query str
 				continue
 			}
 
-			s, err := Serial(arg.Value)
-			if err != nil {
-				return nil, err
+			if st.conn.forwardAuthorizationHeader && arg.Name == accessTokenConfig {
+				token := arg.Value.(string)
+				hs.Add(authorizationHeader, getAuthorization(token))
+				continue
+			}
+
+			if arg.Name == trinoEncoding {
+				hs.Add(trinoQueryDataEncodingHeader, arg.Value.(string))
+				continue
+			}
+
+			if arg.Name == trinoSpoolingWorkerCount {
+				numberOfWorkers, err := strconv.Atoi(arg.Value.(string))
+				if err != nil {
+					return nil, err
+				}
+				st.spoolingWorkerCount = numberOfWorkers
+				continue
+			}
+
+			if arg.Name == trinoMaxOutOfOrdersSegments {
+				maxSegmentsOutOfOrder, err := strconv.Atoi(arg.Value.(string))
+				if err != nil {
+					return nil, err
+				}
+				st.spoolingMaxOutOfOrderSegments = maxSegmentsOutOfOrder
+				continue
 			}
 
 			if strings.HasPrefix(arg.Name, trinoHeaderPrefix) {
-				headerValue := arg.Value.(string)
+				headerValue, err := formatHeaderValue(arg.Name, arg.Value)
+				if err != nil {
+					return nil, err
+				}
+
 				if arg.Name == trinoUserHeader {
 					st.user = headerValue
 				}
+
+				if arg.Name == trinoRoleHeader {
+					st.conn.httpHeaders.Set(trinoRoleHeader, headerValue)
+				}
+
 				hs.Add(arg.Name, headerValue)
 			} else {
-				if hs.Get(preparedStatementHeader) == "" {
+				s, err := Serial(arg.Value)
+				if err != nil {
+					return nil, err
+				}
+
+				if st.conn.useExplicitPrepare && hs.Get(preparedStatementHeader) == "" {
 					for _, v := range st.conn.httpHeaders.Values(preparedStatementHeader) {
 						hs.Add(preparedStatementHeader, v)
 					}
@@ -240,12 +292,26 @@ func (pc *PollingConn) startQuery(ctx context.Context, st *driverStmt, query str
 			return nil, ErrInvalidProgressCallbackHeader
 		}
 		if len(ss) > 0 {
-			query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(ss, ", ")
+			if st.conn.useExplicitPrepare {
+				query = "EXECUTE " + preparedStatementName + " USING " + strings.Join(ss, ", ")
+			} else {
+				query = "EXECUTE IMMEDIATE " + formatStringLiteral(st.query) + " USING " + strings.Join(ss, ", ")
+			}
 		}
 	}
 
+	if st.spoolingWorkerCount > st.spoolingMaxOutOfOrderSegments {
+		return nil, fmt.Errorf("spooling worker cannot be greater than max out of order segments allowed. spooling workers: %d, allowed out of order segments: %d", st.spoolingWorkerCount, st.spoolingMaxOutOfOrderSegments)
+	}
+
+	if hs.Get(trinoQueryDataEncodingHeader) == "" {
+		hs.Add(trinoQueryDataEncodingHeader, defaulttrinoEncoding)
+	}
+
 	var cancel context.CancelFunc = func() {}
-	if _, ok := ctx.Deadline(); !ok {
+	if st.conn.queryTimeout != nil {
+		ctx, cancel = context.WithTimeout(ctx, *st.conn.queryTimeout)
+	} else if _, ok := ctx.Deadline(); !ok {
 		ctx, cancel = context.WithTimeout(ctx, DefaultQueryTimeout)
 	}
 	defer cancel()
@@ -305,7 +371,7 @@ func (pc *PollingConn) pollQuery(ctx context.Context, st *driverStmt, nextURI st
 }
 
 // buildPollingResult converts internal queryResponse to public PollingResult.
-func (pc *PollingConn) buildPollingResult(qresp *queryResponse) (*PollingResult, error) {
+func (pc *PollingConn) buildPollingResult(ctx context.Context, qresp *queryResponse) (*PollingResult, error) {
 	result := &PollingResult{
 		QueryID:     qresp.ID,
 		Finished:    qresp.NextURI == "",
@@ -316,47 +382,39 @@ func (pc *PollingConn) buildPollingResult(qresp *queryResponse) (*PollingResult,
 
 	// Parse columns if available
 	if len(qresp.Columns) > 0 {
-		// Initialize driverRows to handle type parsing
-		rows := &driverRows{}
-		err := rows.initColumns(qresp)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse columns: %w", err)
-		}
-		rows.data = qresp.Data
-		rows.rowindex = 0
-
-		columns := rows.columns
-
-		// Extract column types
-		columnTypes := rowsColumnInfoSetupConnLocked(rows)
-
-		// Convert data rows
-		data := make([][]interface{}, len(qresp.Data))
-		for i := range qresp.Data {
-			dest := make([]driver.Value, len(rows.coltype))
-			rows.rowindex = i
-			err := rows.Next(dest)
+		// Check the protocol type based on qresp.Data type
+		switch data := qresp.Data.(type) {
+		case []interface{}:
+			// Direct protocol
+			rows, err := newDirectPollingRows(qresp, data)
 			if err != nil {
-				return nil, fmt.Errorf("failed to parse row %d: %w", i, err)
+				return nil, err
 			}
+			result.Rows = rows
 
-			// Convert driver.Value to interface{}
-			data[i] = make([]interface{}, len(dest))
-			for j, val := range dest {
-				data[i][j] = val
+		case map[string]interface{}:
+			// Spooling protocol
+			rows, err := newSpoolingPollingRows(pc, ctx, qresp, data)
+			if err != nil {
+				return nil, err
 			}
+			result.Rows = rows
+
+		case nil:
+			// No data, this is fine
+			result.Rows = nil
+
+		default:
+			return nil, fmt.Errorf("unexpected data type: expected []interface{} (direct protocol) or map[string]interface{} (spooling protocol), got %T", qresp.Data)
 		}
-
-		// Create PollingRows with the parsed data
-		result.Rows = newPollingRows(columns, columnTypes, data)
 	}
 
 	return result, nil
 }
 
-// PollingRows wraps query result data to provide a sql.Rows-like interface for easier
-// iteration and scanning of query results.
-type PollingRows struct {
+// directPollingRows wraps query result data to provide a sql.Rows-like interface for easier
+// iteration and scanning of query results from the direct protocol.
+type directPollingRows struct {
 	columns      []string
 	columnTypes  []*PollingColumnType
 	data         [][]interface{}
@@ -364,35 +422,67 @@ type PollingRows struct {
 	lastErr      error
 }
 
-// newPollingRows creates a PollingRows from columns, column types, and data.
-// This is an internal constructor used by buildPollingResult.
-func newPollingRows(columns []string, columnTypes []*PollingColumnType, data [][]interface{}) *PollingRows {
-	return &PollingRows{
+// newDirectPollingRowsFromResponse creates a directPollingRows by parsing the direct protocol
+// data from a query response.
+func newDirectPollingRows(qresp *queryResponse, data []interface{}) (*directPollingRows, error) {
+	// Initialize driverRows to handle type parsing
+	rows := &driverRows{stmt: &driverStmt{usingSpooledProtocol: false}}
+	err := rows.initColumns(qresp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse columns: %w", err)
+	}
+
+	columns := rows.columns
+	columnTypes := rowsColumnInfoSetupConnLocked(rows)
+
+	// Convert data rows from direct protocol format
+	rowsData := make([][]interface{}, len(data))
+	for i, item := range data {
+		if row, ok := item.([]interface{}); ok {
+			dest := make([]driver.Value, len(rows.coltype))
+			rows.data = []queryData{row}
+			rows.rowindex = 0
+			err := rows.Next(dest)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse row %d: %w", i, err)
+			}
+
+			// Convert driver.Value to interface{}
+			rowsData[i] = make([]interface{}, len(dest))
+			for j, val := range dest {
+				rowsData[i][j] = val
+			}
+		} else {
+			return nil, fmt.Errorf("unexpected data type for row at index %d: expected []interface{}, got %T", i, item)
+		}
+	}
+
+	return &directPollingRows{
 		columns:      columns,
 		columnTypes:  columnTypes,
-		data:         data,
+		data:         rowsData,
 		nextRowIndex: -1,
-	}
+	}, nil
 }
 
 // Columns returns the column names.
-func (pr *PollingRows) Columns() ([]string, error) {
+func (pr *directPollingRows) Columns() ([]string, error) {
 	return pr.columns, nil
 }
 
 // ColumnTypes returns the column type information.
-func (pr *PollingRows) ColumnTypes() ([]*PollingColumnType, error) {
+func (pr *directPollingRows) ColumnTypes() ([]*PollingColumnType, error) {
 	return pr.columnTypes, nil
 }
 
 // Next advances to the next row. Returns false when there are no more rows.
-func (pr *PollingRows) Next() bool {
+func (pr *directPollingRows) Next() bool {
 	pr.nextRowIndex++
 	return pr.nextRowIndex < len(pr.data)
 }
 
 // Scan copies the columns in the current row into the values pointed at by dest.
-func (pr *PollingRows) Scan(dest ...any) error {
+func (pr *directPollingRows) Scan(dest ...any) error {
 	if pr.nextRowIndex < 0 || pr.nextRowIndex >= len(pr.data) {
 		pr.lastErr = io.EOF
 		return pr.lastErr
@@ -415,14 +505,274 @@ func (pr *PollingRows) Scan(dest ...any) error {
 }
 
 // Close closes the rows iterator. Currently a no-op.
-func (pr *PollingRows) Close() error {
+func (pr *directPollingRows) Close() error {
 	return nil
 }
 
 // Err returns the error, if any, that was encountered during iteration.
-func (pr *PollingRows) Err() error {
+func (pr *directPollingRows) Err() error {
 	if pr.lastErr != io.EOF {
 		return pr.lastErr
+	}
+	return nil
+}
+
+// spoolingPollingRows wraps spooled query result data and downloads segments
+// lazily on-demand as Next() is called. This is a simple, sequential
+// implementation that downloads one segment at a time as needed.
+type spoolingPollingRows struct {
+	conn        *PollingConn
+	ctx         context.Context
+	columns     []string
+	columnTypes []*PollingColumnType
+	driverRows  *driverRows
+	lastErr     error
+	closed      bool
+
+	// Segment metadata
+	segments []spooledMetadata
+	encoding string
+
+	// Current segment being consumed
+	currentSegmentData  [][]interface{}
+	currentRowInSegment int
+	nextSegmentIndex    int
+}
+
+// newSpoolingPollingRows creates a spoolingPollingRows by parsing the spooling
+// protocol data from a query response.
+func newSpoolingPollingRows(
+	pc *PollingConn,
+	ctx context.Context,
+	qresp *queryResponse,
+	data map[string]interface{},
+) (*spoolingPollingRows, error) {
+	// Parse encoding
+	encoding, ok := data["encoding"].(string)
+	if !ok {
+		return nil, fmt.Errorf("invalid or missing 'encoding' field on spooling protocol, expected string")
+	}
+
+	// Parse segments array
+	segmentsRaw, ok := data["segments"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid or missing 'segments' field on spooling protocol, expected []interface{}")
+	}
+
+	// Initialize driverRows to handle column type parsing
+	rows := &driverRows{stmt: &driverStmt{usingSpooledProtocol: true}}
+	err := rows.initColumns(qresp)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse columns: %w", err)
+	}
+
+	columns := rows.columns
+	columnTypes := rowsColumnInfoSetupConnLocked(rows)
+
+	// Parse all segment metadata (but don't download yet)
+	segments := make([]spooledMetadata, len(segmentsRaw))
+	for i, seg := range segmentsRaw {
+		segMap, ok := seg.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("segment at index %d is invalid: expected map[string]interface{}, got %T", i, seg)
+		}
+
+		// Parse segment metadata (row counts, sizes, etc.)
+		metadataRaw, ok := segMap["metadata"].(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("segment at index %d missing metadata", i)
+		}
+
+		segMeta, err := parseSegmentMetadata(metadataRaw)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse segment %d metadata: %w", i, err)
+		}
+
+		// Handle both inline and spooled segment types
+		segmentType, _ := segMap["type"].(string)
+		switch segmentType {
+		case "inline":
+			// For inline segments, we store the data field directly in the spooledMetadata
+			// The uri field will be empty, which signals we should use inline data
+			segments[i] = spooledMetadata{
+				uri:      "", // Empty URI indicates inline data
+				encoding: encoding,
+				metadata: segMeta,
+			}
+			// Store the base64 data in the headers map for later retrieval
+			if data, ok := segMap["data"].(string); ok {
+				segments[i].headers = map[string]interface{}{"data": data}
+			} else {
+				return nil, fmt.Errorf("segment at index %d has type 'inline' but missing or invalid 'data' field", i)
+			}
+
+		case "spooled":
+			// Parse full spooled metadata (URI, headers, etc.)
+			segments[i], err = parseSpooledMetadata(segMap, i, segMeta, encoding)
+			if err != nil {
+				return nil, fmt.Errorf("failed to parse segment %d: %w", i, err)
+			}
+
+		default:
+			return nil, fmt.Errorf("segment at index %d has unknown or missing 'type' field: %q", i, segmentType)
+		}
+	}
+
+	return &spoolingPollingRows{
+		conn:                pc,
+		ctx:                 ctx,
+		segments:            segments,
+		encoding:            encoding,
+		columns:             columns,
+		columnTypes:         columnTypes,
+		driverRows:          rows,
+		currentRowInSegment: 0,
+		nextSegmentIndex:    0,
+	}, nil
+}
+
+// Next advances to the next row. Returns false when there are no more rows.
+// Automatically downloads the next segment when the current segment is exhausted.
+func (spr *spoolingPollingRows) Next() bool {
+	if spr.closed {
+		return false
+	}
+
+	// Check if we need to fetch the next segment
+	if spr.currentRowInSegment >= len(spr.currentSegmentData) {
+		if !spr.fetchNextSegment() {
+			return false
+		}
+	}
+
+	spr.currentRowInSegment++
+	return spr.currentRowInSegment <= len(spr.currentSegmentData)
+}
+
+// fetchNextSegment downloads and decodes the next segment.
+// Returns false if there are no more segments or an error occurred.
+func (spr *spoolingPollingRows) fetchNextSegment() bool {
+	if spr.nextSegmentIndex >= len(spr.segments) {
+		return false // All segments consumed
+	}
+
+	segment := spr.segments[spr.nextSegmentIndex]
+
+	var rawData []byte
+	var err error
+
+	// Handle inline vs spooled segments
+	if segment.uri == "" {
+		// Inline segment - decode base64 data directly
+		if data, ok := segment.headers["data"].(string); ok {
+			rawData, err = base64.StdEncoding.DecodeString(data)
+			if err != nil {
+				spr.lastErr = fmt.Errorf("failed to decode base64 data for inline segment %d: %w", spr.nextSegmentIndex, err)
+				return false
+			}
+		} else {
+			spr.lastErr = fmt.Errorf("inline segment %d missing data field", spr.nextSegmentIndex)
+			return false
+		}
+	} else {
+		// Spooled segment - download from URI
+		fetcher := &SegmentFetcher{
+			ctx:             spr.ctx,
+			httpClient:      spr.conn.conn.httpClient,
+			spooledMetadata: segment,
+		}
+
+		rawData, err = fetcher.fetchSegment()
+		if err != nil {
+			spr.lastErr = fmt.Errorf("failed to fetch segment %d: %w", spr.nextSegmentIndex, err)
+			return false
+		}
+	}
+
+	// Decode segment using existing decodeSegment function
+	rawSegmentData, err := decodeSegment(rawData, spr.encoding, segment.metadata)
+	if err != nil {
+		spr.lastErr = fmt.Errorf("failed to decode segment %d: %w", spr.nextSegmentIndex, err)
+		return false
+	}
+
+	// Convert raw JSON data to proper types
+	spr.currentSegmentData = make([][]interface{}, len(rawSegmentData))
+
+	for i, rawRow := range rawSegmentData {
+		dest := make([]driver.Value, len(spr.driverRows.coltype))
+		spr.driverRows.data = []queryData{rawRow}
+		spr.driverRows.rowindex = 0
+		err := spr.driverRows.Next(dest)
+		if err != nil {
+			spr.lastErr = fmt.Errorf("failed to convert row %d in segment %d: %w", i, spr.nextSegmentIndex, err)
+			return false
+		}
+
+		// Convert driver.Value to interface{}
+		spr.currentSegmentData[i] = make([]interface{}, len(dest))
+		for j, val := range dest {
+			spr.currentSegmentData[i][j] = val
+		}
+	}
+
+	// Reset row index for new segment
+	spr.currentRowInSegment = 0
+	spr.nextSegmentIndex++
+	return len(spr.currentSegmentData) > 0
+}
+
+// Scan copies the columns in the current row into the values pointed at by dest.
+func (spr *spoolingPollingRows) Scan(dest ...any) error {
+	if spr.closed {
+		return io.EOF
+	}
+
+	if spr.currentRowInSegment < 1 || spr.currentRowInSegment > len(spr.currentSegmentData) {
+		spr.lastErr = io.EOF
+		return spr.lastErr
+	}
+
+	// Get the current row (1-indexed because Next() increments before returning)
+	row := spr.currentSegmentData[spr.currentRowInSegment-1]
+
+	if len(dest) != len(row) {
+		spr.lastErr = fmt.Errorf("trino: expected %d destination arguments in Scan, not %d", len(row), len(dest))
+		return spr.lastErr
+	}
+
+	// Convert each value to the appropriate type
+	for i, val := range row {
+		spr.lastErr = convertAssign(dest[i], val)
+		if spr.lastErr != nil {
+			spr.lastErr = fmt.Errorf(`trino: Scan error on column index %d, name %q: %w`, i, spr.columns[i], spr.lastErr)
+			return spr.lastErr
+		}
+	}
+	return nil
+}
+
+// Columns returns the column names.
+func (spr *spoolingPollingRows) Columns() ([]string, error) {
+	return spr.columns, nil
+}
+
+// ColumnTypes returns the column type information.
+func (spr *spoolingPollingRows) ColumnTypes() ([]*PollingColumnType, error) {
+	return spr.columnTypes, nil
+}
+
+// Close closes the rows iterator. Marks the iterator as closed to prevent further use.
+func (spr *spoolingPollingRows) Close() error {
+	spr.closed = true
+	spr.currentSegmentData = nil
+	return nil
+}
+
+// Err returns the error, if any, that was encountered during iteration.
+func (spr *spoolingPollingRows) Err() error {
+	if spr.lastErr != io.EOF {
+		return spr.lastErr
 	}
 	return nil
 }

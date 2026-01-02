@@ -25,9 +25,9 @@ func TestIntegrationPollingSelectQueryNoResult(t *testing.T) {
 	result, err := pollingConn.StartQuery(ctx, "SELECT * FROM system.runtime.nodes WHERE false")
 	require.NoError(t, err)
 
-	rows, _, _, err := collectAllResults(ctx, pollingConn, result)
+	results, err := collectAllResults(ctx, pollingConn, result)
 	require.NoError(t, err)
-	assert.Empty(t, rows)
+	assert.Empty(t, results.rows)
 }
 
 func TestIntegrationPollingSelectFailedQuery(t *testing.T) {
@@ -71,13 +71,13 @@ func TestIntegrationPollingSelectTpch1000(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotEmpty(t, result.QueryID)
 
-	rows, columns, columnTypes, err := collectAllResults(ctx, pollingConn, result)
+	results, err := collectAllResults(ctx, pollingConn, result)
 	require.NoError(t, err)
-	assert.Len(t, rows, 1000)
-	assert.Len(t, columnTypes, 8)
+	assert.Len(t, results.rows, 1000)
+	assert.Len(t, results.colTypeNames, 8)
 
 	expectedColumns := []string{"custkey", "name", "address", "nationkey", "phone", "acctbal", "mktsegment", "comment"}
-	assert.Equal(t, expectedColumns, columns)
+	assert.Equal(t, expectedColumns, results.colNames)
 
 	expectedColumnTypes := []*PollingColumnType{
 		{name: "custkey", databaseType: "BIGINT"},
@@ -92,7 +92,7 @@ func TestIntegrationPollingSelectTpch1000(t *testing.T) {
 
 	// compare everything but the scanType, which is a pointer to a reflect.Type
 	for i := range expectedColumnTypes {
-		actualType := columnTypes[i]
+		actualType := results.colTypes[i]
 		actualType.scanType = nil
 		assert.Equal(t, expectedColumnTypes[i], actualType)
 	}
@@ -185,9 +185,9 @@ func TestIntegrationPollingQueryWithNoResults(t *testing.T) {
 			result, err := pollingConn.StartQuery(ctx, tc.query)
 			require.NoError(t, err)
 
-			rows, _, _, err := collectAllResults(ctx, pollingConn, result)
+			results, err := collectAllResults(ctx, pollingConn, result)
 			require.NoError(t, err)
-			assert.Empty(t, rows, "Expected no data rows for query: %s", tc.query)
+			assert.Empty(t, results.rows, "Expected no data rows for query: %s", tc.query)
 		})
 	}
 }
@@ -232,9 +232,9 @@ func TestIntegrationPollingQueryWithParameters(t *testing.T) {
 			)
 			require.NoError(t, err)
 
-			rows, _, _, err := collectAllResults(ctx, pollingConn, result)
+			results, err := collectAllResults(ctx, pollingConn, result)
 			require.NoError(t, err)
-			assert.Equal(t, tc.expected, rows)
+			assert.Equal(t, tc.expected, results.rows)
 		})
 	}
 }
@@ -259,10 +259,10 @@ func TestIntegrationPollingQueryWithNamedArgs(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	rows, _, _, err := collectAllResults(ctx, pollingConn, result)
+	results, err := collectAllResults(ctx, pollingConn, result)
 	require.NoError(t, err)
-	assert.Len(t, rows, 1)
-	assert.Equal(t, [][]interface{}{{int64(1)}}, rows)
+	assert.Len(t, results.rows, 1)
+	assert.Equal(t, [][]interface{}{{int64(1)}}, results.rows)
 }
 
 // Tests comparing sync (standard SQL) vs polling client results
@@ -279,17 +279,38 @@ func TestIntegrationSyncAndPollingReturnSimilarFormat(t *testing.T) {
 	`
 
 	t.Run("Sync", func(t *testing.T) {
-		columns, columnTypes, rows := executeSync(t, dsn, query)
-		assert.Equal(t, columns, []string{"col1", "col2"})
-		assert.Equal(t, columnTypes, []string{"BIGINT", "VARCHAR"})
-		assert.Equal(t, rows, [][]interface{}{{int64(1), "1"}, {int64(2), "2"}, {int64(3), "3"}})
+		results := executeSync(t, dsn, query)
+		assert.Equal(t, results.colNames, []string{"col1", "col2"})
+		assert.Equal(t, results.colTypeNames, []string{"BIGINT", "VARCHAR"})
+		assert.Equal(t, results.rows, [][]interface{}{{int64(1), "1"}, {int64(2), "2"}, {int64(3), "3"}})
 	})
 
 	t.Run("Polling", func(t *testing.T) {
-		columns, columnTypes, rows := executePolling(t, dsn, query)
-		assert.Equal(t, columns, []string{"col1", "col2"})
-		assert.Equal(t, columnTypes, []string{"BIGINT", "VARCHAR"})
-		assert.Equal(t, rows, [][]interface{}{{int64(1), "1"}, {int64(2), "2"}, {int64(3), "3"}})
+		results := executePolling(t, dsn, query)
+		assert.Equal(t, results.colNames, []string{"col1", "col2"})
+		assert.Equal(t, results.colTypeNames, []string{"BIGINT", "VARCHAR"})
+		assert.Equal(t, results.rows, [][]interface{}{{int64(1), "1"}, {int64(2), "2"}, {int64(3), "3"}})
+	})
+
+	t.Run("Polling with Spooling", func(t *testing.T) {
+		if !spoolingProtocolSupported {
+			t.Skip("Skipping test when spooling protocol is not supported.")
+		}
+
+		// Use a query with >1000 rows to trigger spooling protocol
+		spoolingQuery := `
+			SELECT n as col1, CAST(n as varchar) as col2
+			FROM UNNEST(sequence(1, 1001)) as t(n)
+		`
+
+		results := executePolling(t, dsn, spoolingQuery)
+
+		assert.Equal(t, results.protocol, spooled)
+		assert.Equal(t, results.colNames, []string{"col1", "col2"})
+		assert.Equal(t, results.colTypeNames, []string{"BIGINT", "VARCHAR"})
+		assert.Equal(t, 1001, len(results.rows))
+		assert.Equal(t, []interface{}{int64(1), "1"}, results.rows[0])
+		assert.Equal(t, []interface{}{int64(1001), "1001"}, results.rows[1000])
 	})
 }
 
@@ -366,65 +387,36 @@ func TestIntegrationCompareSyncAndPollingResults(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			syncCols, syncColTypes, syncRows := executeSync(t, dsn, tc.query, tc.args...)
-			pollingCols, pollingColTypes, pollingRows := executePolling(t, dsn, tc.query, tc.args...)
+			sync := executeSync(t, dsn, tc.query, tc.args...)
+			poll := executePolling(t, dsn, tc.query, tc.args...)
 
-			assert.Equal(t, syncCols, pollingCols, "Column names should match")
-			assert.Equal(t, syncColTypes, pollingColTypes, "Column types should match")
-			assert.Equal(t, syncRows, pollingRows, "Rows should match")
+			assert.Equal(t, sync.colNames, poll.colNames, "Column names should match")
+			assert.Equal(t, sync.colTypeNames, poll.colTypeNames, "Column types should match")
+			assert.Equal(t, sync.rows, poll.rows, "Rows should match")
 		})
 	}
 }
 
-// collectAllResults is a helper that polls until the query finishes and collects all results.
-func collectAllResults(ctx context.Context, pc *PollingConn, result *PollingResult) ([][]interface{}, []string, []*PollingColumnType, error) {
-	var err error
-	var allRows [][]interface{}
-	var columns []string
-	var columnTypes []*PollingColumnType
+type protocol string
 
-	for !result.Finished {
-		if result.Rows != nil {
-			// Capture metadata from first result with rows
-			if len(columns) == 0 {
-				columns, _ = result.Rows.Columns()
-				columnTypes, _ = result.Rows.ColumnTypes()
-			}
+const (
+	spooled protocol = "spooled"
+	direct  protocol = "direct"
+)
 
-			rows, err := scanAllRows(result.Rows)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			allRows = append(allRows, rows...)
-		}
-
-		result, err = pc.PollQuery(ctx, result.NextURI)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-	}
-
-	return allRows, columns, columnTypes, nil
+type pollResults struct {
+	colNames     []string
+	colTypeNames []string
+	colTypes     []*PollingColumnType
+	rows         [][]interface{}
+	protocol     protocol
 }
 
-// scanAllRows scans all rows from a PollingRows into [][]interface{}
-func scanAllRows(pr *PollingRows) ([][]interface{}, error) {
-	cols, _ := pr.Columns()
-	var rows [][]interface{}
-
-	for pr.Next() {
-		row := make([]interface{}, len(cols))
-		dest := make([]interface{}, len(cols))
-		for i := range dest {
-			dest[i] = &row[i]
-		}
-		if err := pr.Scan(dest...); err != nil {
-			return nil, err
-		}
-		rows = append(rows, row)
-	}
-
-	return rows, pr.Err()
+type syncResults struct {
+	colNames     []string
+	colTypeNames []string
+	colTypes     []*sql.ColumnType
+	rows         [][]interface{}
 }
 
 // Execute a sync query using standard SQL interface and return its results
@@ -433,7 +425,7 @@ func executeSync(
 	dsn string,
 	query string,
 	args ...interface{},
-) (columns []string, columnTypes []string, rows [][]interface{}) {
+) *syncResults {
 	db, err := sql.Open("trino", dsn)
 	require.NoError(t, err)
 	defer db.Close()
@@ -442,33 +434,34 @@ func executeSync(
 	require.NoError(t, err)
 	defer sqlRows.Close()
 
+	results := syncResults{}
+
 	// Get column names
-	columns, err = sqlRows.Columns()
+	results.colNames, err = sqlRows.Columns()
 	require.NoError(t, err)
 
 	// Get column types
-	sqlColumnTypes, err := sqlRows.ColumnTypes()
+	results.colTypes, err = sqlRows.ColumnTypes()
 	require.NoError(t, err)
-	columnTypes = make([]string, len(sqlColumnTypes))
-	for i, ct := range sqlColumnTypes {
-		columnTypes[i] = ct.DatabaseTypeName()
+	for _, ct := range results.colTypes {
+		results.colTypeNames = append(results.colTypeNames, ct.DatabaseTypeName())
 	}
 
 	// Collect rows
-	rows = make([][]interface{}, 0)
+	results.rows = make([][]interface{}, 0)
 	for sqlRows.Next() {
-		row := make([]interface{}, len(columns))
-		dest := make([]interface{}, len(columns))
+		row := make([]interface{}, len(results.colNames))
+		dest := make([]interface{}, len(results.colNames))
 		for i := range dest {
 			dest[i] = &row[i]
 		}
 		err := sqlRows.Scan(dest...)
 		require.NoError(t, err)
-		rows = append(rows, row)
+		results.rows = append(results.rows, row)
 	}
 	require.NoError(t, sqlRows.Err())
 
-	return columns, columnTypes, rows
+	return &results
 }
 
 // Execute a polling query until completion and return all results
@@ -477,7 +470,7 @@ func executePolling(
 	dsn string,
 	query string,
 	args ...interface{},
-) (columns []string, columnTypes []string, rows [][]interface{}) {
+) *pollResults {
 	pollingConn, err := NewPollingConn(dsn, nil)
 	require.NoError(t, err)
 
@@ -485,14 +478,69 @@ func executePolling(
 	result, err := pollingConn.StartQuery(ctx, query, args...)
 	require.NoError(t, err)
 
-	allRows, cols, colTypes, err := collectAllResults(ctx, pollingConn, result)
+	results, err := collectAllResults(ctx, pollingConn, result)
 	require.NoError(t, err)
 
-	// Convert column types to string names
-	columnTypes = make([]string, len(colTypes))
-	for i, ct := range colTypes {
-		columnTypes[i] = ct.DatabaseTypeName()
+	return results
+}
+
+// collectAllResults is a helper that polls until the query finishes and collects all results.
+func collectAllResults(ctx context.Context, pc *PollingConn, result *PollingResult) (*pollResults, error) {
+	var err error
+
+	results := pollResults{}
+
+	for !result.Finished {
+		if result.Rows != nil {
+			// Capture metadata from first result with rows
+			if len(results.colNames) == 0 {
+				results.colNames, _ = result.Rows.Columns()
+
+				// Convert column types to string names
+				results.colTypes, _ = result.Rows.ColumnTypes()
+				for _, ct := range results.colTypes {
+					results.colTypeNames = append(results.colTypeNames, ct.DatabaseTypeName())
+				}
+
+				if _, ok := result.Rows.(*spoolingPollingRows); ok {
+					results.protocol = spooled
+				} else {
+					results.protocol = direct
+				}
+			}
+
+			rows, err := scanAllRows(result.Rows)
+			if err != nil {
+				return nil, err
+			}
+			results.rows = append(results.rows, rows...)
+		}
+
+		result, err = pc.PollQuery(ctx, result.NextURI)
+		if err != nil {
+			return nil, err
+		}
 	}
 
-	return cols, columnTypes, allRows
+	return &results, nil
+}
+
+// scanAllRows scans all rows from a PollingRows into [][]interface{}
+func scanAllRows(ri PollingRows) ([][]interface{}, error) {
+	cols, _ := ri.Columns()
+	var rows [][]interface{}
+
+	for ri.Next() {
+		row := make([]interface{}, len(cols))
+		dest := make([]interface{}, len(cols))
+		for i := range dest {
+			dest[i] = &row[i]
+		}
+		if err := ri.Scan(dest...); err != nil {
+			return nil, err
+		}
+		rows = append(rows, row)
+	}
+
+	return rows, ri.Err()
 }
