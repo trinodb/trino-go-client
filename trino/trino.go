@@ -2545,7 +2545,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		v = sql.NullInt64{}
 	case "real", "double":
 		v = sql.NullFloat64{}
-	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone", "pgcompatible_date":
 		v = sql.NullTime{}
 	case "map", "hstore", "hstore_csv":
 		v = NullMap{}
@@ -2562,7 +2562,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 			v = NullSliceInt64{}
 		case "real", "double":
 			v = NullSliceFloat64{}
-		case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+		case "date", "time", "time with time zone", "timestamp", "timestamp with time zone", "pgcompatible_date":
 			v = NullSliceTime{}
 		case "map":
 			v = NullSliceMap{}
@@ -2579,7 +2579,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				v = NullSlice2Int64{}
 			case "real", "double":
 				v = NullSlice2Float64{}
-			case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+			case "date", "time", "time with time zone", "timestamp", "timestamp with time zone", "pgcompatible_date":
 				v = NullSlice2Time{}
 			case "map":
 				v = NullSlice2Map{}
@@ -2596,7 +2596,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 					v = NullSlice3Int64{}
 				case "real", "double":
 					v = NullSlice3Float64{}
-				case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+				case "date", "time", "time with time zone", "timestamp", "timestamp with time zone", "pgcompatible_date":
 					v = NullSlice3Time{}
 				case "map":
 					v = NullSlice3Map{}
@@ -2644,7 +2644,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Float64, err
-	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone", "pgcompatible_date":
 		vv, err := scanNullTime(v)
 		if !vv.Valid {
 			return nil, err
