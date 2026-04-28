@@ -28,6 +28,7 @@ import (
 	"reflect"
 	"runtime/debug"
 	"sort"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -83,6 +84,7 @@ func TestParseDSNToConfig(t *testing.T) {
 				DisableExplicitPrepare:     true,
 				ForwardAuthorizationHeader: true,
 				QueryTimeout:               &[]time.Duration{5 * time.Minute}[0],
+				HeartbeatInterval:          &[]time.Duration{2 * time.Minute}[0],
 				Roles:                      map[string]string{"catalog1": "role1", "catalog2": "role2"},
 			},
 		},
@@ -107,6 +109,7 @@ func TestParseDSNToConfig(t *testing.T) {
 				DisableExplicitPrepare:     true,
 				ForwardAuthorizationHeader: true,
 				QueryTimeout:               &[]time.Duration{5 * time.Minute}[0],
+				HeartbeatInterval:          &[]time.Duration{2 * time.Minute}[0],
 			},
 		},
 		{
@@ -160,6 +163,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"explicitPrepare=false&" +
 		"forwardAuthorizationHeader=true&" +
 		"query_timeout=5m30s&" +
+		"heartbeat_interval=45s&" +
 		"roles=catalog1%3Arole1%3Bcatalog2%3Arole2"
 
 	config, err := ParseDSN(complexDSN)
@@ -209,6 +213,8 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, true, config.ForwardAuthorizationHeader)
 	assert.NotNil(t, config.QueryTimeout)
 	assert.Equal(t, 5*time.Minute+30*time.Second, *config.QueryTimeout)
+	assert.NotNil(t, config.HeartbeatInterval)
+	assert.Equal(t, 45*time.Second, *config.HeartbeatInterval)
 	assert.Equal(t, map[string]string{"catalog1": "role1", "catalog2": "role2"}, config.Roles)
 }
 
@@ -526,6 +532,58 @@ func TestQueryTimeout(t *testing.T) {
 
 	want := "https://foobar@localhost:8090?query_timeout=10s&source=trino-go-client"
 	assert.Equal(t, want, dsn)
+}
+
+func TestHeartbeatIntervalDSNParse(t *testing.T) {
+	base := "http://user@127.0.0.1:9"
+
+	for _, tc := range []struct {
+		name    string
+		query   string
+		wantErr string
+	}{
+		{name: "invalid duration", query: "heartbeat_interval=not_a_duration", wantErr: "invalid duration for heartbeat_interval"},
+		{name: "zero", query: "heartbeat_interval=0s", wantErr: "heartbeat_interval must be positive"},
+		{name: "negative", query: "heartbeat_interval=-30s", wantErr: "heartbeat_interval must be positive"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ParseDSN(base + "/?" + tc.query)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
+		})
+	}
+
+	t.Run("valid", func(t *testing.T) {
+		cfg, err := ParseDSN(base + "/?heartbeat_interval=750ms")
+		require.NoError(t, err)
+		require.NotNil(t, cfg.HeartbeatInterval)
+		assert.Equal(t, 750*time.Millisecond, *cfg.HeartbeatInterval)
+	})
+}
+
+func TestHeartbeatIntervalFormatDSNRoundTrip(t *testing.T) {
+	hb := 90 * time.Second
+	c := &Config{
+		ServerURI:         "http://user@localhost:8080",
+		HeartbeatInterval: &hb,
+	}
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+
+	got, err := ParseDSN(dsn)
+	require.NoError(t, err)
+	require.NotNil(t, got.HeartbeatInterval)
+	assert.Equal(t, 90*time.Second, *got.HeartbeatInterval)
+}
+
+func TestHeartbeatIntervalPingRejectsInvalidDSN(t *testing.T) {
+	db, err := sql.Open("trino", "http://user@127.0.0.1:9/?heartbeat_interval=0s")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	err = db.Ping()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "heartbeat_interval must be positive")
 }
 
 func TestRoundTripRetryQueryError(t *testing.T) {
@@ -2604,6 +2662,192 @@ func TestSpoolingProtocolInlineSegmentErrorHandling(t *testing.T) {
 			require.Contains(t, err.Error(), tc.expectedError)
 		})
 	}
+}
+
+func newSpooledSegmentServer(t *testing.T, headHandler func(w http.ResponseWriter, r *http.Request), downloadDelay time.Duration) *httptest.Server {
+	t.Helper()
+	var ts *httptest.Server
+	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "HEAD" {
+			if headHandler != nil {
+				headHandler(w, r)
+			} else {
+				w.WriteHeader(http.StatusOK)
+			}
+			return
+		}
+		// every response updates the connection headers, so that the race
+		// detector sees them being read concurrently by the heartbeat
+		switch r.URL.Path {
+		case "/v1/statement":
+			w.Header().Set(trinoSetSessionHeader, "query_max_run_time=10m")
+			json.NewEncoder(w).Encode(&stmtResponse{
+				ID:      "fake-query",
+				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
+			})
+		case "/v1/statement/20210817_140827_00000_arvdv/1":
+			w.Header().Set(trinoSetCatalogHeader, "memory")
+			json.NewEncoder(w).Encode(&queryResponse{
+				ID:      "fake-query",
+				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/2",
+				Columns: []queryColumn{
+					{
+						Name: "_col0",
+						Type: "integer",
+						TypeSignature: typeSignature{
+							RawType:   "integer",
+							Arguments: []typeArgument{},
+						},
+					},
+				},
+				Data: map[string]interface{}{
+					"encoding": "json",
+					"segments": []map[string]interface{}{
+						{
+							"uri":      ts.URL + "/v1/spooled/download/seg0",
+							"type":     "spooled",
+							"metadata": map[string]interface{}{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1},
+							"ackUri":   ts.URL + "/v1/spooled/ack/seg0",
+							"headers":  map[string]interface{}{},
+						},
+					},
+				},
+			})
+		case "/v1/statement/20210817_140827_00000_arvdv/2":
+			w.Header().Set(trinoSetSessionHeader, "query_max_run_time=20m")
+			json.NewEncoder(w).Encode(&queryResponse{})
+		case "/v1/spooled/download/seg0":
+			if downloadDelay > 0 {
+				time.Sleep(downloadDelay)
+			}
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("[[1000]]"))
+		case "/v1/spooled/ack/seg0":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+		}
+	}))
+	return ts
+}
+
+func TestHeartbeat(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// status returned by the n-th heartbeat; the last one repeats
+		statuses      []int
+		stopAfter     int32
+		atLeast       int32
+		downloadDelay time.Duration
+	}{
+		{
+			name:          "sent while a segment is downloading",
+			statuses:      []int{http.StatusOK},
+			atLeast:       1,
+			downloadDelay: 500 * time.Millisecond,
+		},
+		{
+			name:          "disabled when the coordinator rejects HEAD",
+			statuses:      []int{http.StatusMethodNotAllowed},
+			stopAfter:     1,
+			downloadDelay: 800 * time.Millisecond,
+		},
+		{
+			name:          "disabled when the coordinator does not implement heartbeats",
+			statuses:      []int{http.StatusNotImplemented},
+			stopAfter:     1,
+			downloadDelay: 800 * time.Millisecond,
+		},
+		{
+			name:          "disabled after consecutive failures",
+			statuses:      []int{http.StatusInternalServerError},
+			stopAfter:     maxHeartbeatFailures,
+			downloadDelay: 800 * time.Millisecond,
+		},
+		{
+			// a 404 is transient: it's also returned by a coordinator that
+			// doesn't know the query, e.g. behind a load balancer
+			name:          "retried when the coordinator does not know the query",
+			statuses:      []int{http.StatusNotFound, http.StatusNotFound, http.StatusOK},
+			atLeast:       maxHeartbeatFailures,
+			downloadDelay: 1500 * time.Millisecond,
+		},
+		{
+			name: "failure count reset by a successful heartbeat",
+			statuses: []int{
+				http.StatusInternalServerError, http.StatusInternalServerError, http.StatusOK,
+				http.StatusInternalServerError, http.StatusInternalServerError, http.StatusOK,
+			},
+			atLeast:       2 * maxHeartbeatFailures,
+			downloadDelay: 1500 * time.Millisecond,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts atomic.Int32
+			ts := newSpooledSegmentServer(t, func(w http.ResponseWriter, r *http.Request) {
+				attempt := int(attempts.Add(1))
+				w.WriteHeader(tc.statuses[min(attempt, len(tc.statuses))-1])
+			}, tc.downloadDelay)
+			defer ts.Close()
+
+			db, err := sql.Open("trino", ts.URL+"?heartbeat_interval=100ms")
+			require.NoError(t, err)
+			defer db.Close()
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			defer rows.Close()
+
+			var results []int
+			for rows.Next() {
+				var value int
+				require.NoError(t, rows.Scan(&value))
+				results = append(results, value)
+			}
+			require.NoError(t, rows.Err())
+			assert.Equal(t, []int{1000}, results)
+
+			if tc.stopAfter > 0 {
+				assert.Equal(t, tc.stopAfter, attempts.Load(), "Expected the heartbeat to be disabled")
+				return
+			}
+			assert.GreaterOrEqual(t, attempts.Load(), tc.atLeast, "Expected the heartbeat to keep running")
+		})
+	}
+}
+
+func TestHeartbeatDoesNotDelayClose(t *testing.T) {
+	heartbeatSent := make(chan struct{}, 1)
+	unblockHeartbeat := make(chan struct{})
+	ts := newSpooledSegmentServer(t, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case heartbeatSent <- struct{}{}:
+		default:
+		}
+		<-unblockHeartbeat
+		w.WriteHeader(http.StatusOK)
+	}, 0)
+	defer ts.Close()
+	defer close(unblockHeartbeat)
+
+	db, err := sql.Open("trino", ts.URL+"?heartbeat_interval=50ms")
+	require.NoError(t, err)
+	defer db.Close()
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+
+	require.True(t, rows.Next())
+	select {
+	case <-heartbeatSent:
+	case <-time.NewTimer(5 * time.Second).C:
+		require.Fail(t, "Expected a heartbeat to reach the unresponsive coordinator")
+	}
+
+	start := time.Now()
+	require.NoError(t, rows.Close())
+	assert.Less(t, time.Since(start), time.Second, "Close should cancel the in-flight heartbeat instead of waiting for its timeout")
 }
 
 func TestProtocolErrorHandling(t *testing.T) {
