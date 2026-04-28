@@ -249,6 +249,16 @@ Default:        nil
 
 The `query_timeout` parameter sets a timeout for the query. If the query takes longer than the timeout, it will be cancelled. If it is not set the default context timeout will be used.
 
+##### `heartbeat_interval`
+
+```
+Type:           time.Duration
+Valid values:   positive duration string (e.g. 30s, 1m)
+Default:        unset (client uses 30s between spooling heartbeats)
+```
+
+The `heartbeat_interval` parameter sets how often the client sends a **HEAD** heartbeat to the current `nextUri` while a **spooled** query is in progress. It applies to the whole connection (same idea as session-scoped client settings in other Trino clients). Only used when the server uses the spooling protocol.
+
 ##### `explicitPrepare`
 
 ```
@@ -425,6 +435,8 @@ following types:
 The client supports the [Trino spooling protocol](https://trino.io/docs/current/client/client-protocol.html#spooling-protocol), which enables efficient retrieval of large result sets by downloading data in segments, optionally in parallel and out-of-order.
 
 If the Trino server has the spooling protocol enabled, the client will use it by default with the `json` encoding.
+
+While a spooled query is in progress, the client sends periodic **HEAD** requests to the current `nextUri` (same URL used for result pages) so the coordinator treats the client as still active, which helps avoid query abandonment when result consumption is slow. The server must support this endpoint (Trino 475+).
 
 You can configure other encodings:
 
