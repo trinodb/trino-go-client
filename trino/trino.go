@@ -167,6 +167,9 @@ const (
 	defaulttrinoEncoding           = "json"
 	defaultSourceName              = "trino-go-client"
 	defaultKerberosServiceName     = "trino"
+	maxHeartbeatFailures           = 3
+	heartbeatRequestTimeout        = 10 * time.Second
+	defaultHeartbeatInterval       = 30 * time.Second
 )
 
 var (
@@ -210,6 +213,7 @@ type Config struct {
 	DisableExplicitPrepare     bool              // Disable the use of explicit prepared statements (optional, default is false)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
+	HeartbeatInterval          *time.Duration    // Interval between spooling-protocol HEAD heartbeats (optional; DSN: heartbeat_interval)
 	Roles                      map[string]string // Roles (optional)
 }
 
@@ -298,6 +302,17 @@ func ParseDSN(dsn string) (*Config, error) {
 			return nil, fmt.Errorf("trino: invalid timeout for query_timeout: %q", queryTimeoutStr)
 		}
 		config.QueryTimeout = &queryTimeout
+	}
+
+	if heartbeatStr := query.Get("heartbeat_interval"); heartbeatStr != "" {
+		heartbeat, err := time.ParseDuration(heartbeatStr)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid duration for heartbeat_interval: %q", heartbeatStr)
+		}
+		if heartbeat <= 0 {
+			return nil, fmt.Errorf("trino: heartbeat_interval must be positive, got %s", heartbeatStr)
+		}
+		config.HeartbeatInterval = &heartbeat
 	}
 
 	if kerberosParam := query.Get(kerberosEnabledConfig); kerberosParam != "" {
@@ -438,6 +453,10 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add("query_timeout", c.QueryTimeout.String())
 	}
 
+	if c.HeartbeatInterval != nil {
+		query.Add("heartbeat_interval", c.HeartbeatInterval.String())
+	}
+
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
 		"clientTags":         strings.Join(c.ClientTags, commaSeparator),
@@ -458,9 +477,12 @@ func (c *Config) FormatDSN() (string, error) {
 
 // Conn is a Trino connection.
 type Conn struct {
-	baseURL                    string
-	auth                       *url.Userinfo
-	httpClient                 http.Client
+	baseURL    string
+	auth       *url.Userinfo
+	httpClient http.Client
+	// httpHeadersMu guards httpHeaders, which the spooling heartbeat reads
+	// while the query polling updates it from the server responses
+	httpHeadersMu              sync.RWMutex
 	httpHeaders                http.Header
 	kerberosEnabled            bool
 	kerberosClient             *client.Client
@@ -470,6 +492,7 @@ type Conn struct {
 	useExplicitPrepare         bool
 	forwardAuthorizationHeader bool
 	queryTimeout               *time.Duration
+	heartbeatInterval          *time.Duration
 }
 
 var (
@@ -583,6 +606,7 @@ func newConn(dsn string) (*Conn, error) {
 		useExplicitPrepare:         !conf.DisableExplicitPrepare,
 		forwardAuthorizationHeader: conf.ForwardAuthorizationHeader,
 		queryTimeout:               conf.QueryTimeout,
+		heartbeatInterval:          conf.HeartbeatInterval,
 	}
 
 	var user string
@@ -764,9 +788,7 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 		}
 	}
 
-	for k, v := range c.httpHeaders {
-		req.Header[k] = v
-	}
+	c.copyHTTPHeaders(req.Header)
 	for k, v := range hs {
 		req.Header[k] = v
 	}
@@ -794,36 +816,7 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 			}
 			switch resp.StatusCode {
 			case http.StatusOK:
-				for src, dst := range responseToRequestHeaderMap {
-					if v := resp.Header.Get(src); v != "" {
-						c.httpHeaders.Set(dst, v)
-					}
-				}
-				if v := resp.Header.Get(trinoAddedPrepareHeader); v != "" {
-					c.httpHeaders.Add(preparedStatementHeader, v)
-				}
-				if v := resp.Header.Get(trinoDeallocatedPrepareHeader); v != "" {
-					values := c.httpHeaders.Values(preparedStatementHeader)
-					c.httpHeaders.Del(preparedStatementHeader)
-					for _, v2 := range values {
-						if !strings.HasPrefix(v2, v+"=") {
-							c.httpHeaders.Add(preparedStatementHeader, v2)
-						}
-					}
-				}
-				if v := resp.Header.Get(trinoSetSessionHeader); v != "" {
-					c.httpHeaders.Add(trinoSessionHeader, v)
-				}
-
-				if v := resp.Header.Get(trinoClearSessionHeader); v != "" {
-					values := c.httpHeaders.Values(trinoSessionHeader)
-					c.httpHeaders.Del(trinoSessionHeader)
-					for _, v2 := range values {
-						if !strings.HasPrefix(v2, v+"=") {
-							c.httpHeaders.Add(trinoSessionHeader, v2)
-						}
-					}
-				}
+				c.applyResponseHeaders(resp.Header)
 				for _, name := range unsupportedResponseHeaders {
 					if v := resp.Header.Get(name); v != "" {
 						return nil, ErrUnsupportedHeader
@@ -843,6 +836,61 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 			}
 		}
 	}
+}
+
+func (c *Conn) copyHTTPHeaders(dst http.Header) {
+	c.httpHeadersMu.RLock()
+	defer c.httpHeadersMu.RUnlock()
+	for k, v := range c.httpHeaders {
+		dst[k] = slices.Clone(v)
+	}
+}
+
+func (c *Conn) applyResponseHeaders(headers http.Header) {
+	c.httpHeadersMu.Lock()
+	defer c.httpHeadersMu.Unlock()
+	for src, dst := range responseToRequestHeaderMap {
+		if v := headers.Get(src); v != "" {
+			c.httpHeaders.Set(dst, v)
+		}
+	}
+	if v := headers.Get(trinoAddedPrepareHeader); v != "" {
+		c.httpHeaders.Add(preparedStatementHeader, v)
+	}
+	if v := headers.Get(trinoDeallocatedPrepareHeader); v != "" {
+		values := c.httpHeaders.Values(preparedStatementHeader)
+		c.httpHeaders.Del(preparedStatementHeader)
+		for _, v2 := range values {
+			if !strings.HasPrefix(v2, v+"=") {
+				c.httpHeaders.Add(preparedStatementHeader, v2)
+			}
+		}
+	}
+	if v := headers.Get(trinoSetSessionHeader); v != "" {
+		c.httpHeaders.Add(trinoSessionHeader, v)
+	}
+
+	if v := headers.Get(trinoClearSessionHeader); v != "" {
+		values := c.httpHeaders.Values(trinoSessionHeader)
+		c.httpHeaders.Del(trinoSessionHeader)
+		for _, v2 := range values {
+			if !strings.HasPrefix(v2, v+"=") {
+				c.httpHeaders.Add(trinoSessionHeader, v2)
+			}
+		}
+	}
+}
+
+func (c *Conn) setHTTPHeader(name, value string) {
+	c.httpHeadersMu.Lock()
+	defer c.httpHeadersMu.Unlock()
+	c.httpHeaders.Set(name, value)
+}
+
+func (c *Conn) httpHeaderValues(name string) []string {
+	c.httpHeadersMu.RLock()
+	defer c.httpHeadersMu.RUnlock()
+	return slices.Clone(c.httpHeaders.Values(name))
 }
 
 // ErrQueryFailed indicates that a query to Trino failed.
@@ -904,6 +952,10 @@ type driverStmt struct {
 	errors                        chan error
 	doneCh                        chan struct{}
 	segmentDispatcherDoneCh       chan struct{}
+	heartbeatInterval             time.Duration
+	heartbeatNextURICh            chan string
+	cancelHeartbeat               context.CancelFunc
+	waitHeartbeat                 sync.WaitGroup
 }
 
 type segmentToDecode struct {
@@ -983,6 +1035,11 @@ func (st *driverStmt) Close() error {
 
 	st.waitSegmentDecodersWorkers.Wait()
 
+	if st.cancelHeartbeat != nil {
+		st.cancelHeartbeat()
+	}
+	st.waitHeartbeat.Wait()
+
 	close(st.nextURIs)
 	close(st.errors)
 
@@ -994,6 +1051,7 @@ func (st *driverStmt) Close() error {
 	st.segmentsToProccess = nil
 	st.decodedSegments = nil
 	st.spoolingRowsChannel = nil
+	st.cancelHeartbeat = nil
 
 	return nil
 }
@@ -1252,7 +1310,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				}
 
 				if arg.Name == trinoRoleHeader {
-					st.conn.httpHeaders.Set(trinoRoleHeader, headerValue)
+					st.conn.setHTTPHeader(trinoRoleHeader, headerValue)
 				}
 
 				hs.Add(arg.Name, headerValue)
@@ -1263,7 +1321,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				}
 
 				if st.conn.useExplicitPrepare && hs.Get(preparedStatementHeader) == "" {
-					for _, v := range st.conn.httpHeaders.Values(preparedStatementHeader) {
+					for _, v := range st.conn.httpHeaderValues(preparedStatementHeader) {
 						hs.Add(preparedStatementHeader, v)
 					}
 					hs.Add(preparedStatementHeader, preparedStatementName+"="+url.QueryEscape(st.query))
@@ -2081,6 +2139,7 @@ func (qr *driverRows) fetch() error {
 			case map[string]interface{}:
 				// spooling protocol
 				qr.stmt.startSpoolingProtocolWorkers(qr.ctx)
+				qr.stmt.sendHeartbeatURI(qresp.NextURI)
 				qr.startOrderedSegmentStreamer()
 
 				err := qr.queueSpoolingSegments(data)
@@ -2120,6 +2179,12 @@ func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
 		st.spoolingMaxOutOfOrderSegments = defaultallowedOutOfOrder
 	}
 
+	if st.conn.heartbeatInterval != nil {
+		st.heartbeatInterval = *st.conn.heartbeatInterval
+	} else {
+		st.heartbeatInterval = defaultHeartbeatInterval
+	}
+
 	downloadSegmentsCtx, cancelDownloadWorkers := context.WithCancel(context.WithoutCancel(ctx))
 	st.cancelDownloadWorkers = cancelDownloadWorkers
 	decodeSegmentCtx, cancelDecodersWorkers := context.WithCancel(context.WithoutCancel(ctx))
@@ -2134,9 +2199,98 @@ func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
 	st.segmentThrottleCh = make(chan struct{}, st.spoolingMaxOutOfOrderSegments)
 	st.decodedSegments = make(chan decodedSegment)
 
+	st.heartbeatNextURICh = make(chan string, 1)
+
 	st.startSegmentDispatcher()
 	st.startDownloadSegmentsWorkers(downloadSegmentsCtx)
 	st.startSegmentsDecodersWorkers(decodeSegmentCtx)
+	st.startHeartbeat(ctx)
+}
+
+func (st *driverStmt) sendHeartbeatURI(uri string) {
+	if uri == "" {
+		return
+	}
+	// Non-blocking: drain any old value, then send the new one.
+	select {
+	case <-st.heartbeatNextURICh:
+	default:
+	}
+	select {
+	case st.heartbeatNextURICh <- uri:
+	default:
+	}
+}
+
+func (st *driverStmt) startHeartbeat(ctx context.Context) {
+	ticker := time.NewTicker(st.heartbeatInterval)
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
+	st.cancelHeartbeat = cancelHeartbeat
+	st.waitHeartbeat.Add(1)
+
+	go func() {
+		defer st.waitHeartbeat.Done()
+		defer ticker.Stop()
+		var currentNextURI string
+		var consecutiveFailures int
+
+		for {
+			select {
+			case uri := <-st.heartbeatNextURICh:
+				currentNextURI = uri
+
+			case <-ticker.C:
+				if currentNextURI == "" {
+					continue
+				}
+
+				reqCtx, cancel := context.WithTimeout(heartbeatCtx, heartbeatRequestTimeout)
+				hs := make(http.Header)
+				hs.Add(trinoUserHeader, st.user)
+				req, err := st.conn.newRequest(reqCtx, "HEAD", currentNextURI, nil, hs)
+				if err != nil {
+					cancel()
+					consecutiveFailures++
+					if consecutiveFailures >= maxHeartbeatFailures {
+						return
+					}
+					continue
+				}
+
+				resp, err := st.conn.httpClient.Do(req)
+				cancel()
+				if err != nil {
+					consecutiveFailures++
+					if consecutiveFailures >= maxHeartbeatFailures {
+						return
+					}
+					continue
+				}
+				resp.Body.Close()
+
+				switch resp.StatusCode {
+				case http.StatusOK:
+					consecutiveFailures = 0
+				case http.StatusMethodNotAllowed, http.StatusNotImplemented:
+					// the coordinator doesn't support heartbeats; a 404 is not
+					// conclusive, since it's also returned by a coordinator
+					// that doesn't know the query, e.g. behind a load balancer
+					return
+				default:
+					consecutiveFailures++
+					if consecutiveFailures >= maxHeartbeatFailures {
+						return
+					}
+				}
+
+			case <-heartbeatCtx.Done():
+				return
+
+			case <-st.doneCh:
+				return
+			}
+		}
+	}()
 }
 
 func (st *driverStmt) startSegmentDispatcher() {
@@ -2305,6 +2459,7 @@ func (qr *driverRows) proccessSpollingSegments() {
 					return
 				}
 
+				qr.stmt.sendHeartbeatURI(qresp.NextURI)
 				err = qr.initColumns(&qresp)
 				if err != nil {
 					qr.stmt.errors <- err
