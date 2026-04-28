@@ -167,6 +167,9 @@ const (
 	defaulttrinoEncoding           = "json"
 	defaultSourceName              = "trino-go-client"
 	defaultKerberosServiceName     = "trino"
+	maxHeartbeatFailures           = 3
+	heartbeatRequestTimeout        = 10 * time.Second
+	defaultHeartbeatInterval       = 30 * time.Second
 )
 
 var (
@@ -210,6 +213,7 @@ type Config struct {
 	DisableExplicitPrepare     bool              // Disable the use of explicit prepared statements (optional, default is false)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
+	HeartbeatInterval          *time.Duration    // Interval between spooling-protocol HEAD heartbeats (optional; DSN: heartbeat_interval)
 	Roles                      map[string]string // Roles (optional)
 }
 
@@ -298,6 +302,17 @@ func ParseDSN(dsn string) (*Config, error) {
 			return nil, fmt.Errorf("trino: invalid timeout for query_timeout: %q", queryTimeoutStr)
 		}
 		config.QueryTimeout = &queryTimeout
+	}
+
+	if heartbeatStr := query.Get("heartbeat_interval"); heartbeatStr != "" {
+		heartbeat, err := time.ParseDuration(heartbeatStr)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid duration for heartbeat_interval: %q", heartbeatStr)
+		}
+		if heartbeat <= 0 {
+			return nil, fmt.Errorf("trino: heartbeat_interval must be positive, got %s", heartbeatStr)
+		}
+		config.HeartbeatInterval = &heartbeat
 	}
 
 	if kerberosParam := query.Get(kerberosEnabledConfig); kerberosParam != "" {
@@ -438,6 +453,10 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add("query_timeout", c.QueryTimeout.String())
 	}
 
+	if c.HeartbeatInterval != nil {
+		query.Add("heartbeat_interval", c.HeartbeatInterval.String())
+	}
+
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
 		"clientTags":         strings.Join(c.ClientTags, commaSeparator),
@@ -470,6 +489,7 @@ type Conn struct {
 	useExplicitPrepare         bool
 	forwardAuthorizationHeader bool
 	queryTimeout               *time.Duration
+	heartbeatInterval          *time.Duration
 }
 
 var (
@@ -583,6 +603,7 @@ func newConn(dsn string) (*Conn, error) {
 		useExplicitPrepare:         !conf.DisableExplicitPrepare,
 		forwardAuthorizationHeader: conf.ForwardAuthorizationHeader,
 		queryTimeout:               conf.QueryTimeout,
+		heartbeatInterval:          conf.HeartbeatInterval,
 	}
 
 	var user string
@@ -904,6 +925,9 @@ type driverStmt struct {
 	errors                        chan error
 	doneCh                        chan struct{}
 	segmentDispatcherDoneCh       chan struct{}
+	heartbeatInterval             time.Duration
+	heartbeatNextURICh            chan string
+	waitHeartbeat                 sync.WaitGroup
 }
 
 type segmentToDecode struct {
@@ -983,6 +1007,11 @@ func (st *driverStmt) Close() error {
 
 	st.waitSegmentDecodersWorkers.Wait()
 
+	st.waitHeartbeat.Wait()
+	if st.heartbeatNextURICh != nil {
+		close(st.heartbeatNextURICh)
+	}
+
 	close(st.nextURIs)
 	close(st.errors)
 
@@ -994,6 +1023,7 @@ func (st *driverStmt) Close() error {
 	st.segmentsToProccess = nil
 	st.decodedSegments = nil
 	st.spoolingRowsChannel = nil
+	st.heartbeatNextURICh = nil
 
 	return nil
 }
@@ -2081,6 +2111,7 @@ func (qr *driverRows) fetch() error {
 			case map[string]interface{}:
 				// spooling protocol
 				qr.stmt.startSpoolingProtocolWorkers(qr.ctx)
+				qr.stmt.sendHeartbeatURI(qresp.NextURI)
 				qr.startOrderedSegmentStreamer()
 
 				err := qr.queueSpoolingSegments(data)
@@ -2120,6 +2151,12 @@ func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
 		st.spoolingMaxOutOfOrderSegments = defaultallowedOutOfOrder
 	}
 
+	if st.conn.heartbeatInterval != nil {
+		st.heartbeatInterval = *st.conn.heartbeatInterval
+	} else {
+		st.heartbeatInterval = defaultHeartbeatInterval
+	}
+
 	downloadSegmentsCtx, cancelDownloadWorkers := context.WithCancel(context.WithoutCancel(ctx))
 	st.cancelDownloadWorkers = cancelDownloadWorkers
 	decodeSegmentCtx, cancelDecodersWorkers := context.WithCancel(context.WithoutCancel(ctx))
@@ -2134,9 +2171,93 @@ func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
 	st.segmentThrottleCh = make(chan struct{}, st.spoolingMaxOutOfOrderSegments)
 	st.decodedSegments = make(chan decodedSegment)
 
+	st.heartbeatNextURICh = make(chan string, 1)
+
 	st.startSegmentDispatcher()
 	st.startDownloadSegmentsWorkers(downloadSegmentsCtx)
 	st.startSegmentsDecodersWorkers(decodeSegmentCtx)
+	st.startHeartbeat(ctx)
+}
+
+func (st *driverStmt) sendHeartbeatURI(uri string) {
+	if uri == "" {
+		return
+	}
+	// Non-blocking: drain any old value, then send the new one.
+	select {
+	case <-st.heartbeatNextURICh:
+	default:
+	}
+	select {
+	case st.heartbeatNextURICh <- uri:
+	default:
+	}
+}
+
+func (st *driverStmt) startHeartbeat(ctx context.Context) {
+	ticker := time.NewTicker(st.heartbeatInterval)
+	st.waitHeartbeat.Add(1)
+
+	go func() {
+		defer st.waitHeartbeat.Done()
+		defer ticker.Stop()
+		var currentNextURI string
+		var consecutiveFailures int
+
+		for {
+			select {
+			case uri, ok := <-st.heartbeatNextURICh:
+				if !ok {
+					return
+				}
+				currentNextURI = uri
+
+			case <-ticker.C:
+				if currentNextURI == "" {
+					continue
+				}
+
+				reqCtx, cancel := context.WithTimeout(ctx, heartbeatRequestTimeout)
+				hs := make(http.Header)
+				hs.Add(trinoUserHeader, st.user)
+				req, err := st.conn.newRequest(reqCtx, "HEAD", currentNextURI, nil, hs)
+				if err != nil {
+					cancel()
+					consecutiveFailures++
+					if consecutiveFailures >= maxHeartbeatFailures {
+						return
+					}
+					continue
+				}
+
+				resp, err := st.conn.httpClient.Do(req)
+				cancel()
+				if err != nil {
+					consecutiveFailures++
+					if consecutiveFailures >= maxHeartbeatFailures {
+						return
+					}
+					continue
+				}
+				resp.Body.Close()
+
+				switch resp.StatusCode {
+				case http.StatusOK:
+					consecutiveFailures = 0
+				case http.StatusNotFound, http.StatusMethodNotAllowed:
+					return
+				default:
+					consecutiveFailures++
+					if consecutiveFailures >= maxHeartbeatFailures {
+						return
+					}
+				}
+
+			case <-st.doneCh:
+				return
+			}
+		}
+	}()
 }
 
 func (st *driverStmt) startSegmentDispatcher() {
@@ -2305,6 +2426,7 @@ func (qr *driverRows) proccessSpollingSegments() {
 					return
 				}
 
+				qr.stmt.sendHeartbeatURI(qresp.NextURI)
 				err = qr.initColumns(&qresp)
 				if err != nil {
 					qr.stmt.errors <- err

@@ -308,7 +308,7 @@ func setupLocalStack(pool *dt.Pool, networkID string) (*dt.Resource, error) {
 	localstackResource, err := pool.RunWithOptions(&dt.RunOptions{
 		Name:       DockerLocalStackName,
 		Repository: "localstack/localstack",
-		Tag:        "latest",
+		Tag:        "4.14.0",
 		Env: []string{
 			"SERVICES=s3",
 			"region_name=us-east-1",
