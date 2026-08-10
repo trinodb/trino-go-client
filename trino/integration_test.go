@@ -308,7 +308,9 @@ func setupLocalStack(pool *dt.Pool, networkID string) (*dt.Resource, error) {
 	localstackResource, err := pool.RunWithOptions(&dt.RunOptions{
 		Name:       DockerLocalStackName,
 		Repository: "localstack/localstack",
-		Tag:        "latest",
+		// Pinned: from the 2026.x line on, the image refuses to start without a
+		// LOCALSTACK_AUTH_TOKEN. 4.14 is the last release that runs license-free.
+		Tag: "4.14",
 		Env: []string{
 			"SERVICES=s3",
 			"region_name=us-east-1",
