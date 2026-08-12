@@ -228,6 +228,9 @@ func ParseDSN(dsn string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid DSN: %w", err)
 	}
+	if err := requireTLSForPassword(serverURL); err != nil {
+		return nil, err
+	}
 
 	query := serverURL.Query()
 	config := &Config{}
@@ -340,6 +343,16 @@ func ParseDSN(dsn string) (*Config, error) {
 	return config, nil
 }
 
+func requireTLSForPassword(serverURL *url.URL) error {
+	if serverURL.User == nil {
+		return nil
+	}
+	if pass, _ := serverURL.User.Password(); pass != "" && serverURL.Scheme != "https" {
+		return fmt.Errorf("trino: TLS/SSL is required for authentication with username and password")
+	}
+	return nil
+}
+
 func parseMapParameter(value, paramName, entrySeparator, keyValueSeparator string) (map[string]string, error) {
 	result := make(map[string]string)
 	for _, entry := range strings.Split(value, entrySeparator) {
@@ -357,6 +370,9 @@ func (c *Config) FormatDSN() (string, error) {
 
 	serverURL, err := url.Parse(c.ServerURI)
 	if err != nil {
+		return "", err
+	}
+	if err := requireTLSForPassword(serverURL); err != nil {
 		return "", err
 	}
 	var sessionkv []string
