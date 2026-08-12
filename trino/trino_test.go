@@ -212,6 +212,48 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, map[string]string{"catalog1": "role1", "catalog2": "role2"}, config.Roles)
 }
 
+func TestParseDSNPasswordRequiresTLS(t *testing.T) {
+	tests := []struct {
+		name    string
+		dsn     string
+		wantErr string
+	}{
+		{
+			name:    "http with password",
+			dsn:     "http://user:secret@localhost:8080",
+			wantErr: "trino: TLS/SSL is required for authentication with username and password",
+		},
+		{
+			name: "http with username only",
+			dsn:  "http://user@localhost:8080",
+		},
+		{
+			name: "https with password",
+			dsn:  "https://user:secret@localhost:8080",
+		},
+		{
+			name: "http with empty password",
+			dsn:  "http://user:@localhost:8080",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseDSN(tt.dsn)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			assert.EqualError(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestFormatDSNPasswordRequiresTLS(t *testing.T) {
+	c := &Config{ServerURI: "http://user:secret@localhost:8080"}
+	_, err := c.FormatDSN()
+	assert.EqualError(t, err, "trino: TLS/SSL is required for authentication with username and password")
+}
+
 func TestConfigFormatDSNTags(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -488,6 +530,7 @@ func TestConnErrorDSN(t *testing.T) {
 	}{
 		{Name: "malformed", DSN: "://"},
 		{Name: "unknown_client", DSN: "http://localhost?custom_client=unknown"},
+		{Name: "http_password", DSN: "http://user:secret@localhost:8080"},
 	}
 
 	for _, tc := range testcases {
