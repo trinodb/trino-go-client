@@ -21,6 +21,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -3686,6 +3687,43 @@ func TestForwardAuthorizationHeader(t *testing.T) {
 	require.Equal(t, "Bearer token", captureAuthHeader, "Authorization header is incorrect")
 
 	assert.NoError(t, db.Close())
+}
+
+func TestForwardAuthorizationHeaderDisabled(t *testing.T) {
+	var capturedQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		capturedQuery = string(body)
+	}))
+
+	t.Cleanup(ts.Close)
+
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	_, err = db.Query("SELECT ?", sql.Named("accessToken", "token"))
+	assert.ErrorIs(t, err, ErrForwardAuthorizationHeaderNotEnabled)
+	assert.NotContains(t, capturedQuery, "token", "the access token must never reach the query text")
+}
+
+func TestForwardAuthorizationHeaderNonStringToken(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	t.Cleanup(ts.Close)
+
+	db, err := sql.Open("trino", ts.URL+"?forwardAuthorizationHeader=true")
+	require.NoError(t, err)
+
+	t.Cleanup(func() {
+		assert.NoError(t, db.Close())
+	})
+
+	_, err = db.Query("SELECT ?", sql.Named("accessToken", 42))
+	assert.EqualError(t, err, "trino: accessToken must be a string, got int64")
 }
 
 func TestQueryTimeoutDeadline(t *testing.T) {
