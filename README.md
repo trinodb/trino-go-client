@@ -97,6 +97,10 @@ This driver supports forwarding authorization headers by adding a [NamedArg](htt
 
 When enabled, this configuration will override the `AccessToken` set in the `Config` struct.
 
+Using the `accessToken` named argument without enabling `ForwardAuthorizationHeader` returns an
+error, so the token is never sent as part of the query text, where Trino would persist it in the
+query history.
+
 
 #### System access control and per-query user information
 

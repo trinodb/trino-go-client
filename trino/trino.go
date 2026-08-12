@@ -109,6 +109,10 @@ var (
 
 	// ErrInvalidProgressCallbackHeader indicates that server did not get valid headers for progress callback
 	ErrInvalidProgressCallbackHeader = errors.New("trino: both " + trinoProgressCallbackParam + " and " + trinoProgressCallbackPeriodParam + " must be set when using progress callback")
+
+	// ErrForwardAuthorizationHeaderNotEnabled indicates that the accessToken named argument was used
+	// without enabling forwarding, which would otherwise send the token as part of the query text.
+	ErrForwardAuthorizationHeaderNotEnabled = errors.New("trino: " + accessTokenConfig + " named argument requires " + forwardAuthorizationHeaderConfig + " to be enabled")
 )
 
 const (
@@ -1212,8 +1216,14 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				continue
 			}
 
-			if st.conn.forwardAuthorizationHeader && arg.Name == accessTokenConfig {
-				token := arg.Value.(string)
+			if arg.Name == accessTokenConfig {
+				if !st.conn.forwardAuthorizationHeader {
+					return nil, ErrForwardAuthorizationHeaderNotEnabled
+				}
+				token, ok := arg.Value.(string)
+				if !ok {
+					return nil, fmt.Errorf("trino: %s must be a string, got %T", accessTokenConfig, arg.Value)
+				}
 				hs.Add(authorizationHeader, getAuthorization(token))
 				continue
 			}
