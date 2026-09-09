@@ -3177,6 +3177,36 @@ func TestTypeConversion(t *testing.T) {
 			},
 		},
 		{
+			DataType:                   "number",
+			RawType:                    "number",
+			ResponseUnmarshalledSample: "3.1415926535897932384626433832795028841971693993751",
+			ExpectedGoValue:            "3.1415926535897932384626433832795028841971693993751",
+		},
+		{
+			DataType:                   "number",
+			RawType:                    "number",
+			ResponseUnmarshalledSample: "12345678901234567890123456789012345678901234567890",
+			ExpectedGoValue:            "12345678901234567890123456789012345678901234567890",
+		},
+		{
+			DataType:                   "number",
+			RawType:                    "number",
+			ResponseUnmarshalledSample: "NaN",
+			ExpectedGoValue:            "NaN",
+		},
+		{
+			DataType:                   "number",
+			RawType:                    "number",
+			ResponseUnmarshalledSample: "Infinity",
+			ExpectedGoValue:            "Infinity",
+		},
+		{
+			DataType:                   "number",
+			RawType:                    "number",
+			ResponseUnmarshalledSample: "-Infinity",
+			ExpectedGoValue:            "-Infinity",
+		},
+		{
 			DataType:                   "Geometry",
 			RawType:                    "Geometry",
 			ResponseUnmarshalledSample: "Point (0 0)",
