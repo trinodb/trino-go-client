@@ -1413,6 +1413,55 @@ func TestSpoolingWorkersHigherThenAllowedOutOfOrderSegments(t *testing.T) {
 	}
 }
 
+func TestIntgrationNumberType(t *testing.T) {
+	version, err := strconv.Atoi(*trinoImageTagFlag)
+	if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 480) {
+		t.Skip("Skipping test when using a custom integration server.")
+	}
+
+	db := integrationOpen(t)
+	defer db.Close()
+
+	rows, err := db.Query("SELECT NUMBER '3.14159' AS num, NUMBER 'NaN' as nan_val, CAST(NULL AS NUMBER) as null_num")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	columnTypes, err := rows.ColumnTypes()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, col := range columnTypes {
+		if col.Name() == "null_num" {
+			continue
+		}
+		if col.DatabaseTypeName() != "NUMBER" {
+			t.Errorf("expected DatabaseTypeName Number for column %s, got %s", col.Name(), col.DatabaseTypeName())
+		}
+	}
+
+	if !rows.Next() {
+		t.Fatal("expected at least one row")
+	}
+
+	var num, nanVal sql.NullString
+	var nullNum sql.NullString
+	if err := rows.Scan(&num, &nanVal, &nullNum); err != nil {
+		t.Fatal(err)
+	}
+
+	if !num.Valid || num.String != "3.14159" {
+		t.Errorf("expected num to be 3.14159, got %s", num.String)
+	}
+
+	if !nanVal.Valid || nanVal.String != "NaN" {
+		t.Errorf("expected nanVal to be NaN, got %s", nanVal.String)
+	}
+
+}
+
 func TestIntegrationQueryContext(t *testing.T) {
 	tests := []struct {
 		name           string

@@ -381,7 +381,7 @@ When reading response rows, the driver supports most Trino data types, except:
   supports). If a query returns columns defined with a greater precision,
   values are trimmed to 9 decimal digits. Use `CAST` to reduce the returned
   precision, or convert the value to a string that then can be parsed manually.
-* `DECIMAL` - returned as string
+* `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use `sql.NullString` for nullable columns
 * `IPADDRESS` - returned as string
 * `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string
 * `UUID` - returned as string
