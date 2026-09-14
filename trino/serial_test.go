@@ -187,6 +187,16 @@ func TestSerial(t *testing.T) {
 			expectedSerial: "INTERVAL '-10.005' SECOND",
 		},
 		{
+			name:           "negative duration shorter than a second",
+			value:          -500 * time.Millisecond,
+			expectedSerial: "INTERVAL '-0.5' SECOND",
+		},
+		{
+			name:           "negative duration of a few milliseconds",
+			value:          -5 * time.Millisecond,
+			expectedSerial: "INTERVAL '-0.005' SECOND",
+		},
+		{
 			name:           "minute duration",
 			value:          10 * time.Minute,
 			expectedSerial: "INTERVAL '10' MINUTE",

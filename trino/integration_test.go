@@ -1060,6 +1060,25 @@ func TestIntegrationArgsConversion(t *testing.T) {
 	}
 }
 
+func TestIntegrationIntervalArgs(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+	for _, tc := range []struct {
+		arg     time.Duration
+		literal string
+	}{
+		{-500 * time.Millisecond, "INTERVAL '-0.5' SECOND"},
+		{-5 * time.Millisecond, "INTERVAL '-0.005' SECOND"},
+		{-(10*time.Second + 5*time.Millisecond), "INTERVAL '-10.005' SECOND"},
+		{500 * time.Millisecond, "INTERVAL '0.5' SECOND"},
+	} {
+		var equal bool
+		err := db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal)
+		require.NoError(t, err, tc.literal)
+		require.True(t, equal, "%v did not round-trip as %s", tc.arg, tc.literal)
+	}
+}
+
 func TestIntegrationNoResults(t *testing.T) {
 	db := integrationOpen(t)
 	rows, err := db.Query("SELECT 1 LIMIT 0")
