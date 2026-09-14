@@ -122,6 +122,41 @@ func TestSerial(t *testing.T) {
 			expectedSerial: "10",
 		},
 		{
+			name:           "Numeric with sign, fraction and exponent",
+			value:          Numeric("-1.5e+3"),
+			expectedSerial: "-1.5e+3",
+		},
+		{
+			name:           "Numeric with leading dot",
+			value:          Numeric(".5"),
+			expectedSerial: ".5",
+		},
+		{
+			name:          "Numeric NaN",
+			value:         Numeric("NaN"),
+			expectedError: true,
+		},
+		{
+			name:          "Numeric infinity",
+			value:         Numeric("-Inf"),
+			expectedError: true,
+		},
+		{
+			name:          "Numeric with digit separators",
+			value:         Numeric("1_000"),
+			expectedError: true,
+		},
+		{
+			name:          "Numeric hexadecimal float",
+			value:         Numeric("0x1p-2"),
+			expectedError: true,
+		},
+		{
+			name:          "Numeric with surrounding space",
+			value:         Numeric(" 1"),
+			expectedError: true,
+		},
+		{
 			name:          "invalid Numeric",
 			value:         Numeric("not-a-number"),
 			expectedError: true,

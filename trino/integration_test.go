@@ -1097,6 +1097,38 @@ func TestIntegrationTimeTzArgs(t *testing.T) {
 	}
 }
 
+func TestIntegrationNumericArgs(t *testing.T) {
+	dsns := []string{*integrationServerFlag}
+	// EXECUTE IMMEDIATE, used when explicit prepare is disabled, needs Trino 418 or later.
+	version, err := strconv.Atoi(*trinoImageTagFlag)
+	if (err != nil && *trinoImageTagFlag == "latest") || (err == nil && version >= 418) {
+		dsns = append(dsns, *integrationServerFlag+"?explicitPrepare=false")
+	}
+	for _, dsn := range dsns {
+		db := integrationOpen(t, dsn)
+		defer db.Close()
+
+		for _, tc := range []struct {
+			arg     Numeric
+			literal string
+		}{
+			{Numeric("-1.5"), "DECIMAL '-1.5'"},
+			{Numeric("1e3"), "DOUBLE '1000'"},
+			{Numeric(".5"), "DECIMAL '0.5'"},
+		} {
+			var equal bool
+			err := db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal)
+			require.NoError(t, err, "%s with %s", dsn, tc.arg)
+			require.True(t, equal, "%s did not round-trip as %s", tc.arg, tc.literal)
+		}
+
+		// Rejected client-side, before anything is sent to the server.
+		var value int
+		err := db.QueryRow("SELECT * FROM (VALUES (99)) AS t(nan) WHERE nan = ?", Numeric("NaN")).Scan(&value)
+		require.ErrorContains(t, err, `Numeric "NaN" is not a decimal or scientific number literal`, dsn)
+	}
+}
+
 func TestIntegrationNoResults(t *testing.T) {
 	db := integrationOpen(t)
 	rows, err := db.Query("SELECT 1 LIMIT 0")
