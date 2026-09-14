@@ -43,10 +43,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go/aws"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
@@ -368,7 +368,7 @@ func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
 		Credentials:  cfg.Credentials,
 		Region:       "us-east-1",
 		BaseEndpoint: &endpoint,
-		UsePathStyle: *aws.Bool(true),
+		UsePathStyle: true,
 	})
 
 	createBucketInput := &s3.CreateBucketInput{
