@@ -1079,6 +1079,24 @@ func TestIntegrationIntervalArgs(t *testing.T) {
 	}
 }
 
+func TestIntegrationTimeTzArgs(t *testing.T) {
+	db := integrationOpen(t)
+	defer db.Close()
+	for _, tc := range []struct {
+		arg     trinoTimeTz
+		literal string
+	}{
+		{TimeTz(11, 34, 25, 123456, time.UTC), "TIME '11:34:25.000123456 +00:00'"},
+		{TimeTz(11, 34, 25, 123456, nil), "TIME '11:34:25.000123456 +00:00'"},
+		{TimeTz(11, 34, 25, 123456, time.FixedZone("test zone", +2*3600)), "TIME '11:34:25.000123456 +02:00'"},
+	} {
+		var equal bool
+		err := db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal)
+		require.NoError(t, err, tc.literal)
+		require.True(t, equal, "%v did not round-trip as %s", time.Time(tc.arg), tc.literal)
+	}
+}
+
 func TestIntegrationNoResults(t *testing.T) {
 	db := integrationOpen(t)
 	rows, err := db.Query("SELECT 1 LIMIT 0")

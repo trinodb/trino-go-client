@@ -152,9 +152,14 @@ func TestSerial(t *testing.T) {
 			expectedSerial: "TIME '11:34:25.000123456 +02:00'",
 		},
 		{
-			name:           "time with timezone",
+			name:           "time with nil timezone",
 			value:          TimeTz(11, 34, 25, 123456, nil),
-			expectedSerial: "TIME '11:34:25.000123456 Z'",
+			expectedSerial: "TIME '11:34:25.000123456 +00:00'",
+		},
+		{
+			name:           "time with UTC timezone",
+			value:          TimeTz(11, 34, 25, 123456, time.UTC),
+			expectedSerial: "TIME '11:34:25.000123456 +00:00'",
 		},
 		{
 			name:           "timestamp without timezone",
