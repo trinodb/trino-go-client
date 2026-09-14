@@ -160,7 +160,9 @@ func Serial(v interface{}) (string, error) {
 	case trinoTime:
 		return fmt.Sprintf("TIME '%02d:%02d:%02d.%09d'", x.hour, x.minute, x.second, x.nanosecond), nil
 	case trinoTimeTz:
-		return "TIME " + time.Time(x).Format("'15:04:05.999999999 Z07:00'"), nil
+		// Trino only accepts a numeric offset in TIME WITH TIME ZONE literals,
+		// so UTC has to be written as +00:00 and not as Z.
+		return "TIME " + time.Time(x).Format("'15:04:05.999999999 -07:00'"), nil
 	case trinoTimestamp:
 		return "TIMESTAMP " + time.Time(x).Format("'2006-01-02 15:04:05.999999999'"), nil
 	case time.Time:
