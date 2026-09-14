@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,12 @@ func (e UnsupportedArgError) Error() string {
 // Numeric is a string representation of a number, such as "10", "5.5" or in scientific form
 // If another string format is used it will error to serialise
 type Numeric string
+
+// numericLiteral matches the decimal and scientific number literals Trino
+// accepts unquoted in a query. Anything else, such as NaN, Inf, hexadecimal
+// floats or digit separators, must not be inlined: Trino would read NaN or
+// Inf as a column reference and reject the rest with a syntax error.
+var numericLiteral = regexp.MustCompile(`^[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
 
 // trinoDate represents a Date type in Trino.
 type trinoDate struct {
@@ -132,8 +139,8 @@ func Serial(v interface{}) (string, error) {
 		return "", UnsupportedArgError{"float64"}
 
 	case Numeric:
-		if _, err := strconv.ParseFloat(string(x), 64); err != nil {
-			return "", err
+		if !numericLiteral.MatchString(string(x)) {
+			return "", fmt.Errorf("trino: Numeric %q is not a decimal or scientific number literal", string(x))
 		}
 		return string(x), nil
 
