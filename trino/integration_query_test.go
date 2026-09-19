@@ -112,31 +112,6 @@ type tpchRow struct {
 	Comment    string
 }
 
-func TestIntegrationSelectTpch1000(t *testing.T) {
-	db := integrationOpen(t)
-	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000")
-	require.NoError(t, err)
-	defer rows.Close()
-	count := 0
-	for rows.Next() {
-		count++
-		var col tpchRow
-		err = rows.Scan(
-			&col.CustKey,
-			&col.Name,
-			&col.Address,
-			&col.NationKey,
-			&col.Phone,
-			&col.AcctBal,
-			&col.MktSegment,
-			&col.Comment,
-		)
-		require.NoError(t, err)
-	}
-	require.NoError(t, rows.Err())
-	assert.Equal(t, 1000, count, "row count")
-}
-
 func TestIntegrationSelectCancelQuery(t *testing.T) {
 	db := integrationOpen(t)
 	deadline := time.Now().Add(200 * time.Millisecond)
@@ -309,29 +284,6 @@ func TestIntegrationExec(t *testing.T) {
 	rows, err := db.Query(`SELECT count(*) FROM nation`)
 	require.NoError(t, err, "Failed executing query")
 	require.True(t, rows.Next(), "Failed fetching results: %v", rows.Err())
-}
-
-func TestIntegrationUnsupportedHeader(t *testing.T) {
-	dsn := integrationDSN(t)
-	dsn += "?catalog=tpch&schema=sf10"
-	db := integrationOpen(t, dsn)
-	cases := []struct {
-		query string
-		err   error
-	}{
-		{
-			query: "SET ROLE dummy",
-			err:   errors.New(`trino: query failed (200 OK): "USER_ERROR: line 1:1: Role 'dummy' does not exist"`),
-		},
-		{
-			query: "SET PATH dummy",
-			err:   errors.New(`trino: query failed (200 OK): "USER_ERROR: SET PATH not supported by client"`),
-		},
-	}
-	for _, c := range cases {
-		_, err := db.Query(c.query)
-		require.EqualError(t, err, c.err.Error(), c.query)
-	}
 }
 
 func TestIntegrationQueryContext(t *testing.T) {

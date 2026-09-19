@@ -278,6 +278,26 @@ func TestSerial(t *testing.T) {
 			expectedError: true,
 		},
 		{
+			name:          "second duration with too many digits",
+			value:         time.Duration(1234567891200) * time.Millisecond,
+			expectedError: true,
+		},
+		{
+			name:          "negative second duration with too many digits",
+			value:         time.Duration(-1234567891200) * time.Millisecond,
+			expectedError: true,
+		},
+		{
+			name:          "millisecond duration with too many digits",
+			value:         time.Duration(123456789120) * time.Millisecond,
+			expectedError: true,
+		},
+		{
+			name:          "negative millisecond duration with too many digits",
+			value:         time.Duration(-123456789120) * time.Millisecond,
+			expectedError: true,
+		},
+		{
 			name:          "too big millisecond duration",
 			value:         time.Millisecond*912 + time.Second*12345678,
 			expectedError: true,

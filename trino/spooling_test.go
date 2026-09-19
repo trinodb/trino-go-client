@@ -190,6 +190,19 @@ func mustDecodeBase64(encoded string) []byte {
 	return data
 }
 
+func TestSpoolingProtocolRejectsMoreWorkersThanOutOfOrderSegments(t *testing.T) {
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "")
+
+	_, err := db.Query("SELECT 1",
+		sql.Named(trinoEncoding, "json"),
+		sql.Named(trinoSpoolingWorkerCount, "2"),
+		sql.Named(trinoMaxOutOfOrdersSegments, "1"))
+
+	require.EqualError(t, err, "spooling worker cannot be greater than max out of order segments allowed. spooling workers: 2, allowed out of order segments: 1")
+	assert.Empty(t, fc.capturedRequests(), "the query must be rejected before anything is sent")
+}
+
 func TestSpoolingProtocolOnlyWithInlineSegments(t *testing.T) {
 	fc := newFakeCoordinator(t)
 	fc.respond(statementPage(), spooledPage("json",
@@ -253,7 +266,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 	}
 }
 
-func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
+func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 	validMetadata := map[string]any{"segmentSize": 3679, "uncompressedSize": 2, "rowOffset": 0}
 	cases := []struct {
 		name                          string
@@ -354,6 +367,16 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 			downloadedData:                mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 			downloadedDataStatusCodeError: true,
 		},
+		{
+			name:    "InlineWrongUncompressSize",
+			segment: inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 1, "rowOffset": 2, "segmentSize": 29}),
+			wantErr: "failed to decode spooled segment at index 0: decompressed size mismatch: expected 1 bytes, got 16 bytes",
+		},
+		{
+			name:    "InlineWrongCompresSize",
+			segment: inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 1}),
+			wantErr: "failed to decode spooled segment at index 0: segment size mismatch: expected 1 bytes, got 29 bytes",
+		},
 	}
 
 	for _, tc := range cases {
@@ -371,44 +394,6 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, rows.Close()) })
-
-			for rows.Next() {
-				// force segment processing
-			}
-
-			err = rows.Err()
-			require.Error(t, err)
-			require.Contains(t, err.Error(), tc.wantErr)
-		})
-	}
-}
-
-func TestSpoolingProtocolInlineSegmentErrorHandling(t *testing.T) {
-	cases := []struct {
-		name    string
-		segment map[string]any
-		wantErr string
-	}{
-		{
-			name:    "WrongUncompressSize",
-			segment: inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 1, "rowOffset": 2, "segmentSize": 29}),
-			wantErr: "failed to decode spooled segment at index 0: decompressed size mismatch: expected 1 bytes, got 16 bytes",
-		},
-		{
-			name:    "WrongCompresSize",
-			segment: inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 1}),
-			wantErr: "failed to decode spooled segment at index 0: segment size mismatch: expected 1 bytes, got 29 bytes",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			fc := newFakeCoordinator(t)
-			fc.respond(statementPage(), spooledPage("json+zstd", tc.segment))
-			db := fc.open(t, "")
-
-			rows, err := db.Query("SELECT 1")
-			require.NoError(t, err)
 
 			for rows.Next() {
 				// force segment processing
