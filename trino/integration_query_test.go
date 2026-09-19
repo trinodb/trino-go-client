@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -299,11 +300,10 @@ func TestIntegrationQueryContext(t *testing.T) {
 		},
 	}
 
-	dsn := integrationDSN(t) + "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=" + uncompressedClient
-	db := integrationOpen(t, dsn)
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			source := "cancel-test-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+			db := integrationOpen(t, integrationDSN(t)+"?catalog=tpch&schema=sf100&source="+source+"&custom_client="+uncompressedClient)
 			var ctx context.Context
 			var cancel context.CancelFunc
 
@@ -335,51 +335,41 @@ func TestIntegrationQueryContext(t *testing.T) {
 				close(done)
 			}()
 
-			// Poll system.runtime.queries to get the query ID
-			var queryID string
-			pollCtx, pollCancel := context.WithTimeout(context.Background(), 1*time.Second)
-			defer pollCancel()
-
-			for {
-				row := db.QueryRowContext(pollCtx, "SELECT query_id FROM system.runtime.queries WHERE state = 'RUNNING' AND source = 'cancel-test' AND query = ?", longQuery)
-				err := row.Scan(&queryID)
-				if err == nil {
-					break
-				}
-				require.ErrorIs(t, err, sql.ErrNoRows, "failed to read query ID")
-				require.NoError(t, contextSleep(pollCtx, 100*time.Millisecond), "query did not start in 1 second")
-			}
-
+			queryID := findRunningQuery(t, db, source, longQuery)
 			if tt.timeout == 0 {
 				cancel()
 			}
 
-			// Wait for the query to be canceled or completed
 			select {
 			case <-done:
 				require.Fail(t, "unexpected query succeeded despite cancellation or deadline")
 			case err := <-errCh:
 				require.ErrorContains(t, err, tt.expectedErrMsg)
 			}
-
-			// Poll system.runtime.queries to verify the query was canceled
-			pollCtx, pollCancel = context.WithTimeout(context.Background(), 2*time.Second)
-			defer pollCancel()
-
-			for {
-				row := db.QueryRowContext(pollCtx, "SELECT state, error_code FROM system.runtime.queries WHERE query_id = ?", queryID)
-				var state string
-				var code *string
-				err := row.Scan(&state, &code)
-				require.NoError(t, err, "failed to read query state")
-				if state == "FAILED" && code != nil && *code == "USER_CANCELED" {
-					return
-				}
-				err = contextSleep(pollCtx, 100*time.Millisecond)
-				require.NoError(t, err, "query was not canceled in 2 seconds; state: %s, code: %v", state, code)
-			}
+			requireQueryCancelled(t, db, queryID)
 		})
 	}
+}
+
+// Closing a prepared statement must not leave the statement behind on the
+// connection: a later EXECUTE by name has nothing to run.
+func TestIntegrationPreparedStatementScopedToStatement(t *testing.T) {
+	db := integrationOpen(t)
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, conn.Close()) })
+
+	stmt, err := conn.PrepareContext(ctx, "SELECT ?")
+	require.NoError(t, err)
+	var value int
+	require.NoError(t, stmt.QueryRowContext(ctx, 1).Scan(&value))
+	assert.Equal(t, 1, value)
+	require.NoError(t, stmt.Close())
+
+	err = conn.QueryRowContext(ctx, "EXECUTE "+preparedStatementName+" USING 1").Scan(&value)
+
+	require.ErrorContains(t, err, "Prepared statement not found: "+preparedStatementName)
 }
 
 func TestIntegrationLargeQuery(t *testing.T) {

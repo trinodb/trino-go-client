@@ -152,7 +152,10 @@ func startContainers(ctx context.Context) {
 		wd + "/etc/catalog/tpch.properties:/etc/trino/catalog/tpch.properties",
 	}
 	if imageVersion >= 458 {
-		mounts = append(mounts, wd+"/etc/catalog/hive.properties:/etc/trino/catalog/hive.properties")
+		mounts = append(mounts,
+			wd+"/etc/catalog/hive.properties:/etc/trino/catalog/hive.properties",
+			wd+"/etc/catalog/iceberg.properties:/etc/trino/catalog/iceberg.properties",
+		)
 	}
 	switch {
 	case imageVersion < 466:
@@ -671,4 +674,42 @@ func queryProtocols() []queryProtocol {
 		protocols = append(protocols, queryProtocol{name: "spooling protocol", args: []any{sql.Named(trinoEncoding, "json")}})
 	}
 	return protocols
+}
+
+// findRunningQuery returns the ID of the running query with the given text
+// and source, polling until the server reports it. The text distinguishes it
+// from the polling queries, which share the connection and its source.
+func findRunningQuery(t *testing.T, db *sql.DB, source, query string) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		var queryID string
+		err := db.QueryRowContext(ctx, "SELECT query_id FROM system.runtime.queries WHERE state = 'RUNNING' AND source = ? AND query = ?", source, query).Scan(&queryID)
+		if err == nil {
+			return queryID
+		}
+		require.ErrorIs(t, err, sql.ErrNoRows, "failed to read the query ID")
+		require.NoError(t, contextSleep(ctx, 100*time.Millisecond), "no running query with source %q appeared in 5 seconds", source)
+	}
+}
+
+// requireQueryCancelled polls the server until the query has failed with
+// USER_CANCELED, which is the only proof that the client's cancel request
+// reached the server.
+func requireQueryCancelled(t *testing.T, db *sql.DB, queryID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		var state string
+		var code *string
+		err := db.QueryRowContext(ctx, "SELECT state, error_code FROM system.runtime.queries WHERE query_id = ?", queryID).Scan(&state, &code)
+		require.NoError(t, err, "failed to read the state of query %s", queryID)
+		if state == "FAILED" && code != nil && *code == "USER_CANCELED" {
+			return
+		}
+		err = contextSleep(ctx, 100*time.Millisecond)
+		require.NoError(t, err, "query %s was not canceled in 5 seconds; state: %s, code: %v", queryID, state, code)
+	}
 }

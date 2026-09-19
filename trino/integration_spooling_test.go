@@ -1,10 +1,12 @@
 package trino
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -103,4 +105,34 @@ func TestSpoolingIntegrationOrderedResults(t *testing.T) {
 
 	require.NoError(t, rows.Err(), "Rows iteration error")
 	assert.Equal(t, rowCount, expected-1, "row count")
+}
+
+// Cancelling a query while its spooled segments are still being produced
+// must stop the client and cancel the query on the server.
+func TestIntegrationCancelSpooledQuery(t *testing.T) {
+	if !spoolingProtocolSupported {
+		t.Skip("Skipping test when spooling protocol is not supported.")
+	}
+	source := "cancel-spooled-test-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	db := integrationOpen(t, integrationDSN(t)+"?source="+source)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	query := "SELECT * FROM TABLE(sequence(start => 1, stop => 50000000)) ORDER BY sequential_number"
+	rows, err := db.QueryContext(ctx, query, sql.Named(trinoEncoding, "json"))
+	require.NoError(t, err)
+	require.True(t, rows.Next(), "no first row: %v", rows.Err())
+	queryID := findRunningQuery(t, db, source, query)
+
+	cancel()
+
+	closed := make(chan error, 1)
+	go func() { closed <- rows.Close() }()
+	select {
+	case err := <-closed:
+		require.NoError(t, err)
+	case <-time.After(10 * time.Second):
+		require.Fail(t, "closing the rows of a cancelled spooled query hangs")
+	}
+	requireQueryCancelled(t, db, queryID)
 }

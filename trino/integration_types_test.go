@@ -841,3 +841,64 @@ func TestMaxGoPrecisionDateTime(t *testing.T) {
 	require.NoError(t, rows.Err())
 
 }
+
+func TestIntegrationScanValues(t *testing.T) {
+	db := integrationOpen(t)
+	nanos := time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.Local)
+	cases := []struct {
+		name  string
+		query string
+		want  any
+		check func(t *testing.T, got any)
+	}{
+		{name: "char is padded", query: "CAST('ddd' AS CHAR(5))", want: "ddd  "},
+		{name: "decimal keeps its scale", query: "CAST(1.23 AS DECIMAL(10,5))", want: "1.23000"},
+		{name: "json", query: `JSON '{"a":1}'`, want: `{"a":1}`},
+		{name: "uuid", query: "UUID '12151fd2-7586-11e9-8f9e-2a86e4085a59'", want: "12151fd2-7586-11e9-8f9e-2a86e4085a59"},
+		{name: "ipaddress", query: "IPADDRESS '10.0.0.1'", want: "10.0.0.1"},
+		{name: "interval year to month", query: "INTERVAL '3' MONTH", want: "0-3"},
+		{name: "interval day to second", query: "INTERVAL '2' DAY", want: "2 00:00:00.000"},
+		{name: "null", query: "CAST(NULL AS VARCHAR)", want: nil},
+		{name: "real NaN", query: "CAST(nan() AS REAL)", check: func(t *testing.T, got any) {
+			assert.True(t, math.IsNaN(got.(float64)), "got %v", got)
+		}},
+		{name: "double infinity", query: "infinity()", check: func(t *testing.T, got any) {
+			assert.True(t, math.IsInf(got.(float64), 1), "got %v", got)
+		}},
+		{name: "timestamp with nanoseconds", query: "TIMESTAMP '2017-07-10 01:02:03.123456789'", check: func(t *testing.T, got any) {
+			assert.WithinDuration(t, nanos, got.(time.Time), 0)
+		}},
+		// time.Time cannot hold more than nanoseconds, so the rest is dropped
+		{name: "timestamp with picoseconds is truncated", query: "TIMESTAMP '2017-07-10 01:02:03.123456789012'", check: func(t *testing.T, got any) {
+			assert.WithinDuration(t, nanos, got.(time.Time), 0)
+		}},
+		{name: "timestamp in a named zone", query: "TIMESTAMP '2017-07-10 01:02:03 Europe/Paris'", check: func(t *testing.T, got any) {
+			paris, err := time.LoadLocation("Europe/Paris")
+			require.NoError(t, err)
+			assert.WithinDuration(t, time.Date(2017, 7, 10, 1, 2, 3, 0, paris), got.(time.Time), 0)
+			assert.Equal(t, "Europe/Paris", got.(time.Time).Location().String())
+		}},
+		{name: "time with an offset", query: "TIME '01:02:03.123456789 +05:30'", check: func(t *testing.T, got any) {
+			value := got.(time.Time)
+			assert.WithinDuration(t, time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 5*3600+30*60)), value, 0)
+			_, offset := value.Zone()
+			assert.Equal(t, 5*3600+30*60, offset, "zone offset")
+		}},
+		{name: "date before the epoch", query: "DATE '1969-12-31'", check: func(t *testing.T, got any) {
+			assert.WithinDuration(t, time.Date(1969, 12, 31, 0, 0, 0, 0, time.Local), got.(time.Time), 0)
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got any
+			require.NoError(t, db.QueryRow("SELECT "+tc.query).Scan(&got))
+
+			if tc.check != nil {
+				tc.check(t, got)
+				return
+			}
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
