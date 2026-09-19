@@ -10,6 +10,7 @@ import (
 	"runtime/debug"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -165,6 +166,122 @@ func TestClientMetadataHeaders(t *testing.T) {
 		assert.Equal(t, "batch job", request.header.Get(trinoClientInfoHeader), "%s %s", request.method, request.path)
 		assert.Equal(t, "en-US", request.header.Get(trinoLanguageHeader), "%s %s", request.method, request.path)
 	}
+}
+
+func TestTimeZoneHeaderSentOnEveryRequest(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		params string
+		want   string
+	}{
+		{name: "default is the local zone", params: "", want: localTimeZoneName()},
+		{name: "named zone", params: "?timezone=Asia%2FTokyo", want: "Asia/Tokyo"},
+		{name: "offset", params: "?timezone=%2B05%3A30", want: "+05:30"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), resultPage([][]any{{1}}))
+			db := fc.open(t, tc.params)
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			collectInts(t, rows)
+			require.NoError(t, rows.Err())
+
+			requests := fc.capturedRequests()
+			require.NotEmpty(t, requests)
+			for _, request := range requests {
+				assert.Equal(t, tc.want, request.header.Get(trinoTimeZoneHeader), "%s %s", request.method, request.path)
+			}
+		})
+	}
+}
+
+func TestInvalidTimeZoneRejected(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "?timezone=Mars%2FOlympus_Mons")
+
+	err := db.Ping()
+
+	require.ErrorContains(t, err, `trino: invalid timezone "Mars/Olympus_Mons"`)
+	assert.Empty(t, fc.capturedRequests(), "no request made with an invalid zone")
+}
+
+// A timestamp without a zone is read in the zone the server was told to use.
+func TestTimestampReadInConnectionTimeZone(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), timestampPage("2017-07-10 01:02:03.000"))
+	db := fc.open(t, "?timezone=Asia%2FTokyo")
+
+	var got time.Time
+	require.NoError(t, db.QueryRow("SELECT 1").Scan(&got))
+
+	assertTimeIn(t, "Asia/Tokyo", got)
+}
+
+func TestTimeZoneNamedArgOverridesTheConnection(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), timestampPage("2017-07-10 01:02:03.000"))
+	db := fc.open(t, "?timezone=UTC")
+	db.SetMaxOpenConns(1)
+
+	var overridden time.Time
+	require.NoError(t, db.QueryRow("SELECT 1", sql.Named(trinoTimeZoneHeader, "Europe/Paris")).Scan(&overridden))
+	var unchanged time.Time
+	require.NoError(t, db.QueryRow("SELECT 1").Scan(&unchanged))
+
+	assertTimeIn(t, "Europe/Paris", overridden)
+	assertTimeIn(t, "UTC", unchanged)
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 4)
+	assert.Equal(t, "Europe/Paris", requests[0].header.Get(trinoTimeZoneHeader), "statement with the named argument")
+	assert.Equal(t, "UTC", requests[2].header.Get(trinoTimeZoneHeader), "statement without the named argument")
+
+	_, err := db.Query("SELECT 1", sql.Named(trinoTimeZoneHeader, "Mars/Olympus_Mons"))
+	require.ErrorContains(t, err, `trino: invalid timezone "Mars/Olympus_Mons"`)
+}
+
+// SET TIME ZONE comes back as the time_zone_id session property; values are
+// then read in that zone until the property is cleared.
+func TestTimestampReadInSessionTimeZone(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "?timezone=UTC")
+	db.SetMaxOpenConns(1)
+
+	fc.respond(statementPage().withHeader(trinoSetSessionHeader, "time_zone_id=America%2FNew_York"), timestampPage("2017-07-10 01:02:03.000"))
+	var afterSet time.Time
+	require.NoError(t, db.QueryRow("SET TIME ZONE 'America/New_York'").Scan(&afterSet))
+	fc.respond(statementPage().withHeader(trinoClearSessionHeader, "time_zone_id"), timestampPage("2017-07-10 01:02:03.000"))
+	var afterClear time.Time
+	require.NoError(t, db.QueryRow("SET TIME ZONE LOCAL").Scan(&afterClear))
+
+	assertTimeIn(t, "America/New_York", afterSet)
+	assertTimeIn(t, "UTC", afterClear)
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 4)
+	assert.Equal(t, []string{"time_zone_id=America%2FNew_York"}, requests[1].header.Values(trinoSessionHeader), "session property forwarded")
+	assert.Equal(t, "UTC", requests[1].header.Get(trinoTimeZoneHeader), "connection zone header left alone")
+}
+
+func timestampPage(value string) page {
+	return columnsPage([]queryColumn{timestampColumn("_col0")}, [][]any{{value}})
+}
+
+// assertTimeIn checks that got is 2017-07-10 01:02:03 on the wall clock of zone.
+func assertTimeIn(t *testing.T, zone string, got time.Time) {
+	t.Helper()
+	location, err := time.LoadLocation(zone)
+	require.NoError(t, err)
+	assert.True(t, got.Equal(time.Date(2017, 7, 10, 1, 2, 3, 0, location)), "got %v", got)
+	assert.Equal(t, zone, got.Location().String())
 }
 
 func TestExtraCredentialsSentOnlyWithTheStatement(t *testing.T) {

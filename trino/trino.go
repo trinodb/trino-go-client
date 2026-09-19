@@ -147,6 +147,7 @@ const (
 	trinoTraceTokenHeader         = trinoHeaderPrefix + `Trace-Token`
 	trinoClientInfoHeader         = trinoHeaderPrefix + `Client-Info`
 	trinoLanguageHeader           = trinoHeaderPrefix + `Language`
+	trinoTimeZoneHeader           = trinoHeaderPrefix + `Time-Zone`
 
 	trinoQueryDataEncodingHeader  = trinoHeaderPrefix + `Query-Data-Encoding`
 	trinoClientCapabilitiesHeader = trinoHeaderPrefix + `Client-Capabilities`
@@ -216,6 +217,7 @@ type Config struct {
 	TraceToken                 string            // Token correlating the queries of this connection with the coordinator logs (optional)
 	ClientInfo                 string            // Free-form description of the client, visible in the web UI and to event listeners (optional)
 	Language                   string            // Language tag, e.g. en-US, used for locale-sensitive processing (optional)
+	TimeZone                   string            // Time zone id, e.g. Europe/Warsaw or +02:00, used by the server and to read values without a zone (optional, default is the local zone)
 	CustomClientName           string            // Custom client name (optional)
 	KerberosEnabled            bool              // KerberosEnabled (optional, default is false)
 	KerberosKeytabPath         string            // Kerberos Keytab Path (optional)
@@ -299,6 +301,7 @@ func ParseDSN(dsn string) (*Config, error) {
 	config.TraceToken = query.Get("trace_token")
 	config.ClientInfo = query.Get("client_info")
 	config.Language = query.Get("language")
+	config.TimeZone = query.Get("timezone")
 	config.CustomClientName = query.Get("custom_client")
 	config.AccessToken = query.Get(accessTokenConfig)
 
@@ -498,6 +501,7 @@ func (c *Config) FormatDSN() (string, error) {
 		"trace_token":        c.TraceToken,
 		"client_info":        c.ClientInfo,
 		"language":           c.Language,
+		"timezone":           c.TimeZone,
 		"schema":             c.Schema,
 		"session_properties": strings.Join(sessionkv, mapEntrySeparator),
 		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
@@ -532,6 +536,10 @@ type Conn struct {
 	forwardAuthorizationHeader bool
 	queryTimeout               *time.Duration
 	heartbeatInterval          *time.Duration
+	// timeZone is sent as X-Trino-Time-Zone; sessionTimeZone is set when the
+	// server reports a SET TIME ZONE and takes precedence while it lasts
+	timeZone        *time.Location
+	sessionTimeZone *time.Location
 }
 
 var (
@@ -658,6 +666,15 @@ func newConn(dsn string) (*Conn, error) {
 		httpClient = withoutRedirects(httpClient)
 	}
 
+	timeZoneName := conf.TimeZone
+	if timeZoneName == "" {
+		timeZoneName = localTimeZoneName()
+	}
+	timeZone, err := resolveTimeZone(timeZoneName)
+	if err != nil {
+		return nil, err
+	}
+
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
 		httpClient:                 *httpClient,
@@ -669,6 +686,7 @@ func newConn(dsn string) (*Conn, error) {
 		forwardAuthorizationHeader: conf.ForwardAuthorizationHeader,
 		queryTimeout:               conf.QueryTimeout,
 		heartbeatInterval:          conf.HeartbeatInterval,
+		timeZone:                   timeZone,
 	}
 
 	var user string
@@ -699,6 +717,7 @@ func newConn(dsn string) (*Conn, error) {
 		trinoTraceTokenHeader: conf.TraceToken,
 		trinoClientInfoHeader: conf.ClientInfo,
 		trinoLanguageHeader:   conf.Language,
+		trinoTimeZoneHeader:   timeZoneName,
 		authorizationHeader:   getAuthorization(conf.AccessToken),
 	} {
 		if v != "" {
@@ -962,13 +981,44 @@ func (c *Conn) applyResponseHeaders(headers http.Header) {
 	}
 	for _, entry := range headers.Values(trinoSetSessionHeader) {
 		c.replaceHeaderEntry(trinoSessionHeader, entry)
+		c.applySessionTimeZone(entry)
 	}
 	for _, name := range headers.Values(trinoClearSessionHeader) {
 		c.removeHeaderEntry(trinoSessionHeader, name)
+		if name == sessionTimeZoneProperty {
+			c.sessionTimeZone = nil
+		}
 	}
 	if roles := headers.Values(trinoSetRoleHeader); len(roles) > 0 {
 		c.httpHeaders.Set(trinoRoleHeader, mergeRoles(c.httpHeaders.Get(trinoRoleHeader), roles))
 	}
+}
+
+// applySessionTimeZone follows a SET TIME ZONE reported by the server, so
+// values without a zone are read the way the server now produces them.
+func (c *Conn) applySessionTimeZone(entry string) {
+	name, encodedValue, _ := strings.Cut(entry, "=")
+	if name != sessionTimeZoneProperty {
+		return
+	}
+	value, err := url.QueryUnescape(encodedValue)
+	if err != nil {
+		return
+	}
+	// The server accepted the zone; if Go cannot load it, keep the previous one.
+	if location, err := resolveTimeZone(value); err == nil {
+		c.sessionTimeZone = location
+	}
+}
+
+// location returns the zone values without a time zone are interpreted in.
+func (c *Conn) location() *time.Location {
+	c.httpHeadersMu.RLock()
+	defer c.httpHeadersMu.RUnlock()
+	if c.sessionTimeZone != nil {
+		return c.sessionTimeZone
+	}
+	return c.timeZone
 }
 
 // replaceHeaderEntry stores a name=value entry in a multi-valued header,
@@ -1058,6 +1108,7 @@ type driverStmt struct {
 	conn                          *Conn
 	query                         string
 	user                          string
+	timeZone                      *time.Location
 	nextURIs                      chan string
 	httpResponses                 chan *http.Response
 	queryResponses                chan queryResponse
@@ -1447,6 +1498,13 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 
 				if arg.Name == trinoUserHeader {
 					st.user = headerValue
+				}
+
+				if arg.Name == trinoTimeZoneHeader {
+					st.timeZone, err = resolveTimeZone(headerValue)
+					if err != nil {
+						return nil, err
+					}
 				}
 
 				if arg.Name == trinoRoleHeader {
@@ -2723,13 +2781,17 @@ func (qr *driverRows) initColumns(qresp *queryResponse) error {
 	}
 	qr.columns = make([]string, len(qresp.Columns))
 	qr.coltype = make([]*typeConverter, len(qresp.Columns))
+	location := qr.stmt.timeZone
+	if location == nil {
+		location = qr.stmt.conn.location()
+	}
 	for i, col := range qresp.Columns {
 		err = unmarshalArguments(&(qresp.Columns[i].TypeSignature))
 		if err != nil {
 			return fmt.Errorf("error decoding column type signature: %w", err)
 		}
 		qr.columns[i] = col.Name
-		qr.coltype[i], err = newTypeConverter(col.Type, col.TypeSignature, time.Local)
+		qr.coltype[i], err = newTypeConverter(col.Type, col.TypeSignature, location)
 		if err != nil {
 			return err
 		}
