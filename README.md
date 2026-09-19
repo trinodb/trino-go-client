@@ -93,13 +93,19 @@ Authentication](https://trino.io/docs/current/security/jwt.html) for
 server-side configuration.
 
 #### Authorization header forwarding
-This driver supports forwarding authorization headers by adding a [NamedArg](https://godoc.org/database/sql#NamedArg) with the name `accessToken` (e.g., `accessToken=<your_access_token>`) and setting the `ForwardAuthorizationHeader` field in the [Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config) struct to `true`. 
+This driver supports forwarding authorization headers by adding a
+[NamedArg](https://godoc.org/database/sql#NamedArg) with the name `accessToken`
+(e.g., `accessToken=<your_access_token>`) and setting the
+`ForwardAuthorizationHeader` field in the
+[Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config)
+struct to `true`.
 
-When enabled, this configuration will override the `AccessToken` set in the `Config` struct.
+When enabled, this configuration will override the `AccessToken` set in the
+`Config` struct.
 
-Using the `accessToken` named argument without enabling `ForwardAuthorizationHeader` returns an
-error, so the token is never sent as part of the query text, where Trino would persist it in the
-query history.
+Using the `accessToken` named argument without enabling
+`ForwardAuthorizationHeader` returns an error, so the token is never sent as
+part of the query text, where Trino would persist it in the query history.
 
 
 #### System access control and per-query user information
@@ -293,7 +299,9 @@ Valid values:   duration string
 Default:        nil
 ```
 
-The `query_timeout` parameter sets a timeout for the query. If the query takes longer than the timeout, it will be cancelled. If it is not set the default context timeout will be used.
+The `query_timeout` parameter sets a timeout for the query. If the query takes
+longer than the timeout, it will be cancelled. If it is not set the default
+context timeout will be used.
 
 ##### `heartbeat_interval`
 
@@ -303,7 +311,10 @@ Valid values:   positive duration string (e.g. 30s, 1m)
 Default:        unset (client uses 30s between spooling heartbeats)
 ```
 
-The `heartbeat_interval` parameter sets how often the client sends a **HEAD** heartbeat to the current `nextUri` while a **spooled** query is in progress. It applies to the whole connection (same idea as session-scoped client settings in other Trino clients). Only used when the server uses the spooling protocol.
+The `heartbeat_interval` parameter sets how often the client sends a **HEAD**
+heartbeat to the current `nextUri` while a **spooled** query is in progress. It
+applies to the whole connection (same idea as session-scoped client settings in
+other Trino clients). Only used when the server uses the spooling protocol.
 
 ##### `explicitPrepare`
 
@@ -313,7 +324,12 @@ Valid values:   "true", "false"
 Default:        "true"
 ```
 
-The `explicitPrepare` parameter controls how queries are sent to the Trino server. When set to `false`, the client uses `EXECUTE IMMEDIATE` which sends the query text in the HTTP request body instead of HTTP headers. This allows sending large query text that would otherwise exceed HTTP header size limits. When set to `true` (default), queries use explicit prepared statements sent via HTTP headers.
+The `explicitPrepare` parameter controls how queries are sent to the Trino
+server. When set to `false`, the client uses `EXECUTE IMMEDIATE` which sends
+the query text in the HTTP request body instead of HTTP headers. This allows
+sending large query text that would otherwise exceed HTTP header size limits.
+When set to `true` (default), queries use explicit prepared statements sent via
+HTTP headers.
 
 ##### `clientTags`
 
@@ -323,8 +339,9 @@ Valid values:   comma-separated list of tags (e.g. tag1,tag2)
 Default:        empty
 ```
 
-The `clientTags` parameter is optional and is used to identify Trino resource groups. 
-This helps with query tracking and resource management in Trino clusters.
+The `clientTags` parameter is optional and is used to identify Trino resource
+groups. This helps with query tracking and resource management in Trino
+clusters.
 
 **DSN parameter example:**
 ```
@@ -385,9 +402,10 @@ the locale used by locale-sensitive functions.
 #### `roles`
 
 ```
-Type:           string  
-Format:         roles=catalog1:role1;catalog2=role2  
-Valid values:   A semicolon-separated list of catalog-to-role assignments, where each assignment maps a catalog to a role.  
+Type:           string
+Format:         roles=catalog1:role1;catalog2=role2
+Valid values:   A semicolon-separated list of catalog-to-role assignments,
+                where each assignment maps a catalog to a role.
 Default:        empty
 ```
 The roles parameter defines authorization roles to assume for one or more catalogs during the Trino session.
@@ -450,7 +468,9 @@ types:
   passed to Trino as a time with a time zone
 * the result of `trino.Timestamp(year, month, day, hour, minute, second,
   nanosecond)` - passed to Trino as a timestamp without a time zone
-* `time.Duration` - passed to Trino as an interval day to second. Because Trino does not support nanosecond precision for intervals, if the nanosecond part of the value is not zero, an error will be returned.
+* `time.Duration` - passed to Trino as an interval day to second. Because Trino
+  does not support nanosecond precision for intervals, if the nanosecond part
+  of the value is not zero, an error will be returned.
 
 It's not yet possible to pass:
 * `byte`
@@ -460,7 +480,9 @@ It's not yet possible to pass:
 To use the unsupported types, pass them as strings and use casts in the query,
 like so:
 ```sql
-SELECT * FROM table WHERE col_json = CAST(? AS JSON) OR col_timestamp = CAST(? AS TIMESTAMP)
+SELECT *
+FROM table
+WHERE col_json = CAST(? AS JSON) OR col_timestamp = CAST(? AS TIMESTAMP)
 ```
 
 ### Response rows
@@ -472,7 +494,8 @@ When reading response rows, the driver supports most Trino data types, except:
   supports). If a query returns columns defined with a greater precision,
   values are trimmed to 9 decimal digits. Use `CAST` to reduce the returned
   precision, or convert the value to a string that then can be parsed manually.
-* `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use `sql.NullString` for nullable columns
+* `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use
+  `sql.NullString` for nullable columns
 * `IPADDRESS` - returned as string
 * `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string
 * `UUID` - returned as string
@@ -513,11 +536,19 @@ following types:
 
 ## Spooling Protocol
 
-The client supports the [Trino spooling protocol](https://trino.io/docs/current/client/client-protocol.html#spooling-protocol), which enables efficient retrieval of large result sets by downloading data in segments, optionally in parallel and out-of-order.
+The client supports the [Trino spooling
+protocol](https://trino.io/docs/current/client/client-protocol.html#spooling-protocol),
+which enables efficient retrieval of large result sets by downloading data in
+segments, optionally in parallel and out-of-order.
 
-If the Trino server has the spooling protocol enabled, the client will use it by default with the `json` encoding.
+If the Trino server has the spooling protocol enabled, the client will use it
+by default with the `json` encoding.
 
-While a spooled query is in progress, the client sends periodic **HEAD** requests to the current `nextUri` (same URL used for result pages) so the coordinator treats the client as still active, which helps avoid query abandonment when result consumption is slow. The server must support this endpoint (Trino 475+).
+While a spooled query is in progress, the client sends periodic **HEAD**
+requests to the current `nextUri` (same URL used for result pages) so the
+coordinator treats the client as still active, which helps avoid query
+abandonment when result consumption is slow. The server must support this
+endpoint (Trino 475+).
 
 You can configure other encodings:
 
@@ -535,30 +566,40 @@ rows, err := db.Query(query, sql.Named("encoding", "json+zstd, json+lz4, json"))
 
 ### Configuration Options
 
-You can tune the spooling protocol using the following parameters, passed as `sql.Named` arguments to your query:
+You can tune the spooling protocol using the following parameters, passed as
+`sql.Named` arguments to your query:
 
-- **Spooling Worker Count**  
-  `sql.Named("spooling_worker_count", "N")`  
-  Sets the number of parallel workers used to download spooled segments.  
-  **Default:** `5`  
-  **Considerations:**  
-  - Increasing this value can improve throughput for large result sets, especially on high-latency networks.
+- **Spooling Worker Count**
+  `sql.Named("spooling_worker_count", "N")`
+  Sets the number of parallel workers used to download spooled segments.
+  **Default:** `5`
+  **Considerations:**
+  - Increasing this value can improve throughput for large result sets,
+    especially on high-latency networks.
   - Higher values increase parallelism but may also increase memory usage.
 
-- **Max Out-of-Order Segments**  
-  `sql.Named("max_out_of_order_segments", "N")`  
-  Sets the maximum number of segments that can be downloaded and buffered out-of-order before blocking further downloads.  
-  **Default:** `10`  
-  **Considerations:**  
-  - Higher values increase the potential memory usage, but actual usage depends on download behavior and may be lower in practice.
-  - Higher values reduce the chance that one slow or stalled segment will block the download of additional segments.
+- **Max Out-of-Order Segments**
+  `sql.Named("max_out_of_order_segments", "N")`
+  Sets the maximum number of segments that can be downloaded and buffered
+  out-of-order before blocking further downloads.
+  **Default:** `10`
+  **Considerations:**
+  - Higher values increase the potential memory usage, but actual usage depends
+    on download behavior and may be lower in practice.
+  - Higher values reduce the chance that one slow or stalled segment will block
+    the download of additional segments.
   - Lower values reduce memory usage but may limit parallelism and throughput.
 
-**Note:**  
-It is **not allowed** to set `spooling_worker_count` higher than `max_out_of_order_segments` — doing so will result in an error.
+**Note:**
+It is **not allowed** to set `spooling_worker_count` higher than
+`max_out_of_order_segments` — doing so will result in an error.
 
-Each download worker must reserve a slot for the segment it fetches, and a slot is only released when that segment can be processed in order. The total number of slots corresponds to max_out_of_order_segments.
-If you configure more workers than allowed out-of-order segments, the extra workers would immediately block while waiting for a slot — defeating the purpose of parallelism and potentially wasting resources.
+Each download worker must reserve a slot for the segment it fetches, and a slot
+is only released when that segment can be processed in order. The total number
+of slots corresponds to `max_out_of_order_segments`. If you configure more
+workers than allowed out-of-order segments, the extra workers would immediately
+block while waiting for a slot — defeating the purpose of parallelism and
+potentially wasting resources.
 
 #### Example: Customizing Spooling Parameters
 
