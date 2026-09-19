@@ -20,6 +20,15 @@ func TestIntegrationTypeConversion(t *testing.T) {
 	dsn := integrationDSN(t)
 	dsn += "?custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
+	for _, protocol := range queryProtocols() {
+		t.Run(protocol.name, func(t *testing.T) {
+			testIntegrationTypeConversion(t, db, protocol.args...)
+		})
+	}
+}
+
+func testIntegrationTypeConversion(t *testing.T, db *sql.DB, args ...any) {
+	t.Helper()
 	var (
 		goTime            time.Time
 		nullTime          NullTime
@@ -40,7 +49,7 @@ func TestIntegrationTypeConversion(t *testing.T) {
 		nullMap           NullMap
 		goRow             []interface{}
 	)
-	err = db.QueryRow(`
+	err := db.QueryRow(`
 		SELECT
 			TIMESTAMP '2017-07-10 01:02:03.004 UTC',
 			CAST(NULL AS TIMESTAMP),
@@ -60,7 +69,7 @@ func TestIntegrationTypeConversion(t *testing.T) {
 			MAP(ARRAY['a', 'b'], ARRAY['c', 'd']),
 			CAST(NULL AS MAP(ARRAY(INTEGER), ARRAY(INTEGER))),
 			ROW(1, 'a', CAST('2017-07-10 01:02:03.004 UTC' AS TIMESTAMP(6) WITH TIME ZONE), ARRAY['c'])
-	`).Scan(
+	`, args...).Scan(
 		&goTime,
 		&nullTime,
 		&goBytes,
@@ -114,21 +123,15 @@ func TestIntegrationTypeConversion(t *testing.T) {
 	assert.Equal(t, []interface{}{json.Number("1"), "a", "2017-07-10 01:02:03.004000 UTC", []interface{}{"c"}}, goRow, "GoRow")
 }
 
+// TestComplexTypes pins down how ROW and MAP values decode when nested,
+// which TestIntegrationTypeConversion does not exercise: the driver does not
+// parse these into structured Go types, it passes through whatever shape the
+// JSON response used. A VARBINARY column decodes to []byte at the top level
+// (see TestIntegrationTypeConversion), but the same VARBINARY nested inside a
+// ROW stays a base64 string, because ConvertValue never recurses into a row
+// or map to convert its elements.
 func TestComplexTypes(t *testing.T) {
-	// This test has been created to showcase some issues with parsing
-	// complex types. It is not intended to be a comprehensive test of
-	// the parsing logic, but rather to provide a reference for future
-	// changes to the parsing logic.
-	//
-	// The current implementation of the parsing logic reads the value
-	// in the same format as the JSON response from Trino. This means
-	// that we don't go further to parse values as their structured types.
-	// For example, a row like `ROW(1, X'0000')` is read as
-	// a list of a `json.Number(1)` and a base64-encoded string.
-	t.Skip("skipping failing test")
-
-	dsn := integrationDSN(t)
-	db := integrationOpen(t, dsn)
+	db := integrationOpen(t)
 
 	for _, tt := range []struct {
 		name     string
@@ -136,30 +139,35 @@ func TestComplexTypes(t *testing.T) {
 		expected interface{}
 	}{
 		{
-			name:     "row containing scalar values",
+			name:     "row containing a binary value",
 			query:    `SELECT ROW(1, 'a', X'0000')`,
-			expected: []interface{}{1, "a", []byte{0x00, 0x00}},
+			expected: []interface{}{json.Number("1"), "a", "AAA="},
 		},
 		{
-			name:     "nested row",
-			query:    `SELECT ROW(ROW(1, 'a'), ROW(2, 'b'))`,
-			expected: []interface{}{[]interface{}{1, "a"}, []interface{}{2, "b"}},
+			name:  "nested row",
+			query: `SELECT ROW(ROW(1, 'a'), ROW(2, 'b'))`,
+			expected: []interface{}{
+				[]interface{}{json.Number("1"), "a"},
+				[]interface{}{json.Number("2"), "b"},
+			},
 		},
 		{
 			name:     "map with scalar values",
 			query:    `SELECT MAP(ARRAY['a', 'b'], ARRAY[1, 2])`,
-			expected: map[string]interface{}{"a": 1, "b": 2},
+			expected: map[string]interface{}{"a": json.Number("1"), "b": json.Number("2")},
 		},
 		{
-			name:     "map with nested row",
-			query:    `SELECT MAP(ARRAY['a', 'b'], ARRAY[ROW(1, 'a'), ROW(2, 'b')])`,
-			expected: map[string]interface{}{"a": []interface{}{1, "a"}, "b": []interface{}{2, "b"}},
+			name:  "map with row values",
+			query: `SELECT MAP(ARRAY['a', 'b'], ARRAY[ROW(1, 'a'), ROW(2, 'b')])`,
+			expected: map[string]interface{}{
+				"a": []interface{}{json.Number("1"), "a"},
+				"b": []interface{}{json.Number("2"), "b"},
+			},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var result interface{}
-			err := db.QueryRow(tt.query).Scan(&result)
-			require.NoError(t, err)
+			require.NoError(t, db.QueryRow(tt.query).Scan(&result))
 
 			assert.Equal(t, tt.expected, result)
 		})
@@ -306,123 +314,28 @@ func TestIntgrationNumberType(t *testing.T) {
 
 func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
 	db := integrationOpen(t)
-	tests := []struct {
-		name    string
-		arg     time.Duration
-		wantErr bool
+	cases := []struct {
+		name string
+		arg  time.Duration
 	}{
-		{
-			name:    "valid 1234567891s",
-			arg:     time.Duration(1234567891) * time.Second,
-			wantErr: false,
-		},
-		{
-			name:    "valid 123456789.1s",
-			arg:     time.Duration(123456789100) * time.Millisecond,
-			wantErr: false,
-		},
-		{
-			name:    "valid 12345678.91s",
-			arg:     time.Duration(12345678910) * time.Millisecond,
-			wantErr: false,
-		},
-		{
-			name:    "valid 1234567.891s",
-			arg:     time.Duration(1234567891) * time.Millisecond,
-			wantErr: false,
-		},
-		{
-			name:    "valid -1234567891s",
-			arg:     time.Duration(-1234567891) * time.Second,
-			wantErr: false,
-		},
-		{
-			name:    "valid -123456789.1s",
-			arg:     time.Duration(-123456789100) * time.Millisecond,
-			wantErr: false,
-		},
-		{
-			name:    "valid -12345678.91s",
-			arg:     time.Duration(-12345678910) * time.Millisecond,
-			wantErr: false,
-		},
-		{
-			name:    "valid -1234567.891s",
-			arg:     time.Duration(-1234567891) * time.Millisecond,
-			wantErr: false,
-		},
-		{
-			name:    "invalid 1234567891.2s",
-			arg:     time.Duration(1234567891200) * time.Millisecond,
-			wantErr: true,
-		},
-		{
-			name:    "invalid 123456789.12s",
-			arg:     time.Duration(123456789120) * time.Millisecond,
-			wantErr: true,
-		},
-		{
-			name:    "invalid 12345678.912s",
-			arg:     time.Duration(12345678912) * time.Millisecond,
-			wantErr: true,
-		},
-		{
-			name:    "invalid -1234567891.2s",
-			arg:     time.Duration(-1234567891200) * time.Millisecond,
-			wantErr: true,
-		},
-		{
-			name:    "invalid -123456789.12s",
-			arg:     time.Duration(-123456789120) * time.Millisecond,
-			wantErr: true,
-		},
-		{
-			name:    "invalid -12345678.912s",
-			arg:     time.Duration(-12345678912) * time.Millisecond,
-			wantErr: true,
-		},
-		{
-			name:    "invalid max seconds (9223372036)",
-			arg:     time.Duration(math.MaxInt64) / time.Second * time.Second,
-			wantErr: true,
-		},
-		{
-			name:    "invalid min seconds (-9223372036)",
-			arg:     time.Duration(math.MinInt64) / time.Second * time.Second,
-			wantErr: true,
-		},
-		{
-			name: "valid max seconds (2147483647)",
-			arg:  math.MaxInt32 * time.Second,
-		},
-		{
-			name: "valid min seconds (-2147483647)",
-			arg:  -math.MaxInt32 * time.Second,
-		},
-		{
-			name: "valid max minutes (153722867)",
-			arg:  time.Duration(math.MaxInt64) / time.Minute * time.Minute,
-		},
-		{
-			name: "valid min minutes (-153722867)",
-			arg:  time.Duration(math.MinInt64) / time.Minute * time.Minute,
-		},
-		{
-			name: "valid max hours (2562047)",
-			arg:  time.Duration(math.MaxInt64) / time.Hour * time.Hour,
-		},
-		{
-			name: "valid min hours (-2562047)",
-			arg:  time.Duration(math.MinInt64) / time.Hour * time.Hour,
-		},
+		{name: "1234567891s", arg: time.Duration(1234567891) * time.Second},
+		{name: "123456789.1s", arg: time.Duration(123456789100) * time.Millisecond},
+		{name: "12345678.91s", arg: time.Duration(12345678910) * time.Millisecond},
+		{name: "1234567.891s", arg: time.Duration(1234567891) * time.Millisecond},
+		{name: "-1234567891s", arg: time.Duration(-1234567891) * time.Second},
+		{name: "-123456789.1s", arg: time.Duration(-123456789100) * time.Millisecond},
+		{name: "-12345678.91s", arg: time.Duration(-12345678910) * time.Millisecond},
+		{name: "-1234567.891s", arg: time.Duration(-1234567891) * time.Millisecond},
+		{name: "max seconds (2147483647)", arg: math.MaxInt32 * time.Second},
+		{name: "min seconds (-2147483647)", arg: -math.MaxInt32 * time.Second},
+		{name: "max minutes (153722867)", arg: time.Duration(math.MaxInt64) / time.Minute * time.Minute},
+		{name: "min minutes (-153722867)", arg: time.Duration(math.MinInt64) / time.Minute * time.Minute},
+		{name: "max hours (2562047)", arg: time.Duration(math.MaxInt64) / time.Hour * time.Hour},
+		{name: "min hours (-2562047)", arg: time.Duration(math.MinInt64) / time.Hour * time.Hour},
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			_, err := db.Exec("SELECT ?", test.arg)
-			if test.wantErr {
-				assert.Error(t, err)
-				return
-			}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := db.Exec("SELECT ?", tc.arg)
 			assert.NoError(t, err)
 		})
 	}

@@ -523,3 +523,18 @@ func contextSleep(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	}
 }
+
+type queryProtocol struct {
+	name string
+	args []any
+}
+
+// queryProtocols lists the ways a query can be run against the server: the
+// direct protocol, and the spooling protocol when the server supports it.
+func queryProtocols() []queryProtocol {
+	protocols := []queryProtocol{{name: "direct protocol"}}
+	if spoolingProtocolSupported {
+		protocols = append(protocols, queryProtocol{name: "spooling protocol", args: []any{sql.Named(trinoEncoding, "json")}})
+	}
+	return protocols
+}

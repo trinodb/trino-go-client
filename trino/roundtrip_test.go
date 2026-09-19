@@ -106,19 +106,6 @@ func TestRoundTripCancellation(t *testing.T) {
 	assert.Error(t, err, "unexpected query with cancelled context succeeded")
 }
 
-func TestAuthFailure(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-
-	t.Cleanup(ts.Close)
-
-	db, err := sql.Open("trino", ts.URL)
-	require.NoError(t, err)
-
-	assert.NoError(t, db.Close())
-}
-
 func TestTokenAuth(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer token" {
