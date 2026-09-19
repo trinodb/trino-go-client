@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"reflect"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -145,9 +145,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 				dns = tt.rawDSN
 			} else {
 				dns, err = tt.config.FormatDSN()
-				if err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, err)
 			}
 
 			db := integrationOpen(t, dns)
@@ -177,9 +175,7 @@ func TestIntegrationAccessToken(t *testing.T) {
 	}
 
 	accessToken, err := generateToken()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	dsn := tlsServer + "?accessToken=" + accessToken
 
@@ -187,17 +183,14 @@ func TestIntegrationAccessToken(t *testing.T) {
 
 	defer db.Close()
 	rows, err := db.Query("SHOW CATALOGS")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer rows.Close()
 	count := 0
 	for rows.Next() {
 		count++
 	}
-	if count < 1 {
-		t.Fatal("not enough rows returned:", count)
-	}
+	require.NoError(t, rows.Err())
+	assert.GreaterOrEqual(t, count, 1, "not enough rows returned")
 }
 
 func generateToken() (string, error) {
@@ -239,12 +232,8 @@ func TestIntegrationTLS(t *testing.T) {
 	defer db.Close()
 	row := db.QueryRow("SELECT 1")
 	var count int
-	if err := row.Scan(&count); err != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatal("unexpected count=", count)
-	}
+	require.NoError(t, row.Scan(&count))
+	assert.Equal(t, 1, count)
 }
 
 func TestDsnClientTags(t *testing.T) {
@@ -276,34 +265,22 @@ func TestDsnClientTags(t *testing.T) {
 
 			query := "SELECT 1"
 			rows, err := db.Query(query)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer rows.Close()
 
-			if rows.Next() {
-			}
-
-			if err := rows.Err(); err != nil {
-				t.Fatal(err)
-			}
+			rows.Next()
+			require.NoError(t, rows.Err())
 
 			var queryID string
 			err = db.QueryRowContext(context.Background(),
 				"SELECT query_id FROM system.runtime.queries WHERE source = ? AND query = ?", tt.source, query,
 			).Scan(&queryID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
 			queryInfo, err := getQueryInfo(dsn, queryID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			if !reflect.DeepEqual(queryInfo.Session.ClientTags, tt.expectedTags) {
-				t.Fatalf("Expected client tags %v, got %v", tt.expectedTags, queryInfo.Session.ClientTags)
-			}
+			assert.Equal(t, tt.expectedTags, queryInfo.Session.ClientTags, "client tags")
 		})
 	}
 }
@@ -347,34 +324,22 @@ func TestParametersClientTags(t *testing.T) {
 
 			query := "SELECT 1"
 			rows, err := db.Query(query, sql.Named(trinoTagsHeader, tt.Tags))
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 			defer rows.Close()
 
-			if rows.Next() {
-			}
-
-			if err := rows.Err(); err != nil {
-				t.Fatal(err)
-			}
+			rows.Next()
+			require.NoError(t, rows.Err())
 
 			var queryID string
 			err = db.QueryRowContext(context.Background(),
 				"SELECT query_id FROM system.runtime.queries WHERE source = ? AND query = ?", tt.source, query,
 			).Scan(&queryID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
 			queryInfo, err := getQueryInfo(dsn, queryID)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			if !reflect.DeepEqual(queryInfo.Session.ClientTags, tt.expectedTags) {
-				t.Fatalf("Expected client tags %v, got %v", tt.expectedTags, queryInfo.Session.ClientTags)
-			}
+			assert.Equal(t, tt.expectedTags, queryInfo.Session.ClientTags, "client tags")
 		})
 	}
 }

@@ -1,7 +1,6 @@
 package trino
 
 import (
-	"bytes"
 	"database/sql"
 	"encoding/json"
 	"math"
@@ -17,9 +16,7 @@ import (
 
 func TestIntegrationTypeConversion(t *testing.T) {
 	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	dsn := *integrationServerFlag
 	dsn += "?custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
@@ -83,119 +80,38 @@ func TestIntegrationTypeConversion(t *testing.T) {
 		&nullMap,
 		&goRow,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	// Compare the actual and expected values.
-	expectedTime := time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC)
-	if !goTime.Equal(expectedTime) {
-		t.Errorf("expected GoTime to be %v, got %v", expectedTime, goTime)
-	}
+	assert.WithinDuration(t, time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC), goTime, 0, "GoTime")
+	assert.Equal(t, []byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff}, goBytes, "GoBytes")
+	assert.Nil(t, nullBytes, "NullBytes")
+	assert.Equal(t, "string", goString, "GoString")
+	assert.False(t, nullString.Valid, "NullString.Valid")
 
-	expectedBytes := []byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff}
-	if !bytes.Equal(goBytes, expectedBytes) {
-		t.Errorf("expected GoBytes to be %v, got %v", expectedBytes, goBytes)
-	}
+	assert.Equal(t, []sql.NullString{{String: "A", Valid: true}, {String: "B", Valid: true}, {Valid: false}}, nullStringSlice.SliceString)
+	assert.True(t, nullStringSlice.Valid, "NullStringSlice.Valid")
+	assert.Equal(t, [][]sql.NullString{{{String: "A", Valid: true}}, {}}, nullStringSlice2.Slice2String)
+	assert.True(t, nullStringSlice2.Valid, "NullStringSlice2.Valid")
+	assert.Equal(t, [][][]sql.NullString{{{{String: "A", Valid: true}}, {}}, {}}, nullStringSlice3.Slice3String)
+	assert.True(t, nullStringSlice3.Valid, "NullStringSlice3.Valid")
 
-	if nullBytes != nil {
-		t.Errorf("expected NullBytes to be nil, got %v", nullBytes)
-	}
+	assert.Equal(t, []sql.NullInt64{{Int64: 1, Valid: true}, {Int64: 2, Valid: true}, {Valid: false}}, nullInt64Slice.SliceInt64)
+	assert.True(t, nullInt64Slice.Valid, "NullInt64Slice.Valid")
+	assert.Equal(t, [][]sql.NullInt64{{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, {}}, nullInt64Slice2.Slice2Int64)
+	assert.True(t, nullInt64Slice2.Valid, "NullInt64Slice2.Valid")
+	assert.Equal(t, [][][]sql.NullInt64{{{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, {}}, {}}, nullInt64Slice3.Slice3Int64)
+	assert.True(t, nullInt64Slice3.Valid, "NullInt64Slice3.Valid")
 
-	if goString != "string" {
-		t.Errorf("expected GoString to be %q, got %q", "string", goString)
-	}
+	assert.Equal(t, []sql.NullFloat64{{Float64: 1.0, Valid: true}, {Float64: 2.0, Valid: true}, {Valid: false}}, nullFloat64Slice.SliceFloat64)
+	assert.True(t, nullFloat64Slice.Valid, "NullFloat64Slice.Valid")
+	assert.Equal(t, [][]sql.NullFloat64{{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, {}}, nullFloat64Slice2.Slice2Float64)
+	assert.True(t, nullFloat64Slice2.Valid, "NullFloat64Slice2.Valid")
+	assert.Equal(t, [][][]sql.NullFloat64{{{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, {}}, {}}, nullFloat64Slice3.Slice3Float64)
+	assert.True(t, nullFloat64Slice3.Valid, "NullFloat64Slice3.Valid")
 
-	if nullString.Valid {
-		t.Errorf("expected NullString.Valid to be false, got true")
-	}
-
-	if !reflect.DeepEqual(nullStringSlice.SliceString, []sql.NullString{{String: "A", Valid: true}, {String: "B", Valid: true}, {Valid: false}}) {
-		t.Errorf("expected NullStringSlice.SliceString to be %v, got %v",
-			[]sql.NullString{{String: "A", Valid: true}, {String: "B", Valid: true}, {Valid: false}},
-			nullStringSlice.SliceString)
-	}
-	if !nullStringSlice.Valid {
-		t.Errorf("expected NullStringSlice.Valid to be true, got false")
-	}
-
-	expectedSlice2String := [][]sql.NullString{{{String: "A", Valid: true}}, {}}
-	if !reflect.DeepEqual(nullStringSlice2.Slice2String, expectedSlice2String) {
-		t.Errorf("expected NullStringSlice2.Slice2String to be %v, got %v", expectedSlice2String, nullStringSlice2.Slice2String)
-	}
-	if !nullStringSlice2.Valid {
-		t.Errorf("expected NullStringSlice2.Valid to be true, got false")
-	}
-
-	expectedSlice3String := [][][]sql.NullString{{{{String: "A", Valid: true}}, {}}, {}}
-	if !reflect.DeepEqual(nullStringSlice3.Slice3String, expectedSlice3String) {
-		t.Errorf("expected NullStringSlice3.Slice3String to be %v, got %v", expectedSlice3String, nullStringSlice3.Slice3String)
-	}
-	if !nullStringSlice3.Valid {
-		t.Errorf("expected NullStringSlice3.Valid to be true, got false")
-	}
-
-	expectedSliceInt64 := []sql.NullInt64{{Int64: 1, Valid: true}, {Int64: 2, Valid: true}, {Valid: false}}
-	if !reflect.DeepEqual(nullInt64Slice.SliceInt64, expectedSliceInt64) {
-		t.Errorf("expected NullInt64Slice.SliceInt64 to be %v, got %v", expectedSliceInt64, nullInt64Slice.SliceInt64)
-	}
-	if !nullInt64Slice.Valid {
-		t.Errorf("expected NullInt64Slice.Valid to be true, got false")
-	}
-
-	expectedSlice2Int64 := [][]sql.NullInt64{{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, {}}
-	if !reflect.DeepEqual(nullInt64Slice2.Slice2Int64, expectedSlice2Int64) {
-		t.Errorf("expected NullInt64Slice2.Slice2Int64 to be %v, got %v", expectedSlice2Int64, nullInt64Slice2.Slice2Int64)
-	}
-	if !nullInt64Slice2.Valid {
-		t.Errorf("expected NullInt64Slice2.Valid to be true, got false")
-	}
-
-	expectedSlice3Int64 := [][][]sql.NullInt64{{{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, {}}, {}}
-	if !reflect.DeepEqual(nullInt64Slice3.Slice3Int64, expectedSlice3Int64) {
-		t.Errorf("expected NullInt64Slice3.Slice3Int64 to be %v, got %v", expectedSlice3Int64, nullInt64Slice3.Slice3Int64)
-	}
-	if !nullInt64Slice3.Valid {
-		t.Errorf("expected NullInt64Slice3.Valid to be true, got false")
-	}
-
-	expectedSliceFloat64 := []sql.NullFloat64{{Float64: 1.0, Valid: true}, {Float64: 2.0, Valid: true}, {Valid: false}}
-	if !reflect.DeepEqual(nullFloat64Slice.SliceFloat64, expectedSliceFloat64) {
-		t.Errorf("expected NullFloat64Slice.SliceFloat64 to be %v, got %v", expectedSliceFloat64, nullFloat64Slice.SliceFloat64)
-	}
-	if !nullFloat64Slice.Valid {
-		t.Errorf("expected NullFloat64Slice.Valid to be true, got false")
-	}
-
-	expectedSlice2Float64 := [][]sql.NullFloat64{{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, {}}
-	if !reflect.DeepEqual(nullFloat64Slice2.Slice2Float64, expectedSlice2Float64) {
-		t.Errorf("expected NullFloat64Slice2.Slice2Float64 to be %v, got %v", expectedSlice2Float64, nullFloat64Slice2.Slice2Float64)
-	}
-	if !nullFloat64Slice2.Valid {
-		t.Errorf("expected NullFloat64Slice2.Valid to be true, got false")
-	}
-
-	expectedSlice3Float64 := [][][]sql.NullFloat64{{{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, {}}, {}}
-	if !reflect.DeepEqual(nullFloat64Slice3.Slice3Float64, expectedSlice3Float64) {
-		t.Errorf("expected NullFloat64Slice3.Slice3Float64 to be %v, got %v", expectedSlice3Float64, nullFloat64Slice3.Slice3Float64)
-	}
-	if !nullFloat64Slice3.Valid {
-		t.Errorf("expected NullFloat64Slice3.Valid to be true, got false")
-	}
-
-	expectedMap := map[string]interface{}{"a": "c", "b": "d"}
-	if !reflect.DeepEqual(goMap, expectedMap) {
-		t.Errorf("expected GoMap to be %v, got %v", expectedMap, goMap)
-	}
-
-	if nullMap.Valid {
-		t.Errorf("expected NullMap.Valid to be false, got true")
-	}
-
-	expectedRow := []interface{}{json.Number("1"), "a", "2017-07-10 01:02:03.004000 UTC", []interface{}{"c"}}
-	if !reflect.DeepEqual(goRow, expectedRow) {
-		t.Errorf("expected GoRow to be %v, got %v", expectedRow, goRow)
-	}
+	assert.Equal(t, map[string]interface{}{"a": "c", "b": "d"}, goMap, "GoMap")
+	assert.False(t, nullMap.Valid, "NullMap.Valid")
+	assert.Equal(t, []interface{}{json.Number("1"), "a", "2017-07-10 01:02:03.004000 UTC", []interface{}{"c"}}, goRow, "GoRow")
 }
 
 func TestComplexTypes(t *testing.T) {
@@ -243,13 +159,9 @@ func TestComplexTypes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var result interface{}
 			err := db.QueryRow(tt.query).Scan(&result)
-			if err != nil {
-				t.Fatal(err)
-			}
+			require.NoError(t, err)
 
-			if !reflect.DeepEqual(result, tt.expected) {
-				t.Errorf("expected %v, got %v", tt.expected, result)
-			}
+			assert.Equal(t, tt.expected, result)
 		})
 	}
 }
@@ -293,9 +205,7 @@ func TestIntegrationArgsConversion(t *testing.T) {
 		[]byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff},
 		[]string{"A", "B"},
 	).Scan(&value)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 }
 
 func TestIntegrationIntervalArgs(t *testing.T) {
@@ -377,43 +287,25 @@ func TestIntgrationNumberType(t *testing.T) {
 	defer db.Close()
 
 	rows, err := db.Query("SELECT NUMBER '3.14159' AS num, NUMBER 'NaN' as nan_val, CAST(NULL AS NUMBER) as null_num")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer rows.Close()
 
 	columnTypes, err := rows.ColumnTypes()
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	for _, col := range columnTypes {
-		if col.DatabaseTypeName() != "NUMBER" {
-			t.Errorf("expected DatabaseTypeName Number for column %s, got %s", col.Name(), col.DatabaseTypeName())
-		}
+		assert.Equal(t, "NUMBER", col.DatabaseTypeName(), "DatabaseTypeName of column %s", col.Name())
 	}
 
-	if !rows.Next() {
-		t.Fatal("expected at least one row")
-	}
+	require.True(t, rows.Next(), "expected at least one row")
 
 	var num, nanVal sql.NullString
 	var nullNum sql.NullString
-	if err := rows.Scan(&num, &nanVal, &nullNum); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, rows.Scan(&num, &nanVal, &nullNum))
 
-	if !num.Valid || num.String != "3.14159" {
-		t.Errorf("expected num to be 3.14159, got %s", num.String)
-	}
-
-	if !nanVal.Valid || nanVal.String != "NaN" {
-		t.Errorf("expected nanVal to be NaN, got %s", nanVal.String)
-	}
-
-	if nullNum.Valid {
-		t.Errorf("expected nullNum to be invalid, got %s", nullNum.String)
-	}
+	assert.Equal(t, sql.NullString{String: "3.14159", Valid: true}, num, "num")
+	assert.Equal(t, sql.NullString{String: "NaN", Valid: true}, nanVal, "nanVal")
+	assert.False(t, nullNum.Valid, "nullNum.Valid")
 }
 
 func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
@@ -532,10 +424,11 @@ func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := db.Exec("SELECT ?", test.arg)
-			if (err != nil) != test.wantErr {
-				t.Errorf("Exec() error = %v, wantErr %v", err, test.wantErr)
+			if test.wantErr {
+				assert.Error(t, err)
 				return
 			}
+			assert.NoError(t, err)
 		})
 	}
 }
@@ -596,7 +489,7 @@ func TestQueryColumns(t *testing.T) {
 	columns, err := rows.Columns()
 	require.NoError(t, err, "Failed reading result columns")
 
-	assert.Equal(t, 33, len(columns), "Expected 33 result column")
+	assert.Len(t, columns, 33)
 	expectedNames := []string{
 		"bool",
 		"tinyint",
@@ -637,7 +530,7 @@ func TestQueryColumns(t *testing.T) {
 	columnTypes, err := rows.ColumnTypes()
 	require.NoError(t, err, "Failed reading result column types")
 
-	assert.Equal(t, 33, len(columnTypes), "Expected 33 result column type")
+	assert.Len(t, columnTypes, 33)
 
 	type columnType struct {
 		typeName  string
@@ -955,7 +848,7 @@ func TestQueryColumns(t *testing.T) {
 		actualTypes[i].scanType = column.ScanType()
 	}
 
-	assert.Equal(t, actualTypes, expectedTypes)
+	assert.Equal(t, expectedTypes, actualTypes)
 }
 
 func TestMaxGoPrecisionDateTime(t *testing.T) {
@@ -985,7 +878,7 @@ func TestMaxGoPrecisionDateTime(t *testing.T) {
 	columns, err := rows.Columns()
 	require.NoError(t, err, "Failed reading result columns")
 
-	assert.Equal(t, 4, len(columns), "Expected 4 result column")
+	assert.Len(t, columns, 4)
 	expectedNames := []string{
 		"timep",
 		"timeptz",
@@ -997,7 +890,7 @@ func TestMaxGoPrecisionDateTime(t *testing.T) {
 	columnTypes, err := rows.ColumnTypes()
 	require.NoError(t, err, "Failed reading result column types")
 
-	assert.Equal(t, 4, len(columnTypes), "Expected 4 result column type")
+	assert.Len(t, columnTypes, 4)
 
 	type columnType struct {
 		typeName  string
@@ -1054,7 +947,7 @@ func TestMaxGoPrecisionDateTime(t *testing.T) {
 		actualTypes[i].scanType = column.ScanType()
 	}
 
-	assert.Equal(t, actualTypes, expectedTypes)
+	assert.Equal(t, expectedTypes, actualTypes)
 
 	assert.True(t, rows.Next())
 	require.NoError(t, rows.Err())

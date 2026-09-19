@@ -28,6 +28,7 @@ import (
 	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
 	dt "github.com/ory/dockertest/v4"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -496,9 +497,7 @@ func integrationOpen(t *testing.T, dsn ...string) *sql.DB {
 		target = dsn[0]
 	}
 	db, err := sql.Open("trino", target)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	return db
 }
 
