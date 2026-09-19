@@ -1,4 +1,4 @@
-package trino
+package integration
 
 import (
 	"database/sql"
@@ -10,6 +10,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 func TestIntegrationTypeConversion(t *testing.T) {
@@ -25,22 +26,22 @@ func testIntegrationTypeConversion(t *testing.T, db *sql.DB, args ...any) {
 	t.Helper()
 	var (
 		goTime            time.Time
-		nullTime          NullTime
+		nullTime          trino.NullTime
 		goBytes           []byte
 		nullBytes         []byte
 		goString          string
 		nullString        sql.NullString
-		nullStringSlice   NullSliceString
-		nullStringSlice2  NullSlice2String
-		nullStringSlice3  NullSlice3String
-		nullInt64Slice    NullSliceInt64
-		nullInt64Slice2   NullSlice2Int64
-		nullInt64Slice3   NullSlice3Int64
-		nullFloat64Slice  NullSliceFloat64
-		nullFloat64Slice2 NullSlice2Float64
-		nullFloat64Slice3 NullSlice3Float64
+		nullStringSlice   trino.NullSliceString
+		nullStringSlice2  trino.NullSlice2String
+		nullStringSlice3  trino.NullSlice3String
+		nullInt64Slice    trino.NullSliceInt64
+		nullInt64Slice2   trino.NullSlice2Int64
+		nullInt64Slice3   trino.NullSlice3Int64
+		nullFloat64Slice  trino.NullSliceFloat64
+		nullFloat64Slice2 trino.NullSlice2Float64
+		nullFloat64Slice3 trino.NullSlice3Float64
 		goMap             map[string]interface{}
-		nullMap           NullMap
+		nullMap           trino.NullMap
 		goRow             []interface{}
 	)
 	err := db.QueryRow(`
@@ -231,17 +232,17 @@ func TestIntegrationIntervalArgs(t *testing.T) {
 func TestIntegrationTimeTzArgs(t *testing.T) {
 	db := integrationOpen(t)
 	for _, tc := range []struct {
-		arg     trinoTimeTz
+		arg     any
 		literal string
 	}{
-		{TimeTz(11, 34, 25, 123456, time.UTC), "TIME '11:34:25.000123456 +00:00'"},
-		{TimeTz(11, 34, 25, 123456, nil), "TIME '11:34:25.000123456 +00:00'"},
-		{TimeTz(11, 34, 25, 123456, time.FixedZone("test zone", +2*3600)), "TIME '11:34:25.000123456 +02:00'"},
+		{trino.TimeTz(11, 34, 25, 123456, time.UTC), "TIME '11:34:25.000123456 +00:00'"},
+		{trino.TimeTz(11, 34, 25, 123456, nil), "TIME '11:34:25.000123456 +00:00'"},
+		{trino.TimeTz(11, 34, 25, 123456, time.FixedZone("test zone", +2*3600)), "TIME '11:34:25.000123456 +02:00'"},
 	} {
 		var equal bool
 		err := db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal)
 		require.NoError(t, err, tc.literal)
-		require.True(t, equal, "%v did not round-trip as %s", time.Time(tc.arg), tc.literal)
+		require.True(t, equal, "TimeTz did not round-trip as %s", tc.literal)
 	}
 }
 
@@ -255,12 +256,12 @@ func TestIntegrationNumericArgs(t *testing.T) {
 		db := integrationOpen(t, dsn)
 
 		for _, tc := range []struct {
-			arg     Numeric
+			arg     trino.Numeric
 			literal string
 		}{
-			{Numeric("-1.5"), "DECIMAL '-1.5'"},
-			{Numeric("1e3"), "DOUBLE '1000'"},
-			{Numeric(".5"), "DECIMAL '0.5'"},
+			{trino.Numeric("-1.5"), "DECIMAL '-1.5'"},
+			{trino.Numeric("1e3"), "DOUBLE '1000'"},
+			{trino.Numeric(".5"), "DECIMAL '0.5'"},
 		} {
 			var equal bool
 			err := db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal)
@@ -270,7 +271,7 @@ func TestIntegrationNumericArgs(t *testing.T) {
 
 		// Rejected client-side, before anything is sent to the server.
 		var value int
-		err := db.QueryRow("SELECT * FROM (VALUES (99)) AS t(nan) WHERE nan = ?", Numeric("NaN")).Scan(&value)
+		err := db.QueryRow("SELECT * FROM (VALUES (99)) AS t(nan) WHERE nan = ?", trino.Numeric("NaN")).Scan(&value)
 		require.ErrorContains(t, err, `Numeric "NaN" is not a decimal or scientific number literal`, dsn)
 	}
 }
@@ -359,7 +360,7 @@ func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
 }
 
 func TestQueryColumns(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -685,7 +686,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullSliceString{}),
+			reflect.TypeOf(trino.NullSliceString{}),
 		},
 		{
 			"ARRAY(ARRAY(VARCHAR(1)))",
@@ -694,7 +695,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullSlice2String{}),
+			reflect.TypeOf(trino.NullSlice2String{}),
 		},
 		{
 			"ARRAY(ARRAY(ARRAY(VARCHAR(1))))",
@@ -703,7 +704,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullSlice3String{}),
+			reflect.TypeOf(trino.NullSlice3String{}),
 		},
 		{
 			"MAP(VARCHAR(1), INTEGER)",
@@ -712,7 +713,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullMap{}),
+			reflect.TypeOf(trino.NullMap{}),
 		},
 		{
 			"ARRAY(MAP(VARCHAR(1), INTEGER))",
@@ -721,7 +722,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(NullSliceMap{}),
+			reflect.TypeOf(trino.NullSliceMap{}),
 		},
 		{
 			"ROW(VARCHAR(1), INTEGER)",
@@ -772,7 +773,7 @@ func TestQueryColumns(t *testing.T) {
 }
 
 func TestMaxGoPrecisionDateTime(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -932,8 +933,11 @@ func TestIntegrationScanValues(t *testing.T) {
 
 func TestIntegrationTimeZone(t *testing.T) {
 	t.Run("default is the local zone", func(t *testing.T) {
+		// The driver reads the local zone when the connection is opened, so
+		// the test pins it instead of depending on the machine it runs on.
+		t.Setenv("TZ", "Europe/Warsaw")
 		db := integrationOpen(t)
-		local, err := resolveTimeZone(localTimeZoneName())
+		warsaw, err := time.LoadLocation("Europe/Warsaw")
 		require.NoError(t, err)
 
 		var zone string
@@ -941,14 +945,8 @@ func TestIntegrationTimeZone(t *testing.T) {
 		var now time.Time
 		require.NoError(t, db.QueryRow("SELECT current_timestamp(6)").Scan(&now))
 
-		// The server reports the canonical name, e.g. UTC for Etc/UTC, so the
-		// zones are compared by their offset rather than by name.
-		serverZone, err := resolveTimeZone(zone)
-		require.NoError(t, err, "server zone %q", zone)
-		_, wantOffset := now.In(local).Zone()
-		_, gotOffset := now.In(serverZone).Zone()
-		assert.Equal(t, wantOffset, gotOffset, "server zone %s does not match local zone %s", zone, local)
-		assertTimestampIn(t, db, local)
+		assert.Equal(t, "Europe/Warsaw", zone)
+		assertTimestampIn(t, db, warsaw)
 		assert.WithinDuration(t, time.Now(), now, time.Minute, "current_timestamp is read as the instant the server produced")
 	})
 
@@ -968,7 +966,7 @@ func TestIntegrationTimeZone(t *testing.T) {
 		db := integrationOpen(t)
 
 		var zone string
-		require.NoError(t, db.QueryRow("SELECT current_timezone()", sql.Named(trinoTimeZoneHeader, "America/New_York")).Scan(&zone))
+		require.NoError(t, db.QueryRow("SELECT current_timezone()", sql.Named("X-Trino-Time-Zone", "America/New_York")).Scan(&zone))
 
 		assert.Equal(t, "America/New_York", zone)
 	})

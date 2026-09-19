@@ -1,4 +1,4 @@
-package trino
+package integration
 
 import (
 	"context"

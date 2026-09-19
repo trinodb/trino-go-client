@@ -1,14 +1,15 @@
-package trino
+package integration
 
 import (
 	"database/sql"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 func BenchmarkQuery(b *testing.B) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(b),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -37,7 +38,7 @@ func BenchmarkQuery(b *testing.B) {
 // - **`encoding: json+zstd`**: Specifies JSON encoding with Zstd compression for the query result.
 // - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets.
 func BenchmarkSpoolingProtocolSpooledSegmentlJsonZstdDecoderQuery(b *testing.B) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(b),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -49,7 +50,7 @@ func BenchmarkSpoolingProtocolSpooledSegmentlJsonZstdDecoderQuery(b *testing.B) 
 
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
 	for n := 0; n < b.N; n++ {
-		rows, err := db.Query(q, sql.Named(trinoEncoding, "json+zstd"))
+		rows, err := db.Query(q, sql.Named("encoding", "json+zstd"))
 		require.NoError(b, err)
 		for rows.Next() {
 		}
@@ -66,7 +67,7 @@ func BenchmarkSpoolingProtocolSpooledSegmentlJsonZstdDecoderQuery(b *testing.B) 
 // - **`encoding: json+lz4`**: Specifies JSON encoding with LZ4 compression for the query result.
 // - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets.
 func BenchmarkSpoolingProtocolSpooledSegmentJsonLz4DecoderQuery(b *testing.B) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(b),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -78,7 +79,7 @@ func BenchmarkSpoolingProtocolSpooledSegmentJsonLz4DecoderQuery(b *testing.B) {
 
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
 	for n := 0; n < b.N; n++ {
-		rows, err := db.Query(q, sql.Named(trinoEncoding, "json+lz4"))
+		rows, err := db.Query(q, sql.Named("encoding", "json+lz4"))
 		require.NoError(b, err)
 		for rows.Next() {
 		}
@@ -95,7 +96,7 @@ func BenchmarkSpoolingProtocolSpooledSegmentJsonLz4DecoderQuery(b *testing.B) {
 // - **`encoding: json`**: Specifies JSON encoding without compression for the query result.
 // - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets
 func BenchmarkSpoolingProtocolSpooledSegmentJsonDecoderQuery(b *testing.B) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(b),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -107,7 +108,7 @@ func BenchmarkSpoolingProtocolSpooledSegmentJsonDecoderQuery(b *testing.B) {
 
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
 	for n := 0; n < b.N; n++ {
-		rows, err := db.Query(q, sql.Named(trinoEncoding, "json"))
+		rows, err := db.Query(q, sql.Named("encoding", "json"))
 		require.NoError(b, err)
 		for rows.Next() {
 		}

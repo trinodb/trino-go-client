@@ -16,14 +16,15 @@ The unit tests run against an in-process fake coordinator and finish in a few
 seconds:
 
 ```bash
-go test -short -v -race ./...
+go test -v -race ./...
 ```
 
-The integration tests start Trino, and an S3 emulator for the spooling protocol,
-in Docker:
+The integration tests live in the `integration` module, so that the driver
+module carries no Docker dependencies. They start Trino, and an S3 emulator for
+the spooling protocol, in Docker:
 
 ```bash
-go test -v -race -timeout 2m ./... -trino_image_tag=latest
+go test -C integration -v -race -timeout 2m ./... -trino_image_tag=latest
 ```
 
 The `-trino_image_tag` flag picks the Trino release; CI runs `latest` and `372`.
@@ -31,8 +32,8 @@ To iterate against a running server, start the containers once with
 `-no_cleanup`, then pass its address with `-trino_server_dsn`:
 
 ```bash
-go test -run TestIntegrationNoResults ./... -no_cleanup
-go test -v -run 'TestIntegration.*' ./... -trino_server_dsn=http://test@localhost:$(docker port trino-go-client-tests 8080 | head -1 | sed 's/.*://')
+go test -C integration -run TestIntegrationNoResults ./... -no_cleanup
+go test -C integration -v -run 'TestIntegration.*' ./... -trino_server_dsn=http://test@localhost:$(docker port trino-go-client-tests 8080 | head -1 | sed 's/.*://')
 ```
 
 Tests that need a feature the server lacks skip themselves based on the

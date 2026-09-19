@@ -1,4 +1,4 @@
-package trino
+package integration
 
 import (
 	"context"
@@ -15,13 +15,14 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 func TestRoleHeaderSupport(t *testing.T) {
 	requireServerVersion(t, 458)
 	tests := []struct {
 		name         string
-		config       Config
+		config       trino.Config
 		rawDSN       string
 		query        string
 		expectError  bool
@@ -30,7 +31,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 	}{
 		{
 			name: "Valid hive admin role via Config",
-			config: Config{
+			config: trino.Config{
 				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"hive": "admin"},
 			},
@@ -51,7 +52,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		},
 		{
 			name: "Valid special roles via Config",
-			config: Config{
+			config: trino.Config{
 				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"tpch": "NONE", "memory": "ALL"},
 			},
@@ -96,7 +97,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		},
 		{
 			name: "No role - should fail to show roles",
-			config: Config{
+			config: trino.Config{
 				ServerURI: integrationDSN(t),
 			},
 			query:       "SHOW ROLES FROM hive",
@@ -105,7 +106,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		},
 		{
 			name: "Wrong role - should fail to show roles",
-			config: Config{
+			config: trino.Config{
 				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"hive": "ALL"},
 			},
@@ -115,7 +116,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		},
 		{
 			name: "Non-existent catalog role",
-			config: Config{
+			config: trino.Config{
 				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"not-exist-catalog": "role1"},
 			},
@@ -306,7 +307,7 @@ func TestParametersClientTags(t *testing.T) {
 			db := integrationOpen(t, dsn)
 
 			query := "SELECT 1"
-			rows, err := db.Query(query, sql.Named(trinoTagsHeader, tt.Tags))
+			rows, err := db.Query(query, sql.Named("X-Trino-Client-Tags", tt.Tags))
 			require.NoError(t, err)
 			defer rows.Close()
 
