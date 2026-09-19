@@ -1888,16 +1888,15 @@ func (qr driverRows) RowsAffected() (int64, error) {
 }
 
 type queryResponse struct {
-	ID               string        `json:"id"`
-	InfoURI          string        `json:"infoUri"`
-	PartialCancelURI string        `json:"partialCancelUri"`
-	NextURI          string        `json:"nextUri"`
-	Columns          []queryColumn `json:"columns"`
-	Data             interface{}   `json:"data"`
-	Stats            stmtStats     `json:"stats"`
-	Error            ErrTrino      `json:"error"`
-	UpdateType       string        `json:"updateType"`
-	UpdateCount      int64         `json:"updateCount"`
+	ID          string        `json:"id"`
+	InfoURI     string        `json:"infoUri"`
+	NextURI     string        `json:"nextUri"`
+	Columns     []queryColumn `json:"columns"`
+	Data        interface{}   `json:"data"`
+	Stats       stmtStats     `json:"stats"`
+	Error       ErrTrino      `json:"error"`
+	UpdateType  string        `json:"updateType"`
+	UpdateCount int64         `json:"updateCount"`
 }
 
 type segmentMetadata struct {
