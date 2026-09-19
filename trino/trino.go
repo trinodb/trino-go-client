@@ -795,6 +795,25 @@ func (c *Conn) Close() error {
 	return nil
 }
 
+// rewindRequestBody restores a request body consumed by a failed attempt so
+// that a retry sends it again. net/http can rewind the in-memory bodies that
+// http.NewRequest recognizes; a body it cannot rewind makes the request
+// unretryable, which surfaces as an error instead of a retry with no body.
+func rewindRequestBody(req *http.Request) error {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil
+	}
+	if req.GetBody == nil {
+		return errors.New("trino: request body cannot be rewound for a retry")
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return fmt.Errorf("trino: rewinding request body for a retry: %w", err)
+	}
+	req.Body = body
+	return nil
+}
+
 func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reader, hs http.Header) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -849,6 +868,9 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 				return resp, nil
 			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 				resp.Body.Close()
+				if err := rewindRequestBody(req); err != nil {
+					return nil, &ErrQueryFailed{Reason: err}
+				}
 				timer.Reset(delay)
 				delay = time.Duration(math.Min(
 					float64(delay)*math.Phi,
