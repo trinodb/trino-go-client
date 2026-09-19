@@ -1,0 +1,340 @@
+package trino
+
+import (
+	"database/sql"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
+
+const fakeQueryID = "fake-query"
+
+// fakeCoordinator is an in-process stand-in for a Trino coordinator. It serves
+// the pages of a single query, spooled segment downloads and their
+// acknowledgements, heartbeats, and query cancellation, and records every
+// request it receives so tests can assert on what the driver sent.
+type fakeCoordinator struct {
+	t      testing.TB
+	server *httptest.Server
+
+	mu        sync.Mutex
+	pages     []page
+	downloads map[string]http.HandlerFunc
+	heartbeat http.HandlerFunc
+	requests  []capturedRequest
+	acks      []string
+}
+
+type capturedRequest struct {
+	method string
+	path   string
+	header http.Header
+	body   []byte
+}
+
+// page is one response in the sequence a query returns: the initial POST to
+// /v1/statement, then one GET per nextUri.
+type page struct {
+	header   http.Header
+	response func(baseURL string) any
+}
+
+func newFakeCoordinator(t testing.TB) *fakeCoordinator {
+	t.Helper()
+	fc := &fakeCoordinator{
+		t:         t,
+		downloads: map[string]http.HandlerFunc{},
+	}
+	fc.server = httptest.NewServer(fc)
+	t.Cleanup(fc.server.Close)
+	return fc
+}
+
+func (fc *fakeCoordinator) url() string {
+	return fc.server.URL
+}
+
+// open returns a database handle pointed at the fake; params is appended to
+// the DSN and must start with "?" when not empty.
+func (fc *fakeCoordinator) open(t testing.TB, params string) *sql.DB {
+	t.Helper()
+	db, err := sql.Open("trino", fc.url()+params)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	return db
+}
+
+// respond sets the pages served for the next query. Every page but the last
+// gets a nextUri pointing at the following one.
+func (fc *fakeCoordinator) respond(pages ...page) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.pages = pages
+}
+
+// serveSegment makes a spooled segment download return body with status 200.
+func (fc *fakeCoordinator) serveSegment(name string, body []byte) {
+	fc.handleSegment(name, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
+}
+
+// handleSegment routes a spooled segment download to handler.
+func (fc *fakeCoordinator) handleSegment(name string, handler http.HandlerFunc) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.downloads[name] = handler
+}
+
+// onHeartbeat routes every HEAD request to handler; the default answers 200.
+func (fc *fakeCoordinator) onHeartbeat(handler http.HandlerFunc) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.heartbeat = handler
+}
+
+// capturedRequests returns a copy of every request received so far.
+func (fc *fakeCoordinator) capturedRequests() []capturedRequest {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return append([]capturedRequest(nil), fc.requests...)
+}
+
+// ackedSegments returns the names of the segments acknowledged so far.
+func (fc *fakeCoordinator) ackedSegments() []string {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return append([]string(nil), fc.acks...)
+}
+
+func (fc *fakeCoordinator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, _ := io.ReadAll(r.Body)
+	fc.mu.Lock()
+	fc.requests = append(fc.requests, capturedRequest{
+		method: r.Method,
+		path:   r.URL.Path,
+		header: r.Header.Clone(),
+		body:   body,
+	})
+	heartbeat := fc.heartbeat
+	fc.mu.Unlock()
+
+	switch {
+	case r.Method == http.MethodHead:
+		if heartbeat == nil {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		heartbeat(w, r)
+	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/query/"):
+		w.WriteHeader(http.StatusNoContent)
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/statement":
+		fc.servePage(w, 0)
+	case strings.HasPrefix(r.URL.Path, "/v1/statement/"+fakeQueryID+"/"):
+		index, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/v1/statement/"+fakeQueryID+"/"))
+		if err != nil {
+			fc.unexpected(w, r)
+			return
+		}
+		fc.servePage(w, index)
+	case strings.HasPrefix(r.URL.Path, "/v1/spooled/download/"):
+		fc.serveDownload(w, r)
+	case strings.HasPrefix(r.URL.Path, "/v1/spooled/ack/"):
+		fc.mu.Lock()
+		fc.acks = append(fc.acks, strings.TrimPrefix(r.URL.Path, "/v1/spooled/ack/"))
+		fc.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	default:
+		fc.unexpected(w, r)
+	}
+}
+
+func (fc *fakeCoordinator) servePage(w http.ResponseWriter, index int) {
+	fc.mu.Lock()
+	pages := fc.pages
+	fc.mu.Unlock()
+	if index >= len(pages) {
+		fc.t.Errorf("fake coordinator: page %d requested but only %d pages were configured", index, len(pages))
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	p := pages[index]
+	for name, values := range p.header {
+		for _, value := range values {
+			w.Header().Add(name, value)
+		}
+	}
+	response := p.response(fc.url())
+	if index+1 < len(pages) {
+		setNextURI(response, fc.url()+"/v1/statement/"+fakeQueryID+"/"+strconv.Itoa(index+1))
+	}
+	fc.writeJSON(w, response)
+}
+
+func (fc *fakeCoordinator) serveDownload(w http.ResponseWriter, r *http.Request) {
+	fc.mu.Lock()
+	handler, ok := fc.downloads[strings.TrimPrefix(r.URL.Path, "/v1/spooled/download/")]
+	fc.mu.Unlock()
+	if !ok {
+		fc.unexpected(w, r)
+		return
+	}
+	handler(w, r)
+}
+
+func (fc *fakeCoordinator) unexpected(w http.ResponseWriter, r *http.Request) {
+	w.WriteHeader(http.StatusInternalServerError)
+	fc.writeJSON(w, ErrTrino{ErrorName: "Unexpected request", Message: r.Method + " " + r.URL.Path})
+}
+
+func (fc *fakeCoordinator) writeJSON(w http.ResponseWriter, v any) {
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		fc.t.Errorf("fake coordinator: encoding response: %v", err)
+	}
+}
+
+func setNextURI(response any, nextURI string) {
+	switch r := response.(type) {
+	case *stmtResponse:
+		r.NextURI = nextURI
+	case *queryResponse:
+		r.NextURI = nextURI
+	}
+}
+
+// pageOf serves response as is; its nextUri is filled in by the fake.
+func pageOf(response any) page {
+	return page{response: func(string) any { return response }}
+}
+
+// statementPage is the response to the initial POST: a query ID and nothing else.
+func statementPage() page {
+	return pageOf(&stmtResponse{ID: fakeQueryID})
+}
+
+// resultPage serves one integer column with the given data, which is either
+// a [][]interface{} for the direct protocol or a map for the spooling one.
+func resultPage(data any) page {
+	return pageOf(&queryResponse{
+		ID:      fakeQueryID,
+		Columns: []queryColumn{integerColumn("_col0")},
+		Data:    data,
+	})
+}
+
+// spooledPage serves the segments under the spooling protocol. Relative uri
+// and ackUri values are resolved against the fake's address when served.
+func spooledPage(encoding string, segments ...map[string]any) page {
+	return page{response: func(baseURL string) any {
+		resolved := make([]map[string]any, 0, len(segments))
+		for _, segment := range segments {
+			resolved = append(resolved, resolveSegmentURIs(segment, baseURL))
+		}
+		return &queryResponse{
+			ID:      fakeQueryID,
+			Columns: []queryColumn{integerColumn("_col0")},
+			Data: map[string]any{
+				"encoding": encoding,
+				"segments": resolved,
+			},
+		}
+	}}
+}
+
+// emptyPage is a final page that carries no columns and no data.
+func emptyPage() page {
+	return pageOf(&queryResponse{})
+}
+
+func (p page) withHeader(name, value string) page {
+	header := p.header.Clone()
+	if header == nil {
+		header = http.Header{}
+	}
+	header.Add(name, value)
+	p.header = header
+	return p
+}
+
+func integerColumn(name string) queryColumn {
+	return queryColumn{
+		Name: name,
+		Type: "integer",
+		TypeSignature: typeSignature{
+			RawType:   "integer",
+			Arguments: []typeArgument{},
+		},
+	}
+}
+
+// spooledSegment describes a segment downloaded from the fake under name.
+func spooledSegment(name string, metadata any) map[string]any {
+	return map[string]any{
+		"type":     "spooled",
+		"uri":      "/v1/spooled/download/" + name,
+		"ackUri":   "/v1/spooled/ack/" + name,
+		"metadata": metadata,
+		"headers":  map[string]any{"test": []any{"test"}},
+	}
+}
+
+// inlineSegment describes a segment whose base64 encoded data travels with the page.
+func inlineSegment(data string, metadata any) map[string]any {
+	return map[string]any{
+		"type":     "inline",
+		"data":     data,
+		"metadata": metadata,
+	}
+}
+
+func withField(segment map[string]any, key string, value any) map[string]any {
+	copied := copySegment(segment)
+	copied[key] = value
+	return copied
+}
+
+func withoutField(segment map[string]any, keys ...string) map[string]any {
+	copied := copySegment(segment)
+	for _, key := range keys {
+		delete(copied, key)
+	}
+	return copied
+}
+
+func copySegment(segment map[string]any) map[string]any {
+	copied := make(map[string]any, len(segment))
+	for key, value := range segment {
+		copied[key] = value
+	}
+	return copied
+}
+
+func resolveSegmentURIs(segment map[string]any, baseURL string) map[string]any {
+	resolved := copySegment(segment)
+	for _, key := range []string{"uri", "ackUri"} {
+		if value, ok := resolved[key].(string); ok && strings.HasPrefix(value, "/") {
+			resolved[key] = baseURL + value
+		}
+	}
+	return resolved
+}
+
+// collectInts scans every remaining row as a single integer column.
+func collectInts(t testing.TB, rows *sql.Rows) []int {
+	t.Helper()
+	var results []int
+	for rows.Next() {
+		var value int
+		require.NoError(t, rows.Scan(&value))
+		results = append(results, value)
+	}
+	return results
+}

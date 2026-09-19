@@ -3,10 +3,8 @@ package trino
 import (
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,68 +16,35 @@ import (
 func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 	testcases := []struct {
 		Name           string
-		Segments       []map[string]interface{}
+		Segment        map[string]any
 		ExpectedResult []int
 		Encoding       string
 		DownloadedData []byte
 	}{
 		{
-			Name: "noCompression",
-			Segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"segmentSize": 16, "rowOffset": 0, "rowsCount": 2},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			Name:           "noCompression",
+			Segment:        spooledSegment("seg", map[string]any{"segmentSize": 16, "rowOffset": 0, "rowsCount": 2}),
 			Encoding:       "json",
 			ExpectedResult: []int{1000, 10001},
 			DownloadedData: []byte("[[1000],[10001]]"),
 		},
 		{
-			Name: "zstdCompression",
-			Segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			Name:           "zstdCompression",
+			Segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}),
 			Encoding:       "json+zstd",
 			ExpectedResult: []int{1000, 10001},
 			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
-			Name: "spooledSegmentWithoutHeadersOnReponse", // headers are optional
-			Segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29},
-					"ackUri":   "test",
-				},
-			},
+			Name:           "spooledSegmentWithoutHeadersOnReponse", // headers are optional
+			Segment:        withoutField(spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}), "headers"),
 			Encoding:       "json+zstd",
 			ExpectedResult: []int{1000, 10001},
 			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
-			Name: "zlibCompression",
-			Segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 18},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			Name:           "zlibCompression",
+			Segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 18}),
 			Encoding:       "json+lz4",
 			ExpectedResult: []int{1000, 10001},
 			DownloadedData: mustDecodeBase64("8AFbWzEwMDBdLFsxMDAwMV1d"),
@@ -88,64 +53,15 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.Name, func(t *testing.T) {
-			var ts *httptest.Server
-			ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/statement" {
-					json.NewEncoder(w).Encode(&stmtResponse{
-						ID:      "fake-query",
-						NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-					})
-
-					return
-				}
-				if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
-					json.NewEncoder(w).Encode(&queryResponse{
-						ID: "fake-query",
-						Columns: []queryColumn{
-							{
-								Name: "_col0",
-								Type: "integer",
-								TypeSignature: typeSignature{
-									RawType:   "integer",
-									Arguments: []typeArgument{},
-								},
-							},
-						},
-						Data: map[string]interface{}{
-							"encoding": tc.Encoding,
-							"segments": tc.Segments,
-						},
-					})
-					return
-				}
-				if r.URL.Path == "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=" {
-					w.Write(tc.DownloadedData)
-					return
-				}
-
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-			}))
-
-			defer ts.Close()
-
-			tc.Segments[0]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc="
-
-			db, err := sql.Open("trino", ts.URL)
-			require.NoError(t, err)
-			defer db.Close()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage(tc.Encoding, tc.Segment))
+			fc.serveSegment("seg", tc.DownloadedData)
+			db := fc.open(t, "")
 
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
 
-			var results []int
-			for rows.Next() {
-				var value int
-				err := rows.Scan(&value)
-				require.NoError(t, err)
-				results = append(results, value)
-			}
-
+			results := collectInts(t, rows)
 			require.NoError(t, rows.Err())
 
 			assert.Equal(t, tc.ExpectedResult, results, "Expected query results to match")
@@ -154,101 +70,21 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 }
 
 func TestSpoolingProtocolToManyOutOfOrderSegmentDownload(t *testing.T) {
-	segments := []map[string]interface{}{
-		{
-			"type":     "spooled",
-			"metadata": map[string]interface{}{"segmentSize": 8, "rowOffset": 30, "rowsCount": 1},
-			"ackUri":   "test",
-			"headers": map[string]interface{}{
-				"test": []interface{}{"test"},
-			},
-		},
-		{
-			"type":     "spooled",
-			"metadata": map[string]interface{}{"segmentSize": 8, "rowOffset": 20, "rowsCount": 1},
-			"ackUri":   "test",
-			"headers": map[string]interface{}{
-				"test": []interface{}{"test"},
-			},
-		},
-		{
-			"type":     "spooled",
-			"metadata": map[string]interface{}{"segmentSize": 8, "rowOffset": 40, "rowsCount": 1},
-			"ackUri":   "test",
-			"headers": map[string]interface{}{
-				"test": []interface{}{"test"},
-			},
-		},
-	}
-
-	var ts *httptest.Server
-	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/statement":
-			json.NewEncoder(w).Encode(&stmtResponse{
-				ID:      "fake-query",
-				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-			})
-			return
-
-		case "/v1/statement/20210817_140827_00000_arvdv/1":
-			json.NewEncoder(w).Encode(&queryResponse{
-				ID: "fake-query",
-				Columns: []queryColumn{
-					{
-						Name: "_col0",
-						Type: "integer",
-						TypeSignature: typeSignature{
-							RawType:   "integer",
-							Arguments: []typeArgument{},
-						},
-					},
-				},
-				Data: map[string]interface{}{
-					"encoding": "json",
-					"segments": segments,
-				},
-			})
-			return
-
-		case "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=":
-			w.Write([]byte("[[1000]]"))
-			return
-
-		case "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc1=":
-			w.Write([]byte("[[1001]]"))
-
-			return
-
-		case "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc2=":
-			w.Write([]byte("[[1002]]"))
-
-			return
-
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-		}
-	}))
-	defer ts.Close()
-
-	// Inject segment URIs into the segment definitions
-	segments[0]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc="
-	segments[1]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc1="
-	segments[2]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc2="
-
-	db, err := sql.Open("trino", ts.URL)
-	require.NoError(t, err)
-	defer db.Close()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg0", map[string]any{"segmentSize": 8, "rowOffset": 30, "rowsCount": 1}),
+		spooledSegment("seg1", map[string]any{"segmentSize": 8, "rowOffset": 20, "rowsCount": 1}),
+		spooledSegment("seg2", map[string]any{"segmentSize": 8, "rowOffset": 40, "rowsCount": 1}),
+	))
+	fc.serveSegment("seg0", []byte("[[1000]]"))
+	fc.serveSegment("seg1", []byte("[[1001]]"))
+	fc.serveSegment("seg2", []byte("[[1002]]"))
+	db := fc.open(t, "")
 
 	rows, err := db.Query("SELECT 1", sql.Named(trinoMaxOutOfOrdersSegments, "3"), sql.Named(trinoSpoolingWorkerCount, "2"))
 	require.NoError(t, err)
 
-	for rows.Next() {
-		var value int
-		err := rows.Scan(&value)
-		require.NoError(t, err)
-	}
+	collectInts(t, rows)
 
 	require.Error(t, rows.Err())
 
@@ -256,105 +92,22 @@ func TestSpoolingProtocolToManyOutOfOrderSegmentDownload(t *testing.T) {
 }
 
 func TestSpoolingProtocolOutOfOrderSegment(t *testing.T) {
-	// Define the segments
-	segments := []map[string]interface{}{
-		{
-			"type":     "spooled",
-			"metadata": map[string]interface{}{"segmentSize": 8, "rowOffset": 2, "rowsCount": 1},
-			"ackUri":   "test",
-			"headers": map[string]interface{}{
-				"test": []interface{}{"test"},
-			},
-		},
-		{
-			"type":     "spooled",
-			"metadata": map[string]interface{}{"segmentSize": 8, "rowOffset": 1, "rowsCount": 1},
-			"ackUri":   "test",
-			"headers": map[string]interface{}{
-				"test": []interface{}{"test"},
-			},
-		},
-		{
-			"type":     "spooled",
-			"metadata": map[string]interface{}{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1},
-			"ackUri":   "test",
-			"headers": map[string]interface{}{
-				"test": []interface{}{"test"},
-			},
-		},
-	}
-
-	var ts *httptest.Server
-	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/statement":
-			json.NewEncoder(w).Encode(&stmtResponse{
-				ID:      "fake-query",
-				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-			})
-			return
-
-		case "/v1/statement/20210817_140827_00000_arvdv/1":
-			json.NewEncoder(w).Encode(&queryResponse{
-				ID: "fake-query",
-				Columns: []queryColumn{
-					{
-						Name: "_col0",
-						Type: "integer",
-						TypeSignature: typeSignature{
-							RawType:   "integer",
-							Arguments: []typeArgument{},
-						},
-					},
-				},
-				Data: map[string]interface{}{
-					"encoding": "json",
-					"segments": segments,
-				},
-			})
-			return
-
-		case "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=":
-			w.Write([]byte("[[1000]]"))
-			return
-
-		case "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc1=":
-			w.Write([]byte("[[1001]]"))
-
-			return
-
-		case "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc2=":
-			w.Write([]byte("[[1002]]"))
-
-			return
-
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-		}
-	}))
-	defer ts.Close()
-
-	// Inject segment URIs into the segment definitions
-	segments[2]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc="
-	segments[1]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc1="
-	segments[0]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc2="
-
-	db, err := sql.Open("trino", ts.URL)
-	require.NoError(t, err)
-	defer db.Close()
+	fc := newFakeCoordinator(t)
+	// the segments are listed in reverse row order
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg2", map[string]any{"segmentSize": 8, "rowOffset": 2, "rowsCount": 1}),
+		spooledSegment("seg1", map[string]any{"segmentSize": 8, "rowOffset": 1, "rowsCount": 1}),
+		spooledSegment("seg0", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.serveSegment("seg0", []byte("[[1000]]"))
+	fc.serveSegment("seg1", []byte("[[1001]]"))
+	fc.serveSegment("seg2", []byte("[[1002]]"))
+	db := fc.open(t, "")
 
 	rows, err := db.Query("SELECT 1", sql.Named(trinoMaxOutOfOrdersSegments, "3"), sql.Named(trinoSpoolingWorkerCount, "1"))
 	require.NoError(t, err)
 
-	var results []int
-	for rows.Next() {
-		var value int
-		err := rows.Scan(&value)
-		require.NoError(t, err)
-		results = append(results, value)
-	}
-
+	results := collectInts(t, rows)
 	require.NoError(t, rows.Err())
 
 	expected := []int{1000, 1001, 1002}
@@ -364,8 +117,6 @@ func TestSpoolingProtocolOutOfOrderSegment(t *testing.T) {
 func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 	testcases := []struct {
 		Name              string
-		ExpectedErrorMsg  string
-		SimulateTimeout   bool
 		HttpStatusReponse int
 	}{
 		{
@@ -384,150 +135,60 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.Name, func(t *testing.T) {
-			var ts *httptest.Server
-			var failCounter int
-			ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/statement" {
-					json.NewEncoder(w).Encode(&stmtResponse{
-						ID:      "fake-query",
-						NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-					})
+			var failCounter atomic.Int32
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json",
+				spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+			))
+			fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+				if failCounter.Load() < 2 {
+					failCounter.Add(1)
+					w.WriteHeader(tc.HttpStatusReponse)
 					return
 				}
-				if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
-					json.NewEncoder(w).Encode(&queryResponse{
-						ID: "fake-query",
-						Columns: []queryColumn{
-							{
-								Name: "_col0",
-								Type: "integer",
-								TypeSignature: typeSignature{
-									RawType:   "integer",
-									Arguments: []typeArgument{},
-								},
-							},
-						},
-						Data: map[string]interface{}{
-							"encoding": "json",
-							"segments": []map[string]interface{}{
-								{
-									"uri":      ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=",
-									"type":     "spooled",
-									"metadata": map[string]interface{}{"segmentSize": 325, "rowOffset": 0, "rowsCount": 1},
-									"ackUri":   "test",
-									"headers": map[string]interface{}{
-										"test": []interface{}{"test"},
-									},
-								},
-							},
-						},
-					})
-					return
-				}
-				if r.URL.Path == "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=" {
-					if failCounter < 2 {
-						failCounter++
-						w.WriteHeader(tc.HttpStatusReponse)
-						return
-					}
-					w.WriteHeader(http.StatusOK)
-					w.Write([]byte("[[1000]]"))
-				}
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-			}))
-			defer ts.Close()
-
-			db, err := sql.Open("trino", ts.URL)
-			require.NoError(t, err)
-			defer db.Close()
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("[[1000]]"))
+			})
+			db := fc.open(t, "")
 
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
 
-			var results []int
-			for rows.Next() {
-				var value int
-				err := rows.Scan(&value)
-				require.NoError(t, err)
-				results = append(results, value)
-			}
-
+			results := collectInts(t, rows)
 			require.NoError(t, rows.Err())
 
 			assert.Equal(t, []int{1000}, results, "Expected query results to match")
-			assert.Equal(t, 2, failCounter, "Expected segment download to fail exactly 2 times before succeeding")
+			assert.Equal(t, int32(2), failCounter.Load(), "Expected segment download to fail exactly 2 times before succeeding")
 		})
 	}
 }
 
 func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
-	var ts *httptest.Server
-	failCounter := 0
-	maxRetries := 6
+	var failCounter atomic.Int32
+	maxRetries := int32(6)
 
-	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/v1/statement":
-			json.NewEncoder(w).Encode(&stmtResponse{
-				ID:      "fake-query",
-				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-			})
-		case "/v1/statement/20210817_140827_00000_arvdv/1":
-			json.NewEncoder(w).Encode(&queryResponse{
-				ID: "fake-query",
-				Columns: []queryColumn{
-					{
-						Name: "_col0",
-						Type: "integer",
-						TypeSignature: typeSignature{
-							RawType:   "integer",
-							Arguments: []typeArgument{},
-						},
-					},
-				},
-				Data: map[string]interface{}{
-					"encoding": "json",
-					"segments": []map[string]interface{}{
-						{
-							"uri":      ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=",
-							"type":     "spooled",
-							"metadata": map[string]interface{}{"segmentSize": 325, "rowOffset": 0, "rowsCount": 1},
-							"ackUri":   "test",
-							"headers": map[string]interface{}{
-								"test": []interface{}{"test"},
-							},
-						},
-					},
-				},
-			})
-		case "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=":
-			if failCounter <= maxRetries {
-				failCounter++
-				w.WriteHeader(http.StatusBadGateway)
-				return
-			}
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+		if failCounter.Load() <= maxRetries {
+			failCounter.Add(1)
+			w.WriteHeader(http.StatusBadGateway)
+			return
 		}
-	}))
-	defer ts.Close()
-
-	db, err := sql.Open("trino", ts.URL)
-	require.NoError(t, err)
-	defer db.Close()
+	})
+	db := fc.open(t, "")
 
 	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
 
-	for rows.Next() {
-	}
+	collectInts(t, rows)
 
 	require.Error(t, rows.Err())
 
 	require.ErrorContains(t, rows.Err(), "max retries reached for status code 502")
-	assert.Equal(t, maxRetries, failCounter, "Expected segment download to fail exactly 5 times before succeeding")
+	assert.Equal(t, maxRetries, failCounter.Load(), "Expected segment download to fail exactly 5 times before succeeding")
 }
 
 func mustDecodeBase64(encoded string) []byte {
@@ -539,80 +200,19 @@ func mustDecodeBase64(encoded string) []byte {
 }
 
 func TestSpoolingProtocolOnlyWithInlineSegments(t *testing.T) {
-	var ts *httptest.Server
-
-	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/statement" {
-			json.NewEncoder(w).Encode(&stmtResponse{
-				ID:      "fake-query",
-				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-			})
-
-			return
-		}
-		if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
-			json.NewEncoder(w).Encode(&queryResponse{
-				ID: "fake-query",
-				Columns: []queryColumn{
-					{
-						Name: "_col0",
-						Type: "integer",
-						TypeSignature: typeSignature{
-							RawType:   "integer",
-							Arguments: []typeArgument{},
-						},
-					},
-				},
-				Data: map[string]interface{}{
-					"encoding": "json",
-					"segments": []map[string]interface{}{
-						{
-							"type":     "inline",
-							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
-							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 0},
-						},
-						{
-							"type":     "inline",
-							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
-							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 2},
-						},
-						{
-							"type":     "inline",
-							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
-							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 4},
-						},
-						{
-							"type":     "inline",
-							"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
-							"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 6},
-						},
-					},
-				},
-			})
-			return
-		}
-
-		w.WriteHeader(http.StatusInternalServerError)
-		json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-	}))
-
-	defer ts.Close()
-
-	db, err := sql.Open("trino", ts.URL)
-	require.NoError(t, err)
-	defer db.Close()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 0}),
+		inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 2}),
+		inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 4}),
+		inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 6}),
+	))
+	db := fc.open(t, "")
 
 	rows, err := db.Query("SELECT 1", sql.Named(trinoSpoolingWorkerCount, "2"), sql.Named(trinoMaxOutOfOrdersSegments, "2"))
 	require.NoError(t, err)
 
-	var results []int
-	for rows.Next() {
-		var value int
-		err := rows.Scan(&value)
-		require.NoError(t, err)
-		results = append(results, value)
-	}
-
+	results := collectInts(t, rows)
 	require.NoError(t, rows.Err())
 
 	assert.Equal(t, []int{1000, 10001, 1000, 10001, 1000, 10001, 1000, 10001}, results, "Expected query results to match")
@@ -621,43 +221,25 @@ func TestSpoolingProtocolOnlyWithInlineSegments(t *testing.T) {
 func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 	testcases := []struct {
 		Name           string
-		Segments       []map[string]interface{}
+		Segment        map[string]any
 		ExpectedResult []int
 		Encoding       string
 	}{
 		{
-			Name: "noCompression",
-			Segments: []map[string]interface{}{
-				{
-					"type":     "inline",
-					"data":     "W1sxMDAwXSwgWzEwMDAxXV0=",
-					"metadata": map[string]interface{}{"segmentSize": 17, "rowOffset": 0},
-				},
-			},
+			Name:           "noCompression",
+			Segment:        inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 0}),
 			Encoding:       "json",
 			ExpectedResult: []int{1000, 10001},
 		},
 		{
-			Name: "zstdCompression",
-			Segments: []map[string]interface{}{
-				{
-					"type":     "inline",
-					"data":     "KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=",
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29},
-				},
-			},
+			Name:           "zstdCompression",
+			Segment:        inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}),
 			Encoding:       "json+zstd",
 			ExpectedResult: []int{1000, 10001},
 		},
 		{
-			Name: "zlibCompression",
-			Segments: []map[string]interface{}{
-				{
-					"type":     "inline",
-					"data":     "8AFbWzEwMDBdLFsxMDAwMV1d",
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 18},
-				},
-			},
+			Name:           "zlibCompression",
+			Segment:        inlineSegment("8AFbWzEwMDBdLFsxMDAwMV1d", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 18}),
 			Encoding:       "json+lz4",
 			ExpectedResult: []int{1000, 10001},
 		},
@@ -665,59 +247,14 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.Name, func(t *testing.T) {
-			var ts *httptest.Server
-
-			ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/statement" {
-					json.NewEncoder(w).Encode(&stmtResponse{
-						ID:      "fake-query",
-						NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-					})
-
-					return
-				}
-				if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
-					json.NewEncoder(w).Encode(&queryResponse{
-						ID: "fake-query",
-						Columns: []queryColumn{
-							{
-								Name: "_col0",
-								Type: "integer",
-								TypeSignature: typeSignature{
-									RawType:   "integer",
-									Arguments: []typeArgument{},
-								},
-							},
-						},
-						Data: map[string]interface{}{
-							"encoding": tc.Encoding,
-							"segments": tc.Segments,
-						},
-					})
-					return
-				}
-
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-			}))
-
-			defer ts.Close()
-
-			db, err := sql.Open("trino", ts.URL)
-			require.NoError(t, err)
-			defer db.Close()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage(tc.Encoding, tc.Segment))
+			db := fc.open(t, "")
 
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
 
-			var results []int
-			for rows.Next() {
-				var value int
-				err := rows.Scan(&value)
-				require.NoError(t, err)
-				results = append(results, value)
-			}
-
+			results := collectInts(t, rows)
 			require.NoError(t, rows.Err())
 
 			assert.Equal(t, tc.ExpectedResult, results, "Expected query results to match")
@@ -726,265 +263,102 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 }
 
 func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
+	validMetadata := map[string]any{"segmentSize": 3679, "uncompressedSize": 2, "rowOffset": 0}
 	testcases := []struct {
 		name                          string
-		segments                      []map[string]interface{}
+		segment                       map[string]any
 		expectedError                 string
 		downloadedData                []byte
 		downloadedDataStatusCodeError bool
 	}{
 		{
-			name: "MissingRowOffsetMetadata",
-			segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 2, "segmentSize": 11},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:          "MissingRowOffsetMetadata",
+			segment:       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "segmentSize": 11}),
 			expectedError: "rowOffset is missing in segment metadata",
 		},
 		{
-			name: "WrongRowOffsetMetadataType",
-			segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": "2", "segmentSize": 11},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:          "WrongRowOffsetMetadataType",
+			segment:       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": "2", "segmentSize": 11}),
 			expectedError: "invalid type for rowOffset in segment metadata, expected json.Number",
 		},
 		{
-			name: "MissingSegmentSizeMetadata",
-			segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": 2},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:          "MissingSegmentSizeMetadata",
+			segment:       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2}),
 			expectedError: "segmentSize is missing in segment metadata",
 		},
 		{
-			name: "WrongSegmentSizeMetadataType",
-			segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": "11"},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:          "WrongSegmentSizeMetadataType",
+			segment:       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": "11"}),
 			expectedError: "invalid type for segmentSize in segment metadata, expected json.Number",
 		},
 		{
-			name: "MissingMetadata",
-			segments: []map[string]interface{}{
-				{
-					"type":   "spooled",
-					"ackUri": "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:          "MissingMetadata",
+			segment:       withoutField(spooledSegment("seg", nil), "metadata"),
 			expectedError: "metadata is missing in segment at index 0",
 		},
 		{
-			name: "WrongMetadataType",
-			segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": "fake-metadata",
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:          "WrongMetadataType",
+			segment:       spooledSegment("seg", "fake-metadata"),
 			expectedError: "metadata is invalid or cannot be parsed as map[string]interface{} in segment at index 0",
 		},
 		{
-			name: "WrongUncompressSize",
-			segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 11},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:           "WrongUncompressSize",
+			segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 11}),
 			expectedError:  "failed to decode spooled segment at index 0: segment size mismatch: expected 11 bytes, got 29 byte",
 			downloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
-			name: "WrongCompresSize",
-			segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 29},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:           "WrongCompresSize",
+			segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 29}),
 			expectedError:  "decompressed size mismatch: expected 2 bytes, got 16 bytes",
 			downloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
-			name: "MissingUri",
-			segments: []map[string]interface{}{
-				{
-					"type":   "spooled",
-					"data":   "fake-data",
-					"ackUri": "test",
-					"metadata": map[string]interface{}{
-						"segmentSize":      3679,
-						"uncompressedSize": 2,
-						"rowOffset":        0,
-					},
-					"headers": map[string][]interface{}{
-						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
-						"x-amz-server-side-encryption-customer-key":       {"key"},
-						"x-amz-server-side-encryption-customer-key-md5":   {"md5"},
-					},
-				},
-			},
+			name:          "MissingUri",
+			segment:       withoutField(spooledSegment("seg", validMetadata), "uri"),
 			expectedError: "missing or invalid 'uri' field in spooled segment at index 0",
 		},
 		{
-			name: "MissingUriAck",
-			segments: []map[string]interface{}{
-				{
-					"type": "spooled",
-					"data": "fake-data",
-					"uri":  "fake-uri",
-					"metadata": map[string]interface{}{
-						"segmentSize":      3679,
-						"uncompressedSize": 2,
-						"rowOffset":        0,
-					},
-					"headers": map[string][]interface{}{
-						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
-						"x-amz-server-side-encryption-customer-key":       {"key"},
-						"x-amz-server-side-encryption-customer-key-md5":   {"md5"},
-					},
-				},
-			},
+			name:          "MissingUriAck",
+			segment:       withoutField(spooledSegment("seg", validMetadata), "ackUri"),
 			expectedError: "missing or invalid 'ackUri' field in spooled segment at index 0",
 		},
 		{
 			name: "wrongHeadersFormat",
-			segments: []map[string]interface{}{
-				{
-					"type":   "spooled",
-					"data":   "fake-data",
-					"uri":    "fake-uri",
-					"ackUri": "test",
-					"metadata": map[string]interface{}{
-						"segmentSize":      3679,
-						"uncompressedSize": 2,
-						"rowOffset":        0,
-					},
-					"headers": [][]string{
-						{"x-amz-server-side-encryption-customer-algorithm", "AES256"},
-						{"x-amz-server-side-encryption-customer-key", "key"},
-					},
-				},
-			},
+			segment: withField(spooledSegment("seg", validMetadata), "headers", [][]string{
+				{"x-amz-server-side-encryption-customer-algorithm", "AES256"},
+				{"x-amz-server-side-encryption-customer-key", "key"},
+			}),
 			expectedError: "invalid 'headers' field in spooled segment at index 0: expected map[string]interface{}",
 		},
 		{
 			name: "HeadersWithMultipleValues",
-			segments: []map[string]interface{}{
-				{
-					"type":   "spooled",
-					"data":   "fake-data",
-					"uri":    "fake-uri",
-					"ackUri": "test",
-					"metadata": map[string]interface{}{
-						"segmentSize":      3679,
-						"uncompressedSize": 2,
-						"rowOffset":        0,
-					},
-					"headers": map[string][]interface{}{
-						"x-amz-server-side-encryption-customer-algorithm": {"AES256"},
-						"x-amz-server-side-encryption-customer-key":       {"key"},
-						"x-amz-server-side-encryption-customer-key-md5":   {"md5", "md5"}, // wrong, more then one
-					},
-				},
-			},
+			segment: withField(spooledSegment("seg", validMetadata), "headers", map[string]any{
+				"x-amz-server-side-encryption-customer-algorithm": []any{"AES256"},
+				"x-amz-server-side-encryption-customer-key":       []any{"key"},
+				"x-amz-server-side-encryption-customer-key-md5":   []any{"md5", "md5"}, // wrong, more then one
+			}),
 			expectedError: "multiple values for header x-amz-server-side-encryption-customer-key-md5",
 		},
 		{
 			name: "HeaderValueWrongType",
-			segments: []map[string]interface{}{
-				{
-					"type":   "spooled",
-					"data":   "fake-data",
-					"uri":    "fake-uri",
-					"ackUri": "test",
-					"metadata": map[string]interface{}{
-						"segmentSize":      3679,
-						"uncompressedSize": 2,
-						"rowOffset":        0,
-					},
-					"headers": map[string]interface{}{
-						"x-amz-server-side-encryption-customer-algorithm": []interface{}{"AES256"},
-						"x-amz-server-side-encryption-customer-key":       []interface{}{"key"},
-						"x-amz-server-side-encryption-customer-key-md5":   []interface{}{123}, // Wrong type: integer instead of string
-					},
-				},
-			},
+			segment: withField(spooledSegment("seg", validMetadata), "headers", map[string]any{
+				"x-amz-server-side-encryption-customer-algorithm": []any{"AES256"},
+				"x-amz-server-side-encryption-customer-key":       []any{"key"},
+				"x-amz-server-side-encryption-customer-key-md5":   []any{123}, // Wrong type: integer instead of string
+			}),
 			expectedError: "unsupported header value type json.Number",
 		},
 		{
 			name: "HeaderTypeInvalid",
-			segments: []map[string]interface{}{
-				{
-					"type":   "spooled",
-					"data":   "fake-data",
-					"uri":    "fake-uri",
-					"ackUri": "test",
-					"metadata": map[string]interface{}{
-						"segmentSize":      3679,
-						"uncompressedSize": 2,
-						"rowOffset":        0,
-					},
-					"headers": map[string]interface{}{
-						"x-amz-server-side-encryption-customer-algorithm": "AES256", // Invalid type: string instead of []interface{}
-					},
-				},
-			},
+			segment: withField(spooledSegment("seg", validMetadata), "headers", map[string]any{
+				"x-amz-server-side-encryption-customer-algorithm": "AES256", // Invalid type: string instead of []interface{}
+			}),
 			expectedError: "unsupported header type string",
 		},
 		{
-			name: "ErrorDownloadingSegment",
-			segments: []map[string]interface{}{
-				{
-					"type":     "spooled",
-					"metadata": map[string]interface{}{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 11},
-					"ackUri":   "test",
-					"headers": map[string]interface{}{
-						"test": []interface{}{"test"},
-					},
-				},
-			},
+			name:                          "ErrorDownloadingSegment",
+			segment:                       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 11}),
 			expectedError:                 "trino: query failed (500 Internal Server Error):",
 			downloadedData:                mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 			downloadedDataStatusCodeError: true,
@@ -993,63 +367,17 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			var ts *httptest.Server
-
-			ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/statement" {
-					json.NewEncoder(w).Encode(&stmtResponse{
-						ID:      "fake-query",
-						NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-					})
-
-					return
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json+zstd", tc.segment))
+			fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+				if tc.downloadedDataStatusCodeError {
+					w.WriteHeader(http.StatusInternalServerError)
 				}
-				if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
-					json.NewEncoder(w).Encode(&queryResponse{
-						ID: "fake-query",
-						Columns: []queryColumn{
-							{
-								Name: "_col0",
-								Type: "integer",
-								TypeSignature: typeSignature{
-									RawType:   "integer",
-									Arguments: []typeArgument{},
-								},
-							},
-						},
-						Data: map[string]interface{}{
-							"encoding": "json+zstd",
-							"segments": tc.segments,
-						},
-					})
-					return
-				}
-
-				if r.URL.Path == "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc=" {
-					if tc.downloadedDataStatusCodeError {
-						w.WriteHeader(http.StatusInternalServerError)
-					}
-
-					w.Write(tc.downloadedData)
-					return
-				}
-
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-			}))
-
-			defer ts.Close()
-
-			if tc.name != "MissingUri" {
-				tc.segments[0]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc="
-			}
-
-			db, err := sql.Open("trino", ts.URL)
-			require.NoError(t, err)
-			defer db.Close()
+				_, _ = w.Write(tc.downloadedData)
+			})
+			db := fc.open(t, "")
 
 			rows, err := db.Query("SELECT 1")
-
 			require.NoError(t, err)
 			defer rows.Close()
 
@@ -1067,80 +395,26 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 func TestSpoolingProtocolInlineSegmentErrorHandling(t *testing.T) {
 	testcases := []struct {
 		name          string
-		segments      []map[string]interface{}
+		segment       map[string]any
 		expectedError string
 	}{
 		{
-			name: "WrongUncompressSize",
-			segments: []map[string]interface{}{
-				{
-					"type":     "inline",
-					"data":     "KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=",
-					"metadata": map[string]interface{}{"uncompressedSize": 1, "rowOffset": 2, "segmentSize": 29},
-				},
-			},
+			name:          "WrongUncompressSize",
+			segment:       inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 1, "rowOffset": 2, "segmentSize": 29}),
 			expectedError: "failed to decode spooled segment at index 0: decompressed size mismatch: expected 1 bytes, got 16 bytes",
 		},
 		{
-			name: "WrongCompresSize",
-			segments: []map[string]interface{}{
-				{
-					"type":     "inline",
-					"data":     "KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=",
-					"metadata": map[string]interface{}{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 1},
-				},
-			},
+			name:          "WrongCompresSize",
+			segment:       inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 1}),
 			expectedError: "failed to decode spooled segment at index 0: segment size mismatch: expected 1 bytes, got 29 bytes",
 		},
 	}
 
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			var ts *httptest.Server
-
-			ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if r.URL.Path == "/v1/statement" {
-					json.NewEncoder(w).Encode(&stmtResponse{
-						ID:      "fake-query",
-						NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-					})
-
-					return
-				}
-				if r.URL.Path == "/v1/statement/20210817_140827_00000_arvdv/1" {
-					json.NewEncoder(w).Encode(&queryResponse{
-						ID: "fake-query",
-						Columns: []queryColumn{
-							{
-								Name: "_col0",
-								Type: "integer",
-								TypeSignature: typeSignature{
-									RawType:   "integer",
-									Arguments: []typeArgument{},
-								},
-							},
-						},
-						Data: map[string]interface{}{
-							"encoding": "json+zstd",
-							"segments": tc.segments,
-						},
-					})
-					return
-				}
-
-				w.WriteHeader(http.StatusInternalServerError)
-				json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-			}))
-
-			defer ts.Close()
-
-			if tc.name != "MissingUri" {
-				tc.segments[0]["uri"] = ts.URL + "/v1/spooled/download/jKaLK0aVkNp2ixl6BOuwGMJ0nRjbUVKLHW_f3-I-1Cc="
-			}
-
-			db, err := sql.Open("trino", ts.URL)
-			require.NoError(t, err)
-			defer db.Close()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json+zstd", tc.segment))
+			db := fc.open(t, "")
 
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
@@ -1156,72 +430,28 @@ func TestSpoolingProtocolInlineSegmentErrorHandling(t *testing.T) {
 	}
 }
 
-func newSpooledSegmentServer(t *testing.T, headHandler func(w http.ResponseWriter, r *http.Request), downloadDelay time.Duration) *httptest.Server {
+// newHeartbeatCoordinator serves a single spooled segment whose download takes
+// downloadDelay, so heartbeats are sent while it is in flight. Every page
+// updates the connection headers, so that the race detector sees them being
+// read concurrently by the heartbeat.
+func newHeartbeatCoordinator(t testing.TB, heartbeat http.HandlerFunc, downloadDelay time.Duration) *fakeCoordinator {
 	t.Helper()
-	var ts *httptest.Server
-	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "HEAD" {
-			if headHandler != nil {
-				headHandler(w, r)
-			} else {
-				w.WriteHeader(http.StatusOK)
-			}
-			return
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage().withHeader(trinoSetSessionHeader, "query_max_run_time=10m"),
+		spooledPage("json", spooledSegment("seg0", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1})).
+			withHeader(trinoSetCatalogHeader, "memory"),
+		emptyPage().withHeader(trinoSetSessionHeader, "query_max_run_time=20m"),
+	)
+	fc.handleSegment("seg0", func(w http.ResponseWriter, r *http.Request) {
+		if downloadDelay > 0 {
+			time.Sleep(downloadDelay)
 		}
-		// every response updates the connection headers, so that the race
-		// detector sees them being read concurrently by the heartbeat
-		switch r.URL.Path {
-		case "/v1/statement":
-			w.Header().Set(trinoSetSessionHeader, "query_max_run_time=10m")
-			json.NewEncoder(w).Encode(&stmtResponse{
-				ID:      "fake-query",
-				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-			})
-		case "/v1/statement/20210817_140827_00000_arvdv/1":
-			w.Header().Set(trinoSetCatalogHeader, "memory")
-			json.NewEncoder(w).Encode(&queryResponse{
-				ID:      "fake-query",
-				NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/2",
-				Columns: []queryColumn{
-					{
-						Name: "_col0",
-						Type: "integer",
-						TypeSignature: typeSignature{
-							RawType:   "integer",
-							Arguments: []typeArgument{},
-						},
-					},
-				},
-				Data: map[string]interface{}{
-					"encoding": "json",
-					"segments": []map[string]interface{}{
-						{
-							"uri":      ts.URL + "/v1/spooled/download/seg0",
-							"type":     "spooled",
-							"metadata": map[string]interface{}{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1},
-							"ackUri":   ts.URL + "/v1/spooled/ack/seg0",
-							"headers":  map[string]interface{}{},
-						},
-					},
-				},
-			})
-		case "/v1/statement/20210817_140827_00000_arvdv/2":
-			w.Header().Set(trinoSetSessionHeader, "query_max_run_time=20m")
-			json.NewEncoder(w).Encode(&queryResponse{})
-		case "/v1/spooled/download/seg0":
-			if downloadDelay > 0 {
-				time.Sleep(downloadDelay)
-			}
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("[[1000]]"))
-		case "/v1/spooled/ack/seg0":
-			w.WriteHeader(http.StatusOK)
-		default:
-			w.WriteHeader(http.StatusInternalServerError)
-			json.NewEncoder(w).Encode(ErrTrino{ErrorName: "Unexpected request"})
-		}
-	}))
-	return ts
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[[1000]]"))
+	})
+	fc.onHeartbeat(heartbeat)
+	return fc
 }
 
 func TestHeartbeat(t *testing.T) {
@@ -1277,26 +507,17 @@ func TestHeartbeat(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var attempts atomic.Int32
-			ts := newSpooledSegmentServer(t, func(w http.ResponseWriter, r *http.Request) {
+			fc := newHeartbeatCoordinator(t, func(w http.ResponseWriter, r *http.Request) {
 				attempt := int(attempts.Add(1))
 				w.WriteHeader(tc.statuses[min(attempt, len(tc.statuses))-1])
 			}, tc.downloadDelay)
-			defer ts.Close()
-
-			db, err := sql.Open("trino", ts.URL+"?heartbeat_interval=100ms")
-			require.NoError(t, err)
-			defer db.Close()
+			db := fc.open(t, "?heartbeat_interval=100ms")
 
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
 			defer rows.Close()
 
-			var results []int
-			for rows.Next() {
-				var value int
-				require.NoError(t, rows.Scan(&value))
-				results = append(results, value)
-			}
+			results := collectInts(t, rows)
 			require.NoError(t, rows.Err())
 			assert.Equal(t, []int{1000}, results)
 
@@ -1312,7 +533,7 @@ func TestHeartbeat(t *testing.T) {
 func TestHeartbeatDoesNotDelayClose(t *testing.T) {
 	heartbeatSent := make(chan struct{}, 1)
 	unblockHeartbeat := make(chan struct{})
-	ts := newSpooledSegmentServer(t, func(w http.ResponseWriter, r *http.Request) {
+	fc := newHeartbeatCoordinator(t, func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case heartbeatSent <- struct{}{}:
 		default:
@@ -1320,12 +541,10 @@ func TestHeartbeatDoesNotDelayClose(t *testing.T) {
 		<-unblockHeartbeat
 		w.WriteHeader(http.StatusOK)
 	}, 0)
-	defer ts.Close()
-	defer close(unblockHeartbeat)
-
-	db, err := sql.Open("trino", ts.URL+"?heartbeat_interval=50ms")
-	require.NoError(t, err)
-	defer db.Close()
+	// registered after the server's own cleanup, so it runs first and the
+	// parked heartbeat handler cannot block the server from closing
+	t.Cleanup(func() { close(unblockHeartbeat) })
+	db := fc.open(t, "?heartbeat_interval=50ms")
 
 	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
