@@ -270,3 +270,20 @@ func TestNextReturnsContextError(t *testing.T) {
 	assert.False(t, rows.Next())
 	assert.ErrorIs(t, rows.Err(), context.Canceled)
 }
+
+// Without transaction support the driver must not announce any to the
+// server; the header is what makes a coordinator accept START TRANSACTION.
+func TestNoTransactionHeaderSent(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	require.NoError(t, rows.Close())
+
+	for _, request := range fc.capturedRequests() {
+		assert.Empty(t, request.header.Values("X-Trino-Transaction-Id"), "%s %s", request.method, request.path)
+	}
+}

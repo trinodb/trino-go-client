@@ -641,3 +641,30 @@ func TestIntegrationUpdateDelete(t *testing.T) {
 	require.NoError(t, rows.Err())
 	assert.Equal(t, []string{"1=one", "2=updated"}, remaining)
 }
+
+// The driver does not implement transactions (#33, #181): Begin is rejected
+// locally, and the server refuses transaction statements from a client that
+// does not send X-Trino-Transaction-Id, so a statement sent through the pool
+// can never silently run outside the transaction it belongs to.
+func TestIntegrationTransactions(t *testing.T) {
+	db := integrationOpen(t)
+
+	_, err := db.Begin()
+	require.ErrorIs(t, err, ErrOperationNotSupported)
+
+	cases := []struct {
+		query   string
+		wantErr string
+	}{
+		{query: "START TRANSACTION", wantErr: `trino: query failed (200 OK): "USER_ERROR: Client does not support transactions"`},
+		{query: "COMMIT", wantErr: `trino: query failed (200 OK): "USER_ERROR: No transaction in progress"`},
+		{query: "ROLLBACK", wantErr: `trino: query failed (200 OK): "USER_ERROR: No transaction in progress"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			_, err := db.Exec(tc.query)
+
+			require.EqualError(t, err, tc.wantErr)
+		})
+	}
+}
