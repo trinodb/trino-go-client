@@ -149,6 +149,25 @@ func TestSetRoleHeader(t *testing.T) {
 	assert.Equal(t, "catalog=NONE,hive=ROLE%7Badmin%7D,iceberg=ROLE%7Bwriter%7D", requests[3].header.Get(trinoRoleHeader), "every Set-Role value should be applied and roles of other catalogs kept")
 }
 
+func TestExtraCredentialsSentOnlyWithTheStatement(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}), emptyPage())
+	db := fc.open(t, "?extra_credentials=token%3Asecret%3Bother%3Avalue")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+	require.NoError(t, rows.Err())
+
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 3)
+	assert.ElementsMatch(t, []string{"token=secret", "other=value"}, requests[0].header.Values(trinoExtraCredentialHeader), "credentials sent with the statement")
+	for _, request := range requests[1:] {
+		assert.Empty(t, request.header.Values(trinoExtraCredentialHeader), "credentials sent with %s %s", request.method, request.path)
+	}
+}
+
 func TestUnsupportedHeader(t *testing.T) {
 	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

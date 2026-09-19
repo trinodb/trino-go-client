@@ -507,6 +507,7 @@ type Conn struct {
 	// while the query polling updates it from the server responses
 	httpHeadersMu              sync.RWMutex
 	httpHeaders                http.Header
+	extraCredentials           []string
 	kerberosEnabled            bool
 	kerberosClient             *client.Client
 	kerberosRemoteServiceName  string
@@ -685,7 +686,7 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	if conf.ExtraCredentials != nil {
-		c.httpHeaders[trinoExtraCredentialHeader], err = decodeMapHeader("extra_credentials", conf.ExtraCredentials)
+		c.extraCredentials, err = decodeMapHeader("extra_credentials", conf.ExtraCredentials)
 		if err != nil {
 			return c, err
 		}
@@ -1349,6 +1350,10 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	hs := make(http.Header)
 	// Ensure the server returns timestamps preserving their precision, without truncating them to timestamp(3).
 	hs.Add("X-Trino-Client-Capabilities", "PARAMETRIC_DATETIME,NUMBER")
+	// The server reads extra credentials only when the statement is submitted.
+	if len(st.conn.extraCredentials) > 0 {
+		hs[trinoExtraCredentialHeader] = slices.Clone(st.conn.extraCredentials)
+	}
 
 	if len(args) > 0 {
 		var ss []string
