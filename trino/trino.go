@@ -2370,27 +2370,37 @@ func (st *driverStmt) startSegmentDispatcher() {
 					return
 				}
 
+				// The first error fails the query, so the dispatcher stops
+				// at it instead of reporting the consequences of a bad
+				// segment several more times.
 				segmentMetadata, exists := segmentToProccess.segment["metadata"]
 				if !exists {
 					st.errors <- fmt.Errorf("metadata is missing in segment at index %d", segmentToProccess.segmentIndex)
+					return
 				}
 
 				typedMetadata, ok := segmentMetadata.(map[string]interface{})
 				if !ok {
 					st.errors <- fmt.Errorf("metadata is invalid or cannot be parsed as map[string]interface{} in segment at index %d", segmentToProccess.segmentIndex)
+					return
 				}
 
 				metadata, err := parseSegmentMetadata(typedMetadata)
-
 				if err != nil {
 					st.errors <- err
+					return
 				}
 				switch segmentToProccess.segment["type"] {
 				case "inline":
-					decodedBytes, err := base64.StdEncoding.DecodeString(segmentToProccess.segment["data"].(string))
-
+					encodedData, ok := segmentToProccess.segment["data"].(string)
+					if !ok {
+						st.errors <- fmt.Errorf("missing or invalid 'data' field in inline segment at index %d", segmentToProccess.segmentIndex)
+						return
+					}
+					decodedBytes, err := base64.StdEncoding.DecodeString(encodedData)
 					if err != nil {
 						st.errors <- fmt.Errorf("error decoding base64 data in inline segment at index %d: %v", segmentToProccess.segmentIndex, err)
+						return
 					}
 
 					st.spooledSegmentsToDecode <- segmentToDecode{
@@ -2404,6 +2414,7 @@ func (st *driverStmt) startSegmentDispatcher() {
 					spooledMetadata, err := parseSpooledMetadata(segmentToProccess.segment, 0, metadata, segmentToProccess.encoding)
 					if err != nil {
 						st.errors <- err
+						return
 					}
 
 					st.spooledSegmentsMetadata <- spooledMetadata

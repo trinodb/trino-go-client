@@ -318,7 +318,7 @@ func spooledSegment(name string, metadata any) map[string]any {
 }
 
 // inlineSegment describes a segment whose base64 encoded data travels with the page.
-func inlineSegment(data string, metadata any) map[string]any {
+func inlineSegment(data any, metadata any) map[string]any {
 	return map[string]any{
 		"type":     "inline",
 		"data":     data,
