@@ -382,6 +382,17 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 			wantErr: "unsupported header type string",
 		},
 		{
+			name:    "FractionalRowOffset",
+			segment: spooledSegment("seg", map[string]any{"rowOffset": 1.5, "segmentSize": 8}),
+			wantErr: "error converting rowOffset to int64",
+		},
+		{
+			name:           "MalformedSegmentJson",
+			segment:        spooledSegment("seg", map[string]any{"rowOffset": 0, "segmentSize": 6}),
+			downloadedData: []byte("[[1000"),
+			wantErr:        "failed to decode segment into JSON at rowOffset 0",
+		},
+		{
 			name:                          "ErrorDownloadingSegment",
 			segment:                       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 11}),
 			wantErr:                       "trino: query failed (500 Internal Server Error):",
@@ -594,4 +605,50 @@ func TestHeartbeatDoesNotDelayClose(t *testing.T) {
 	start := time.Now()
 	require.NoError(t, rows.Close())
 	assert.Less(t, time.Since(start), time.Second, "Close should cancel the in-flight heartbeat instead of waiting for its timeout")
+}
+
+func TestSpoolingProtocolSegmentDownloadRetriesOnTimeout(t *testing.T) {
+	shortenSegmentDownloadRetries(t)
+	require.NoError(t, RegisterCustomClient("segment-timeout", &http.Client{Timeout: 50 * time.Millisecond}))
+	var attempts atomic.Int32
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) == 1 {
+			// let the client time out
+			<-r.Context().Done()
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("[[1000]]"))
+	})
+	db := fc.open(t, "?custom_client=segment-timeout")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+
+	results := collectInts(t, rows)
+	require.NoError(t, rows.Err())
+
+	assert.Equal(t, []int{1000}, results)
+	assert.Equal(t, int32(2), attempts.Load(), "the download must be retried once after the timeout")
+}
+
+func TestSpoolingProtocolRejectsUnsupportedEncoding(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json+brotli",
+		spooledSegment("seg", map[string]any{"segmentSize": 8, "uncompressedSize": 16, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.serveSegment("seg", []byte("[[1000]]"))
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, rows.Close()) })
+	collectInts(t, rows)
+
+	require.ErrorContains(t, rows.Err(), "unsupported segment encoder: json+brotli")
 }

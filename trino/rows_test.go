@@ -2,6 +2,7 @@ package trino
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -176,4 +177,96 @@ func TestUnsupportedTransaction(t *testing.T) {
 
 	_, err = db.Begin()
 	require.ErrorIs(t, err, ErrOperationNotSupported)
+}
+
+func TestResponseHeadersUpdateFollowingRequests(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage().
+			withHeader(trinoSetSessionHeader, "query_max_run_time=10m").
+			withHeader(trinoSetCatalogHeader, "memory").
+			withHeader(trinoSetSchemaHeader, "default").
+			withHeader(trinoAddedPrepareHeader, "stmt1=SELECT 1"),
+		resultPage([][]any{{1}}).
+			withHeader(trinoClearSessionHeader, "query_max_run_time").
+			withHeader(trinoDeallocatedPrepareHeader, "stmt1"),
+		emptyPage(),
+	)
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+	require.NoError(t, rows.Err())
+
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 3)
+	afterFirstPage := requests[1].header
+	assert.Equal(t, []string{"query_max_run_time=10m"}, afterFirstPage.Values(trinoSessionHeader), "session set by the first page")
+	assert.Equal(t, "memory", afterFirstPage.Get(trinoCatalogHeader), "catalog set by the first page")
+	assert.Equal(t, "default", afterFirstPage.Get(trinoSchemaHeader), "schema set by the first page")
+	assert.Equal(t, []string{"stmt1=SELECT 1"}, afterFirstPage.Values(preparedStatementHeader), "statement prepared by the first page")
+	afterSecondPage := requests[2].header
+	assert.Empty(t, afterSecondPage.Values(trinoSessionHeader), "session cleared by the second page")
+	assert.Empty(t, afterSecondPage.Values(preparedStatementHeader), "statement deallocated by the second page")
+	assert.Equal(t, "memory", afterSecondPage.Get(trinoCatalogHeader), "catalog kept by the second page")
+}
+
+func TestRowsCloseCancelsUnfinishedQuery(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage(),
+		resultPage([][]any{{1}}),
+		resultPage([][]any{{2}}),
+		resultPage([][]any{{3}}),
+		emptyPage(),
+	)
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Close())
+
+	var cancelled bool
+	for _, request := range fc.capturedRequests() {
+		if request.method == http.MethodDelete && request.path == "/v1/query/"+fakeQueryID {
+			cancelled = true
+		}
+	}
+	assert.True(t, cancelled, "closing the rows before the last page must cancel the query")
+}
+
+func TestNextReturnsContextError(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	firstRowRead := make(chan struct{})
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage(),
+		resultPage([][]any{{1}}),
+		resultPage([][]any{{2}}),
+		emptyPage(),
+	)
+	fc.onPage(func(index int, r *http.Request) {
+		if index != 2 {
+			return
+		}
+		// cancel the query while its next page is being fetched
+		<-firstRowRead
+		cancel()
+		<-r.Context().Done()
+	})
+	db := fc.open(t, "")
+
+	rows, err := db.QueryContext(ctx, "SELECT 1")
+	require.NoError(t, err)
+	require.True(t, rows.Next())
+	close(firstRowRead)
+
+	assert.False(t, rows.Next())
+	assert.ErrorIs(t, rows.Err(), context.Canceled)
 }

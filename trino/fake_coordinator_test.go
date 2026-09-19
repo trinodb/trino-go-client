@@ -25,12 +25,13 @@ type fakeCoordinator struct {
 	t      testing.TB
 	server *httptest.Server
 
-	mu        sync.Mutex
-	pages     []page
-	downloads map[string]http.HandlerFunc
-	heartbeat http.HandlerFunc
-	requests  []capturedRequest
-	acks      []string
+	mu         sync.Mutex
+	pages      []page
+	beforePage func(index int, r *http.Request)
+	downloads  map[string]http.HandlerFunc
+	heartbeat  http.HandlerFunc
+	requests   []capturedRequest
+	acks       []string
 }
 
 type capturedRequest struct {
@@ -112,6 +113,14 @@ func (fc *fakeCoordinator) handleSegment(name string, handler http.HandlerFunc) 
 	fc.downloads[name] = handler
 }
 
+// onPage runs hook before page index is served, so a test can block or
+// cancel a page fetch at a known point.
+func (fc *fakeCoordinator) onPage(hook func(index int, r *http.Request)) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.beforePage = hook
+}
+
 // onHeartbeat routes every HEAD request to handler; the default answers 200.
 func (fc *fakeCoordinator) onHeartbeat(handler http.HandlerFunc) {
 	fc.mu.Lock()
@@ -155,14 +164,14 @@ func (fc *fakeCoordinator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/query/"):
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/statement":
-		fc.servePage(w, 0)
+		fc.servePage(w, r, 0)
 	case strings.HasPrefix(r.URL.Path, "/v1/statement/"+fakeQueryID+"/"):
 		index, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/v1/statement/"+fakeQueryID+"/"))
 		if err != nil {
 			fc.unexpected(w, r)
 			return
 		}
-		fc.servePage(w, index)
+		fc.servePage(w, r, index)
 	case strings.HasPrefix(r.URL.Path, "/v1/spooled/download/"):
 		fc.serveDownload(w, r)
 	case strings.HasPrefix(r.URL.Path, "/v1/spooled/ack/"):
@@ -175,10 +184,14 @@ func (fc *fakeCoordinator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (fc *fakeCoordinator) servePage(w http.ResponseWriter, index int) {
+func (fc *fakeCoordinator) servePage(w http.ResponseWriter, r *http.Request, index int) {
 	fc.mu.Lock()
 	pages := fc.pages
+	beforePage := fc.beforePage
 	fc.mu.Unlock()
+	if beforePage != nil {
+		beforePage(index, r)
+	}
 	if index >= len(pages) {
 		fc.t.Errorf("fake coordinator: page %d requested but only %d pages were configured", index, len(pages))
 		w.WriteHeader(http.StatusInternalServerError)

@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,6 +362,18 @@ func TestTypeConversion(t *testing.T) {
 			sample:   "Point (0 0)",
 			want:     "Point (0 0)",
 		},
+		{dataType: "tinyint", rawType: "tinyint", sample: json.Number("-128"), want: int64(-128)},
+		{dataType: "smallint", rawType: "smallint", sample: json.Number("32767"), want: int64(32767)},
+		{dataType: "integer", rawType: "integer", sample: json.Number("42"), want: int64(42)},
+		{dataType: "real", rawType: "real", sample: json.Number("1.5"), want: float64(1.5)},
+		{dataType: "decimal(10,5)", rawType: "decimal", sample: "1.23000", want: "1.23000"},
+		{dataType: "varbinary", rawType: "varbinary", sample: "//8P/z////8=", want: []byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff}},
+		{dataType: "json", rawType: "json", sample: `{"aaa": 1}`, want: `{"aaa": 1}`},
+		{dataType: "ipaddress", rawType: "ipaddress", sample: "10.0.0.1", want: "10.0.0.1"},
+		{dataType: "uuid", rawType: "uuid", sample: "12151fd2-7586-11e9-8f9e-2a86e4085a59", want: "12151fd2-7586-11e9-8f9e-2a86e4085a59"},
+		{dataType: "interval year to month", rawType: "interval year to month", sample: "0-3", want: "0-3"},
+		{dataType: "interval day to second", rawType: "interval day to second", sample: "2 00:00:00.000", want: "2 00:00:00.000"},
+		{dataType: "unknown", rawType: "unknown", sample: nil, want: nil},
 
 		{
 			dataType: "SphericalGeography",
@@ -460,4 +474,138 @@ func scannerValid(t testing.TB, scanner sql.Scanner) bool {
 	field := reflect.ValueOf(scanner).Elem().FieldByName("Valid")
 	require.True(t, field.IsValid(), "%T has no Valid field", scanner)
 	return field.Bool()
+}
+
+func TestConvertValueFloatSpecialValues(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		sample  any
+		check   func(float64) bool
+		wantErr string
+	}{
+		{sample: "NaN", check: math.IsNaN},
+		{sample: "Infinity", check: func(f float64) bool { return math.IsInf(f, 1) }},
+		{sample: "-Infinity", check: func(f float64) bool { return math.IsInf(f, -1) }},
+		{sample: "1.5", check: func(f float64) bool { return f == 1.5 }},
+		{sample: "one", wantErr: "cannot convert one (string) to float64"},
+		{sample: json.Number("one"), wantErr: "cannot convert one (json.Number) to float64"},
+		{sample: true, wantErr: "cannot convert true (bool) to float64"},
+	}
+
+	for _, rawType := range []string{"real", "double"} {
+		converter, err := newTypeConverter(rawType, typeSignature{RawType: rawType})
+		require.NoError(t, err)
+		for _, tc := range cases {
+			t.Run(fmt.Sprintf("%s %v", rawType, tc.sample), func(t *testing.T) {
+				got, err := converter.ConvertValue(tc.sample)
+
+				if tc.wantErr != "" {
+					require.ErrorContains(t, err, tc.wantErr)
+					return
+				}
+				require.NoError(t, err)
+				assert.True(t, tc.check(got.(float64)), "unexpected value %v", got)
+			})
+		}
+	}
+}
+
+func TestConvertValueRejectsUnsupportedType(t *testing.T) {
+	t.Parallel()
+	converter, err := newTypeConverter("HyperLogLog", typeSignature{RawType: "HyperLogLog"})
+	require.NoError(t, err)
+
+	_, err = converter.ConvertValue("AAI=")
+
+	require.EqualError(t, err, `type not supported: "HyperLogLog"`)
+}
+
+func TestConvertValueRejectsInvalidVarbinary(t *testing.T) {
+	t.Parallel()
+	converter, err := newTypeConverter("varbinary", typeSignature{RawType: "varbinary"})
+	require.NoError(t, err)
+
+	_, err = converter.ConvertValue("not base64!")
+
+	require.ErrorContains(t, err, "cannot decode base64 string into []byte")
+}
+
+func TestNewTypeConverterRejectsWrongArgumentKinds(t *testing.T) {
+	t.Parallel()
+	typeArg := typeArgument{Kind: KIND_TYPE}
+	longArg := typeArgument{Kind: KIND_LONG, long: 10}
+	cases := []struct {
+		name      string
+		rawType   string
+		arguments []typeArgument
+	}{
+		{name: "varchar length", rawType: "varchar", arguments: []typeArgument{typeArg}},
+		{name: "char length", rawType: "char", arguments: []typeArgument{typeArg}},
+		{name: "decimal precision", rawType: "decimal", arguments: []typeArgument{typeArg}},
+		{name: "decimal scale", rawType: "decimal", arguments: []typeArgument{longArg, typeArg}},
+		{name: "time precision", rawType: "time", arguments: []typeArgument{typeArg}},
+		{name: "timestamp with time zone precision", rawType: "timestamp with time zone", arguments: []typeArgument{typeArg}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := newTypeConverter(tc.rawType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments})
+
+			require.ErrorIs(t, err, ErrInvalidResponseType)
+		})
+	}
+}
+
+func TestGetScanTypeRejectsTruncatedArraySignatures(t *testing.T) {
+	t.Parallel()
+	for _, typeNames := range [][]string{
+		{"array"},
+		{"array", "array"},
+		{"array", "array", "array"},
+	} {
+		t.Run(strings.Join(typeNames, "/"), func(t *testing.T) {
+			_, err := getScanType(typeNames)
+
+			require.ErrorIs(t, err, ErrInvalidResponseType)
+		})
+	}
+
+	t.Run("four dimensions scan as interface", func(t *testing.T) {
+		scanType, err := getScanType([]string{"array", "array", "array", "array", "integer"})
+
+		require.NoError(t, err)
+		assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType)
+	})
+}
+
+// NullTime.Scan accepts only time.Time and NullTime; anything else leaves
+// the value untouched and invalid instead of failing.
+func TestNullTimeScanLeavesOtherTypesInvalid(t *testing.T) {
+	t.Parallel()
+	var value NullTime
+
+	require.NoError(t, value.Scan("2017-07-10"))
+
+	assert.False(t, value.Valid)
+}
+
+func TestParseNullTimeWithLocationRejectsBadInput(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		input   string
+		wantErr string
+	}{
+		{name: "no zone", input: "2017-07-10T01:02:03", wantErr: "cannot convert 2017-07-10T01:02:03 (string) to time+zone"},
+		{name: "unknown zone", input: "2017-07-10 01:02:03.000 Mars/Olympus_Mons", wantErr: `cannot load timezone "Mars/Olympus_Mons"`},
+		{name: "bad offset", input: "2017-07-10 01:02:03.000 +25:00", wantErr: "parsing time"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseNullTimeWithLocation(tc.input)
+
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
