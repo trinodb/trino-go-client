@@ -240,6 +240,13 @@ Default:        empty (defaults to http.DefaultClient)
 The `custom_client` parameter allows the use of custom `http.Client` for the
 communication with Trino.
 
+The default client does not follow HTTP redirects, because a redirect would
+carry the `X-Trino-*` headers, including extra credentials, to a host other
+than the one in the DSN, and a `301`, `302` or `303` response would turn the
+statement `POST` into a `GET` without the query. A redirect response fails the
+query instead. A custom client follows its own `CheckRedirect` policy, which
+allows redirects unless set.
+
 Register your custom client in the driver, then refer to it by name in the DSN,
 on the call to `sql.Open`:
 

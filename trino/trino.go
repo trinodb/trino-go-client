@@ -651,6 +651,9 @@ func newConn(dsn string) (*Conn, error) {
 			}
 		}
 	}
+	if conf.CustomClientName == "" {
+		httpClient = withoutRedirects(httpClient)
+	}
 
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
@@ -878,6 +881,18 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 	return req, nil
 }
 
+// withoutRedirects returns a copy of client that hands redirects back to the
+// caller instead of following them. A redirect would carry the X-Trino-*
+// headers, including extra credentials, to a host the user did not name, and
+// a 301, 302 or 303 would turn the statement POST into a GET without its body.
+func withoutRedirects(client *http.Client) *http.Client {
+	copied := *client
+	copied.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	return &copied
+}
+
 func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response, error) {
 	delay := 100 * time.Millisecond
 	const maxDelayBetweenRequests = float64(15 * time.Second)
@@ -901,6 +916,12 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 					}
 				}
 				return resp, nil
+			case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+				resp.Body.Close()
+				return nil, &ErrQueryFailed{
+					StatusCode: resp.StatusCode,
+					Reason:     fmt.Errorf("redirect to %s not followed", resp.Header.Get("Location")),
+				}
 			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 				resp.Body.Close()
 				if err := rewindRequestBody(req); err != nil {
