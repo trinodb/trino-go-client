@@ -31,6 +31,16 @@ func TestFormatDSN(t *testing.T) {
 			want: "http://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client",
 		},
 		{
+			name: "trace token, client info and language",
+			config: &Config{
+				ServerURI:  "http://foobar@localhost:8080",
+				TraceToken: "trace-123",
+				ClientInfo: "batch job #7",
+				Language:   "en-US",
+			},
+			want: "http://foobar@localhost:8080?client_info=batch+job+%237&language=en-US&source=trino-go-client&trace_token=trace-123",
+		},
+		{
 			name: "explicit prepare disabled",
 			config: &Config{
 				ServerURI:              "https://foobar@localhost:8090",
@@ -253,6 +263,9 @@ func TestParseDSNToConfig(t *testing.T) {
 				SessionProperties:          map[string]string{"session_property_one": "1", "session_property_two": "2"},
 				ExtraCredentials:           map[string]string{"extra_credential_one": "1", "extra_credential_two": "2"},
 				ClientTags:                 []string{"tag1", "tag2", "tag3"},
+				TraceToken:                 "trace-token",
+				ClientInfo:                 "client info",
+				Language:                   "pl-PL",
 				CustomClientName:           "client_name",
 				AccessToken:                "token_test",
 				DisableExplicitPrepare:     true,
@@ -325,6 +338,9 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"session_properties=prop1%3Avalue1%3Bprop2%3Avalue2&" +
 		"extra_credentials=cred1%3Asecret1%3Bcred2%3Asecret2&" +
 		"clientTags=tag1%2Ctag2%2Ctag3&" +
+		"trace_token=trace-123&" +
+		"client_info=test%20client%20info&" +
+		"language=en-US&" +
 		"custom_client=test_client&" +
 		"KerberosEnabled=true&" +
 		"KerberosKeytabPath=/path/to/keytab&" +
@@ -374,6 +390,9 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, map[string]string{"prop1": "value1", "prop2": "value2"}, config.SessionProperties)
 	assert.Equal(t, map[string]string{"cred1": "secret1", "cred2": "secret2"}, config.ExtraCredentials)
 	assert.Equal(t, []string{"tag1", "tag2", "tag3"}, config.ClientTags)
+	assert.Equal(t, "trace-123", config.TraceToken)
+	assert.Equal(t, "test client info", config.ClientInfo)
+	assert.Equal(t, "en-US", config.Language)
 	assert.Equal(t, "test_client", config.CustomClientName)
 	assert.Equal(t, true, config.KerberosEnabled)
 	assert.Equal(t, "/path/to/keytab", config.KerberosKeytabPath)

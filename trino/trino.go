@@ -141,6 +141,9 @@ const (
 	trinoAddedPrepareHeader       = trinoHeaderPrefix + `Added-Prepare`
 	trinoDeallocatedPrepareHeader = trinoHeaderPrefix + `Deallocated-Prepare`
 	trinoTagsHeader               = trinoHeaderPrefix + `Client-Tags`
+	trinoTraceTokenHeader         = trinoHeaderPrefix + `Trace-Token`
+	trinoClientInfoHeader         = trinoHeaderPrefix + `Client-Info`
+	trinoLanguageHeader           = trinoHeaderPrefix + `Language`
 
 	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
 	trinoEncoding                = "encoding"
@@ -207,6 +210,9 @@ type Config struct {
 	SessionProperties          map[string]string // Session properties (optional)
 	ExtraCredentials           map[string]string // Extra credentials (optional)
 	ClientTags                 []string          // A comma-separated list of “tag” strings, used to identify Trino resource groups (optional)
+	TraceToken                 string            // Token correlating the queries of this connection with the coordinator logs (optional)
+	ClientInfo                 string            // Free-form description of the client, visible in the web UI and to event listeners (optional)
+	Language                   string            // Language tag, e.g. en-US, used for locale-sensitive processing (optional)
 	CustomClientName           string            // Custom client name (optional)
 	KerberosEnabled            bool              // KerberosEnabled (optional, default is false)
 	KerberosKeytabPath         string            // Kerberos Keytab Path (optional)
@@ -287,6 +293,9 @@ func ParseDSN(dsn string) (*Config, error) {
 		config.ClientTags = strings.Split(clientTags, commaSeparator)
 	}
 
+	config.TraceToken = query.Get("trace_token")
+	config.ClientInfo = query.Get("client_info")
+	config.Language = query.Get("language")
 	config.CustomClientName = query.Get("custom_client")
 	config.AccessToken = query.Get(accessTokenConfig)
 
@@ -483,6 +492,9 @@ func (c *Config) FormatDSN() (string, error) {
 	for k, v := range map[string]string{
 		"catalog":            c.Catalog,
 		"clientTags":         strings.Join(c.ClientTags, commaSeparator),
+		"trace_token":        c.TraceToken,
+		"client_info":        c.ClientInfo,
+		"language":           c.Language,
 		"schema":             c.Schema,
 		"session_properties": strings.Join(sessionkv, mapEntrySeparator),
 		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
@@ -674,11 +686,14 @@ func newConn(dsn string) (*Conn, error) {
 	}
 
 	for k, v := range map[string]string{
-		trinoUserHeader:     user,
-		trinoSourceHeader:   conf.Source,
-		trinoCatalogHeader:  conf.Catalog,
-		trinoSchemaHeader:   conf.Schema,
-		authorizationHeader: getAuthorization(conf.AccessToken),
+		trinoUserHeader:       user,
+		trinoSourceHeader:     conf.Source,
+		trinoCatalogHeader:    conf.Catalog,
+		trinoSchemaHeader:     conf.Schema,
+		trinoTraceTokenHeader: conf.TraceToken,
+		trinoClientInfoHeader: conf.ClientInfo,
+		trinoLanguageHeader:   conf.Language,
+		authorizationHeader:   getAuthorization(conf.AccessToken),
 	} {
 		if v != "" {
 			c.httpHeaders.Add(k, v)
