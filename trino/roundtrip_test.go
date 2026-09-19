@@ -148,34 +148,27 @@ func TestRoleHeader(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			var receivedHeader string
-			var serverURL string
-			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				receivedHeader = r.Header.Get(trinoRoleHeader)
-				w.Header().Set("Content-Type", "application/json")
-				w.WriteHeader(http.StatusOK)
-				_, _ = w.Write([]byte(`{"id":"1","nextUri":"` + serverURL + `/1"}`))
-			}))
-			serverURL = ts.URL
-			t.Cleanup(ts.Close)
-
-			c := &Config{
-				ServerURI: ts.URL,
-				Roles:     tc.roles,
-			}
-
-			dsn, err := c.FormatDSN()
+			fc := newFakeCoordinator(t)
+			fc.respond(resultPage([][]any{{1}}))
+			dsn, err := (&Config{ServerURI: fc.url(), Roles: tc.roles}).FormatDSN()
 			require.NoError(t, err)
 			db, err := sql.Open("trino", dsn)
 			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			t.Cleanup(cancel)
 
+			var args []any
 			if tc.namedArgRoles != nil {
-				_, _ = db.Query("SELECT 1", sql.Named("X-Trino-Role", tc.namedArgRoles))
-			} else {
-				_, _ = db.Query("SELECT 1")
+				args = append(args, sql.Named("X-Trino-Role", tc.namedArgRoles))
 			}
+			rows, err := db.QueryContext(ctx, "SELECT 1", args...)
+			require.NoError(t, err)
+			require.NoError(t, rows.Close())
 
-			assert.Equal(t, tc.wantHeader, receivedHeader, "expected X-Trino-Role header to match")
+			requests := fc.capturedRequests()
+			require.Len(t, requests, 1)
+			assert.Equal(t, tc.wantHeader, requests[0].header.Get(trinoRoleHeader), "X-Trino-Role header")
 		})
 	}
 }
@@ -254,24 +247,32 @@ func TestForwardAuthorizationHeaderNonStringToken(t *testing.T) {
 }
 
 func TestQueryTimeoutDeadline(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(200 * time.Millisecond) // Simulate slow response
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(ts.Close)
-
 	cases := []struct {
 		name         string
 		queryTimeout string
+		hang         bool
 		wantErr      string
 	}{
-		{name: "with timeout", queryTimeout: "100ms", wantErr: "context deadline exceeded"},
+		{name: "with timeout", queryTimeout: "10ms", hang: true, wantErr: "context deadline exceeded"},
 		{name: "without timeout", queryTimeout: "10s", wantErr: "EOF"}, // the empty response
 		{name: "bad timeout", queryTimeout: "abc", wantErr: "trino: invalid timeout"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			testDone := make(chan struct{})
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tc.hang {
+					// answer only once the driver has given up
+					<-testDone
+					return
+				}
+				w.WriteHeader(http.StatusOK)
+			}))
+			t.Cleanup(ts.Close)
+			// registered after the server's cleanup, so it runs first and
+			// the parked handler cannot block the server from closing
+			t.Cleanup(func() { close(testDone) })
 			println(ts.URL + "?query_timeout=" + tc.queryTimeout)
 			db, err := sql.Open("trino", ts.URL+"?query_timeout="+tc.queryTimeout)
 			require.NoError(t, err)

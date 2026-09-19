@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -126,6 +127,7 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			shortenSegmentDownloadRetries(t)
 			var failCounter atomic.Int32
 			fc := newFakeCoordinator(t)
 			fc.respond(statementPage(), spooledPage("json",
@@ -155,6 +157,7 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 }
 
 func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
+	shortenSegmentDownloadRetries(t)
 	var failCounter atomic.Int32
 	maxRetries := int32(6)
 
@@ -180,6 +183,15 @@ func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
 
 	require.ErrorContains(t, rows.Err(), "max retries reached for status code 502")
 	assert.Equal(t, maxRetries, failCounter.Load(), "Expected segment download to fail exactly 5 times before succeeding")
+}
+
+// shortenSegmentDownloadRetries keeps the retry tests from waiting for the
+// real backoff, which adds up to seconds once the retries are exhausted.
+func shortenSegmentDownloadRetries(t testing.TB) {
+	t.Helper()
+	previous := segmentDownloadInitialDelay
+	segmentDownloadInitialDelay = time.Millisecond
+	t.Cleanup(func() { segmentDownloadInitialDelay = previous })
 }
 
 func mustDecodeBase64(encoded string) []byte {
@@ -406,11 +418,11 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 	}
 }
 
-// newHeartbeatCoordinator serves a single spooled segment whose download takes
-// downloadDelay, so heartbeats are sent while it is in flight. Every page
-// updates the connection headers, so that the race detector sees them being
-// read concurrently by the heartbeat.
-func newHeartbeatCoordinator(t testing.TB, heartbeat http.HandlerFunc, downloadDelay time.Duration) *fakeCoordinator {
+// newHeartbeatCoordinator serves a single spooled segment whose download
+// completes only when release is closed, so heartbeats are sent while it is
+// in flight. Every page updates the connection headers, so that the race
+// detector sees them being read concurrently by the heartbeat.
+func newHeartbeatCoordinator(t testing.TB, heartbeat http.HandlerFunc, release <-chan struct{}) *fakeCoordinator {
 	t.Helper()
 	fc := newFakeCoordinator(t)
 	fc.respond(
@@ -420,8 +432,10 @@ func newHeartbeatCoordinator(t testing.TB, heartbeat http.HandlerFunc, downloadD
 		emptyPage().withHeader(trinoSetSessionHeader, "query_max_run_time=20m"),
 	)
 	fc.handleSegment("seg0", func(w http.ResponseWriter, r *http.Request) {
-		if downloadDelay > 0 {
-			time.Sleep(downloadDelay)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
 		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("[[1000]]"))
@@ -431,45 +445,45 @@ func newHeartbeatCoordinator(t testing.TB, heartbeat http.HandlerFunc, downloadD
 }
 
 func TestHeartbeat(t *testing.T) {
-	for _, tc := range []struct {
+	const interval = 10 * time.Millisecond
+	cases := []struct {
 		name string
 		// status returned by the n-th heartbeat; the last one repeats
-		statuses      []int
-		stopAfter     int32
-		atLeast       int32
-		downloadDelay time.Duration
+		statuses []int
+		// the segment download completes after this many heartbeats
+		releaseAfter int32
+		// when set, the heartbeat must have stopped after exactly this many attempts
+		stopAfter int32
 	}{
 		{
-			name:          "sent while a segment is downloading",
-			statuses:      []int{http.StatusOK},
-			atLeast:       1,
-			downloadDelay: 500 * time.Millisecond,
+			name:         "sent while a segment is downloading",
+			statuses:     []int{http.StatusOK},
+			releaseAfter: 1,
 		},
 		{
-			name:          "disabled when the coordinator rejects HEAD",
-			statuses:      []int{http.StatusMethodNotAllowed},
-			stopAfter:     1,
-			downloadDelay: 800 * time.Millisecond,
+			name:         "disabled when the coordinator rejects HEAD",
+			statuses:     []int{http.StatusMethodNotAllowed},
+			releaseAfter: 1,
+			stopAfter:    1,
 		},
 		{
-			name:          "disabled when the coordinator does not implement heartbeats",
-			statuses:      []int{http.StatusNotImplemented},
-			stopAfter:     1,
-			downloadDelay: 800 * time.Millisecond,
+			name:         "disabled when the coordinator does not implement heartbeats",
+			statuses:     []int{http.StatusNotImplemented},
+			releaseAfter: 1,
+			stopAfter:    1,
 		},
 		{
-			name:          "disabled after consecutive failures",
-			statuses:      []int{http.StatusInternalServerError},
-			stopAfter:     maxHeartbeatFailures,
-			downloadDelay: 800 * time.Millisecond,
+			name:         "disabled after consecutive failures",
+			statuses:     []int{http.StatusInternalServerError},
+			releaseAfter: maxHeartbeatFailures,
+			stopAfter:    maxHeartbeatFailures,
 		},
 		{
 			// a 404 is transient: it's also returned by a coordinator that
 			// doesn't know the query, e.g. behind a load balancer
-			name:          "retried when the coordinator does not know the query",
-			statuses:      []int{http.StatusNotFound, http.StatusNotFound, http.StatusOK},
-			atLeast:       maxHeartbeatFailures,
-			downloadDelay: 1500 * time.Millisecond,
+			name:         "retried when the coordinator does not know the query",
+			statuses:     []int{http.StatusNotFound, http.StatusNotFound, http.StatusOK},
+			releaseAfter: maxHeartbeatFailures,
 		},
 		{
 			name: "failure count reset by a successful heartbeat",
@@ -477,17 +491,24 @@ func TestHeartbeat(t *testing.T) {
 				http.StatusInternalServerError, http.StatusInternalServerError, http.StatusOK,
 				http.StatusInternalServerError, http.StatusInternalServerError, http.StatusOK,
 			},
-			atLeast:       2 * maxHeartbeatFailures,
-			downloadDelay: 1500 * time.Millisecond,
+			releaseAfter: 2 * maxHeartbeatFailures,
 		},
-	} {
+	}
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var attempts atomic.Int32
+			release := make(chan struct{})
+			releaseDownload := sync.OnceFunc(func() { close(release) })
 			fc := newHeartbeatCoordinator(t, func(w http.ResponseWriter, r *http.Request) {
-				attempt := int(attempts.Add(1))
-				w.WriteHeader(tc.statuses[min(attempt, len(tc.statuses))-1])
-			}, tc.downloadDelay)
-			db := fc.open(t, "?heartbeat_interval=100ms")
+				attempt := attempts.Add(1)
+				w.WriteHeader(tc.statuses[min(int(attempt), len(tc.statuses))-1])
+				if attempt >= tc.releaseAfter {
+					releaseDownload()
+				}
+			}, release)
+			// a failing test must not leave the download parked on the fake
+			t.Cleanup(releaseDownload)
+			db := fc.open(t, "?heartbeat_interval="+interval.String())
 
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
@@ -497,11 +518,13 @@ func TestHeartbeat(t *testing.T) {
 			require.NoError(t, rows.Err())
 			assert.Equal(t, []int{1000}, results)
 
-			if tc.stopAfter > 0 {
-				assert.Equal(t, tc.stopAfter, attempts.Load(), "Expected the heartbeat to be disabled")
+			if tc.stopAfter == 0 {
+				assert.GreaterOrEqual(t, attempts.Load(), tc.releaseAfter, "Expected the heartbeat to keep running")
 				return
 			}
-			assert.GreaterOrEqual(t, attempts.Load(), tc.atLeast, "Expected the heartbeat to keep running")
+			// give a heartbeat that was wrongly kept alive the chance to show up
+			time.Sleep(5 * interval)
+			assert.Equal(t, tc.stopAfter, attempts.Load(), "Expected the heartbeat to be disabled")
 		})
 	}
 }
@@ -509,6 +532,8 @@ func TestHeartbeat(t *testing.T) {
 func TestHeartbeatDoesNotDelayClose(t *testing.T) {
 	heartbeatSent := make(chan struct{}, 1)
 	unblockHeartbeat := make(chan struct{})
+	downloadReady := make(chan struct{})
+	close(downloadReady)
 	fc := newHeartbeatCoordinator(t, func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case heartbeatSent <- struct{}{}:
@@ -516,11 +541,11 @@ func TestHeartbeatDoesNotDelayClose(t *testing.T) {
 		}
 		<-unblockHeartbeat
 		w.WriteHeader(http.StatusOK)
-	}, 0)
+	}, downloadReady)
 	// registered after the server's own cleanup, so it runs first and the
 	// parked heartbeat handler cannot block the server from closing
 	t.Cleanup(func() { close(unblockHeartbeat) })
-	db := fc.open(t, "?heartbeat_interval=50ms")
+	db := fc.open(t, "?heartbeat_interval=10ms")
 
 	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
