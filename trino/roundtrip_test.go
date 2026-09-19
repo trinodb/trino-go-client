@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,21 +17,27 @@ import (
 
 func TestRoundTripRetryQueryError(t *testing.T) {
 	cases := []struct {
-		name    string
-		status  int
-		wantErr string
+		name   string
+		status int
+		// the first response closes the connection, so the retry cannot
+		// reuse it and must send the whole request again
+		closeConnection bool
+		wantErr         string
 	}{
 		{name: "retry 502 Bad Gateway", status: http.StatusBadGateway, wantErr: "200 OK"},
 		{name: "retry 503 Service Unavailable", status: http.StatusServiceUnavailable, wantErr: "200 OK"},
 		{name: "retry 504 Gateway Timeout", status: http.StatusGatewayTimeout, wantErr: "200 OK"},
+		{name: "retry 503 on a fresh connection", status: http.StatusServiceUnavailable, closeConnection: true, wantErr: "200 OK"},
 		{name: "no retry 404 Not Found", status: http.StatusNotFound, wantErr: "404 Not Found"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			count := 0
+			var requests atomic.Int32
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				if count == 0 {
-					count++
+				if requests.Add(1) == 1 {
+					if tc.closeConnection {
+						w.Header().Set("Connection", "close")
+					}
 					w.WriteHeader(tc.status)
 					return
 				}
