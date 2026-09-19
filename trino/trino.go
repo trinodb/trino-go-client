@@ -184,7 +184,6 @@ var (
 	responseToRequestHeaderMap = map[string]string{
 		trinoSetSchemaHeader:  trinoSchemaHeader,
 		trinoSetCatalogHeader: trinoCatalogHeader,
-		trinoSetRoleHeader:    trinoRoleHeader,
 	}
 	unsupportedResponseHeaders = []string{
 		trinoSetPathHeader,
@@ -920,31 +919,58 @@ func (c *Conn) applyResponseHeaders(headers http.Header) {
 			c.httpHeaders.Set(dst, v)
 		}
 	}
-	if v := headers.Get(trinoAddedPrepareHeader); v != "" {
-		c.httpHeaders.Add(preparedStatementHeader, v)
+	for _, entry := range headers.Values(trinoAddedPrepareHeader) {
+		c.replaceHeaderEntry(preparedStatementHeader, entry)
 	}
-	if v := headers.Get(trinoDeallocatedPrepareHeader); v != "" {
-		values := c.httpHeaders.Values(preparedStatementHeader)
-		c.httpHeaders.Del(preparedStatementHeader)
-		for _, v2 := range values {
-			if !strings.HasPrefix(v2, v+"=") {
-				c.httpHeaders.Add(preparedStatementHeader, v2)
-			}
-		}
+	for _, name := range headers.Values(trinoDeallocatedPrepareHeader) {
+		c.removeHeaderEntry(preparedStatementHeader, name)
 	}
-	if v := headers.Get(trinoSetSessionHeader); v != "" {
-		c.httpHeaders.Add(trinoSessionHeader, v)
+	for _, entry := range headers.Values(trinoSetSessionHeader) {
+		c.replaceHeaderEntry(trinoSessionHeader, entry)
 	}
+	for _, name := range headers.Values(trinoClearSessionHeader) {
+		c.removeHeaderEntry(trinoSessionHeader, name)
+	}
+	if roles := headers.Values(trinoSetRoleHeader); len(roles) > 0 {
+		c.httpHeaders.Set(trinoRoleHeader, mergeRoles(c.httpHeaders.Get(trinoRoleHeader), roles))
+	}
+}
 
-	if v := headers.Get(trinoClearSessionHeader); v != "" {
-		values := c.httpHeaders.Values(trinoSessionHeader)
-		c.httpHeaders.Del(trinoSessionHeader)
-		for _, v2 := range values {
-			if !strings.HasPrefix(v2, v+"=") {
-				c.httpHeaders.Add(trinoSessionHeader, v2)
-			}
+// replaceHeaderEntry stores a name=value entry in a multi-valued header,
+// dropping any entry that already carries the same name.
+func (c *Conn) replaceHeaderEntry(key, entry string) {
+	name, _, _ := strings.Cut(entry, "=")
+	c.removeHeaderEntry(key, name)
+	c.httpHeaders.Add(key, entry)
+}
+
+func (c *Conn) removeHeaderEntry(key, name string) {
+	values := c.httpHeaders.Values(key)
+	c.httpHeaders.Del(key)
+	for _, value := range values {
+		if !strings.HasPrefix(value, name+"=") {
+			c.httpHeaders.Add(key, value)
 		}
 	}
+}
+
+// mergeRoles applies catalog=role updates to the comma-separated roles
+// header, replacing the entry of each updated catalog and keeping the rest.
+func mergeRoles(current string, updates []string) string {
+	roles := map[string]string{}
+	for _, entry := range append(strings.Split(current, commaSeparator), updates...) {
+		catalog, role, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		roles[catalog] = role
+	}
+	entries := make([]string, 0, len(roles))
+	for catalog, role := range roles {
+		entries = append(entries, catalog+"="+role)
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, commaSeparator)
 }
 
 func (c *Conn) setHTTPHeader(name, value string) {
