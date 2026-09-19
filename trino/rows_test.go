@@ -121,29 +121,32 @@ func TestProtocolErrorHandling(t *testing.T) {
 func TestSetRoleHeader(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
-	fc.respond(
-		pageOf(&stmtResponse{ID: fakeQueryID, Stats: stmtStats{State: "RUNNING"}}).
-			withHeader(trinoSetRoleHeader, "ROLE%7Badmin%7D"),
-		pageOf(&queryResponse{
-			ID:      fakeQueryID,
-			Stats:   stmtStats{State: "FINISHED"},
-			Data:    [][]interface{}{{1}},
-			Columns: []queryColumn{integerColumn("_col0")},
-		}),
-	)
 	db := fc.open(t, "?roles=catalog%3Auser")
 
-	rows, err := db.Query("SELECT 1")
+	fc.respond(
+		statementPage().withHeader(trinoSetRoleHeader, "hive=ROLE%7Badmin%7D"),
+		resultPage([][]any{{1}}),
+	)
+	rows, err := db.Query("SET ROLE admin IN hive")
+	require.NoError(t, err)
+	require.NoError(t, rows.Close())
+
+	fc.respond(
+		statementPage().
+			withHeader(trinoSetRoleHeader, "iceberg=ROLE%7Bwriter%7D").
+			withHeader(trinoSetRoleHeader, "catalog=NONE"),
+		resultPage([][]any{{1}}),
+	)
+	rows, err = db.Query("SET ROLE writer IN iceberg")
 	require.NoError(t, err)
 	require.NoError(t, rows.Close())
 
 	requests := fc.capturedRequests()
-	require.Len(t, requests, 2)
-	firstRoleHeader := requests[0].header.Get(trinoRoleHeader)
-	secondRoleHeader := requests[1].header.Get(trinoRoleHeader)
-
-	assert.Equal(t, `catalog=ROLE{user}`, firstRoleHeader, "initial role from DSN should be sent in first request")
-	assert.Equal(t, "ROLE%7Badmin%7D", secondRoleHeader, "server-set role should be sent in subsequent requests")
+	require.Len(t, requests, 4)
+	assert.Equal(t, "catalog=ROLE{user}", requests[0].header.Get(trinoRoleHeader), "initial role from DSN should be sent in first request")
+	assert.Equal(t, "catalog=ROLE{user},hive=ROLE%7Badmin%7D", requests[1].header.Get(trinoRoleHeader), "server-set role should be added to the DSN role")
+	assert.Equal(t, "catalog=ROLE{user},hive=ROLE%7Badmin%7D", requests[2].header.Get(trinoRoleHeader), "roles should carry over to the next statement")
+	assert.Equal(t, "catalog=NONE,hive=ROLE%7Badmin%7D,iceberg=ROLE%7Bwriter%7D", requests[3].header.Get(trinoRoleHeader), "every Set-Role value should be applied and roles of other catalogs kept")
 }
 
 func TestUnsupportedHeader(t *testing.T) {
@@ -185,12 +188,18 @@ func TestResponseHeadersUpdateFollowingRequests(t *testing.T) {
 	fc.respond(
 		statementPage().
 			withHeader(trinoSetSessionHeader, "query_max_run_time=10m").
+			withHeader(trinoSetSessionHeader, "query_priority=1").
+			withHeader(trinoSetSessionHeader, "join_distribution_type=BROADCAST").
 			withHeader(trinoSetCatalogHeader, "memory").
 			withHeader(trinoSetSchemaHeader, "default").
-			withHeader(trinoAddedPrepareHeader, "stmt1=SELECT 1"),
+			withHeader(trinoAddedPrepareHeader, "stmt1=SELECT 1").
+			withHeader(trinoAddedPrepareHeader, "stmt2=SELECT 2"),
 		resultPage([][]any{{1}}).
-			withHeader(trinoClearSessionHeader, "query_max_run_time").
-			withHeader(trinoDeallocatedPrepareHeader, "stmt1"),
+			withHeader(trinoSetSessionHeader, "query_max_run_time=20m").
+			withHeader(trinoClearSessionHeader, "query_priority").
+			withHeader(trinoClearSessionHeader, "join_distribution_type").
+			withHeader(trinoDeallocatedPrepareHeader, "stmt1").
+			withHeader(trinoDeallocatedPrepareHeader, "stmt2"),
 		emptyPage(),
 	)
 	db := fc.open(t, "")
@@ -203,13 +212,13 @@ func TestResponseHeadersUpdateFollowingRequests(t *testing.T) {
 	requests := fc.capturedRequests()
 	require.Len(t, requests, 3)
 	afterFirstPage := requests[1].header
-	assert.Equal(t, []string{"query_max_run_time=10m"}, afterFirstPage.Values(trinoSessionHeader), "session set by the first page")
+	assert.Equal(t, []string{"query_max_run_time=10m", "query_priority=1", "join_distribution_type=BROADCAST"}, afterFirstPage.Values(trinoSessionHeader), "every session property set by the first page")
 	assert.Equal(t, "memory", afterFirstPage.Get(trinoCatalogHeader), "catalog set by the first page")
 	assert.Equal(t, "default", afterFirstPage.Get(trinoSchemaHeader), "schema set by the first page")
-	assert.Equal(t, []string{"stmt1=SELECT 1"}, afterFirstPage.Values(preparedStatementHeader), "statement prepared by the first page")
+	assert.Equal(t, []string{"stmt1=SELECT 1", "stmt2=SELECT 2"}, afterFirstPage.Values(preparedStatementHeader), "every statement prepared by the first page")
 	afterSecondPage := requests[2].header
-	assert.Empty(t, afterSecondPage.Values(trinoSessionHeader), "session cleared by the second page")
-	assert.Empty(t, afterSecondPage.Values(preparedStatementHeader), "statement deallocated by the second page")
+	assert.Equal(t, []string{"query_max_run_time=20m"}, afterSecondPage.Values(trinoSessionHeader), "property replaced and the others cleared by the second page")
+	assert.Empty(t, afterSecondPage.Values(preparedStatementHeader), "every statement deallocated by the second page")
 	assert.Equal(t, "memory", afterSecondPage.Get(trinoCatalogHeader), "catalog kept by the second page")
 }
 
