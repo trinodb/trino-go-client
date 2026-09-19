@@ -382,6 +382,16 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 			wantErr: "unsupported header type string",
 		},
 		{
+			name:    "InlineDataNotString",
+			segment: inlineSegment(123, map[string]any{"rowOffset": 0, "segmentSize": 8}),
+			wantErr: "missing or invalid 'data' field in inline segment at index 0",
+		},
+		{
+			name:    "InlineDataNotBase64",
+			segment: inlineSegment("not base64!", map[string]any{"rowOffset": 0, "segmentSize": 8}),
+			wantErr: "error decoding base64 data in inline segment at index 0",
+		},
+		{
 			name:    "FractionalRowOffset",
 			segment: spooledSegment("seg", map[string]any{"rowOffset": 1.5, "segmentSize": 8}),
 			wantErr: "error converting rowOffset to int64",
