@@ -538,7 +538,7 @@ func withQueryTimeout(t testing.TB, dsn string) string {
 }
 
 func contextSleep(ctx context.Context, d time.Duration) error {
-	timer := time.NewTimer(100 * time.Millisecond)
+	timer := time.NewTimer(d)
 	select {
 	case <-timer.C:
 		return nil
