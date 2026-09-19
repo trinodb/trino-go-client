@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -276,4 +279,82 @@ func TestQueryTimeoutDeadline(t *testing.T) {
 			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+func TestFormatRoles(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		roles map[string]string
+		want  string
+	}{
+		{name: "named role", roles: map[string]string{"hive": "admin"}, want: "hive=ROLE{admin}"},
+		{name: "all", roles: map[string]string{"hive": "ALL"}, want: "hive=ALL"},
+		{name: "none", roles: map[string]string{"hive": "NONE"}, want: "hive=NONE"},
+		{name: "sorted by catalog", roles: map[string]string{"tpch": "NONE", "hive": "admin", "memory": "ALL"}, want: "hive=ROLE{admin},memory=ALL,tpch=NONE"},
+		{name: "empty", roles: map[string]string{}, want: ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, formatRolesFromMap(tc.roles))
+		})
+	}
+}
+
+func TestNamedRoleArgumentMustBeMap(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "")
+
+	_, err := db.Query("SELECT 1", sql.Named(trinoRoleHeader, "admin"))
+
+	require.EqualError(t, err, "X-Trino-Role must be a map[string]string, got string")
+	assert.Empty(t, fc.capturedRequests(), "the query must be rejected before anything is sent")
+}
+
+func TestQueryFailedWrapsTrinoError(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(pageOf(&stmtResponse{
+		ID: fakeQueryID,
+		Error: ErrTrino{
+			Message:   "line 1:8: mismatched input 'FORM'",
+			ErrorCode: 1,
+			ErrorName: "SYNTAX_ERROR",
+			ErrorType: "USER_ERROR",
+		},
+	}))
+	db := fc.open(t, "")
+
+	_, err := db.Query("SELECT 1 FORM dual")
+
+	var queryFailed *ErrQueryFailed
+	require.ErrorAs(t, err, &queryFailed)
+	assert.Equal(t, http.StatusOK, queryFailed.StatusCode)
+	var trinoErr *ErrTrino
+	require.ErrorAs(t, err, &trinoErr)
+	assert.Equal(t, "SYNTAX_ERROR", trinoErr.ErrorName)
+	assert.EqualError(t, err, `trino: query failed (200 OK): "USER_ERROR: line 1:8: mismatched input 'FORM'"`)
+}
+
+func TestQueryFailedTruncatesLongResponseBody(t *testing.T) {
+	t.Parallel()
+	const limit = 8 * 1024
+	body := strings.Repeat("x", 2*limit)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(ts.Close)
+	db, err := sql.Open("trino", ts.URL)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	_, err = db.Query("SELECT 1")
+
+	var queryFailed *ErrQueryFailed
+	require.ErrorAs(t, err, &queryFailed)
+	assert.Equal(t, body[:limit]+"...", queryFailed.Reason.Error())
 }
