@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"math/big"
@@ -26,9 +27,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	mobyclient "github.com/moby/moby/client"
@@ -423,35 +421,28 @@ func setupS3Emulator(ctx context.Context) {
 
 	// A zero timeout makes the pool fall back to the max wait it was built with.
 	if err := pool.Retry(ctx, 0, func() error {
-		return createS3Bucket(s3Endpoint, "test", "test", bucketName)
+		return createS3Bucket(ctx, s3Endpoint, bucketName)
 	}); err != nil {
 		setupFatal(ctx, "Could not create the %s bucket in the S3 emulator: %s\nContainer logs:\n%s", bucketName, err, getLogs(ctx, s3Container))
 	}
 }
 
-func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
-	cfg, err := config.LoadDefaultConfig(context.TODO(),
-		config.WithRegion("us-east-1"),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, "")),
-	)
+// createS3Bucket creates the bucket with a bare PUT. The emulator does not
+// check request signatures, so this needs no AWS SDK, which keeps the SDK's
+// modules out of the requirements every consumer of the driver inherits.
+func createS3Bucket(ctx context.Context, endpoint, bucketName string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, endpoint+"/"+bucketName, nil)
 	if err != nil {
-		return fmt.Errorf("failed to load AWS config: %w", err)
+		return err
 	}
-
-	s3Client := s3.New(s3.Options{
-		Credentials:  cfg.Credentials,
-		Region:       "us-east-1",
-		BaseEndpoint: &endpoint,
-		UsePathStyle: true,
-	})
-
-	createBucketInput := &s3.CreateBucketInput{
-		Bucket: &bucketName,
-	}
-
-	_, err = s3Client.CreateBucket(context.TODO(), createBucketInput)
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to create S3 bucket: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("failed to create S3 bucket: %s: %s", resp.Status, body)
 	}
 
 	log.Printf("Bucket %s created successfully!", bucketName)
