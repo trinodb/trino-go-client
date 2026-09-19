@@ -67,6 +67,42 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 	}
 }
 
+func TestRoundTripRefusesRedirects(t *testing.T) {
+	t.Parallel()
+	var redirectedRequests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		redirectedRequests.Add(1)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(&stmtResponse{})
+	}))
+	t.Cleanup(target.Close)
+	for _, status := range []int{
+		http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusSeeOther,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, target.URL+"/v1/statement", status)
+			}))
+			t.Cleanup(ts.Close)
+			db, err := sql.Open("trino", ts.URL+"?extra_credentials=token%3Asecret")
+			require.NoError(t, err)
+			t.Cleanup(func() { assert.NoError(t, db.Close()) })
+
+			_, err = db.Query("SELECT 1")
+			var queryFailed *ErrQueryFailed
+			require.ErrorAs(t, err, &queryFailed)
+			assert.Equal(t, status, queryFailed.StatusCode)
+			assert.ErrorContains(t, err, "redirect to "+target.URL+"/v1/statement not followed")
+			assert.Zero(t, redirectedRequests.Load(), "the redirect target should not receive the statement")
+		})
+	}
+	assert.Nil(t, http.DefaultClient.CheckRedirect, "the shared default client must not be modified")
+}
+
 func TestRoundTripBogusData(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
