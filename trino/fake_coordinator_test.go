@@ -254,9 +254,13 @@ func statementPage() page {
 // resultPage serves one integer column with the given data, which is either
 // a [][]interface{} for the direct protocol or a map for the spooling one.
 func resultPage(data any) page {
+	return columnsPage([]queryColumn{integerColumn("_col0")}, data)
+}
+
+func columnsPage(columns []queryColumn, data any) page {
 	return pageOf(&queryResponse{
 		ID:      fakeQueryID,
-		Columns: []queryColumn{integerColumn("_col0")},
+		Columns: columns,
 		Data:    data,
 	})
 }
@@ -302,6 +306,17 @@ func integerColumn(name string) queryColumn {
 		TypeSignature: typeSignature{
 			RawType:   "integer",
 			Arguments: []typeArgument{},
+		},
+	}
+}
+
+func timestampColumn(name string) queryColumn {
+	return queryColumn{
+		Name: name,
+		Type: "timestamp(3)",
+		TypeSignature: typeSignature{
+			RawType:   "timestamp",
+			Arguments: []typeArgument{{Kind: KIND_LONG, Value: json.RawMessage("3")}},
 		},
 	}
 }

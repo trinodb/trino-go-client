@@ -397,7 +397,47 @@ Default:        empty (the server default)
 
 The `language` parameter is sent as the `X-Trino-Language` header and selects
 the locale used by locale-sensitive functions.
-=======
+
+##### `timezone`
+
+```
+Type:           string
+Valid values:   an IANA time zone name (e.g. Europe/Warsaw), UTC, or an offset
+                like +05:30
+Default:        the local time zone of the client
+```
+
+The `timezone` parameter is sent as the `X-Trino-Time-Zone` header. The server
+uses it to evaluate `current_timestamp`, `now()`, `date_trunc` and every other
+function that depends on the session time zone, and the driver uses the same
+zone to read `DATE`, `TIME` and `TIMESTAMP` values that do not carry a zone of
+their own. Without the parameter the local zone is used, taken from the `TZ`
+environment variable or from `/etc/localtime`; when neither names a zone, the
+current UTC offset is sent instead. Set the parameter explicitly to make the
+results independent of where the client runs, for example `timezone=UTC`.
+
+Running `SET TIME ZONE` changes the zone for the rest of the session, and the
+driver follows it when reading values.
+
+**DSN parameter example:**
+```
+timezone=Asia%2FTokyo
+```
+
+**Config struct example:**
+```go
+config := &Config{
+    ServerURI: "http://foobar@localhost:8080",
+    TimeZone:  "Asia/Tokyo",
+}
+
+dsn, err := config.FormatDSN()
+```
+
+**Query parameter example (overrides the connection time zone):**
+```go
+rows, err := db.Query(query, sql.Named("X-Trino-Time-Zone", "Asia/Tokyo"))
+```
 
 #### `roles`
 
@@ -494,6 +534,11 @@ When reading response rows, the driver supports most Trino data types, except:
   supports). If a query returns columns defined with a greater precision,
   values are trimmed to 9 decimal digits. Use `CAST` to reduce the returned
   precision, or convert the value to a string that then can be parsed manually.
+* `DATE`, `TIME` and `TIMESTAMP` without a time zone - returned as `time.Time`
+  in the zone of the connection (see the `timezone` parameter), which is the
+  zone the server used to produce them. Arrays of these types are scanned with
+  `trino.NullSliceTime` and its 2D and 3D variants; set their `Location` field
+  to the same zone, as they use `time.Local` by default.
 * `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use
   `sql.NullString` for nullable columns
 * `IPADDRESS` - returned as string

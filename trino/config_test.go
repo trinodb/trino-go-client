@@ -41,6 +41,14 @@ func TestFormatDSN(t *testing.T) {
 			want: "http://foobar@localhost:8080?client_info=batch+job+%237&language=en-US&source=trino-go-client&trace_token=trace-123",
 		},
 		{
+			name: "time zone",
+			config: &Config{
+				ServerURI: "http://foobar@localhost:8080",
+				TimeZone:  "Asia/Tokyo",
+			},
+			want: "http://foobar@localhost:8080?source=trino-go-client&timezone=Asia%2FTokyo",
+		},
+		{
 			name: "explicit prepare disabled",
 			config: &Config{
 				ServerURI:              "https://foobar@localhost:8090",
@@ -266,6 +274,7 @@ func TestParseDSNToConfig(t *testing.T) {
 				TraceToken:                 "trace-token",
 				ClientInfo:                 "client info",
 				Language:                   "pl-PL",
+				TimeZone:                   "Asia/Tokyo",
 				CustomClientName:           "client_name",
 				AccessToken:                "token_test",
 				DisableExplicitPrepare:     true,
@@ -341,6 +350,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"trace_token=trace-123&" +
 		"client_info=test%20client%20info&" +
 		"language=en-US&" +
+		"timezone=Asia%2FTokyo&" +
 		"custom_client=test_client&" +
 		"KerberosEnabled=true&" +
 		"KerberosKeytabPath=/path/to/keytab&" +
@@ -393,6 +403,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, "trace-123", config.TraceToken)
 	assert.Equal(t, "test client info", config.ClientInfo)
 	assert.Equal(t, "en-US", config.Language)
+	assert.Equal(t, "Asia/Tokyo", config.TimeZone)
 	assert.Equal(t, "test_client", config.CustomClientName)
 	assert.Equal(t, true, config.KerberosEnabled)
 	assert.Equal(t, "/path/to/keytab", config.KerberosKeytabPath)
