@@ -1,4 +1,4 @@
-package trino
+package integration
 
 import (
 	"context"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 // integration tests based on python tests:
@@ -71,21 +72,21 @@ func TestIntegrationSelectFailedQuery(t *testing.T) {
 		rows.Close()
 	}
 	require.Error(t, err, "query to invalid catalog succeeded")
-	var queryFailed *ErrQueryFailed
+	var queryFailed *trino.ErrQueryFailed
 	require.ErrorAs(t, err, &queryFailed)
-	var trinoErr *ErrTrino
+	var trinoErr *trino.ErrTrino
 	require.ErrorAs(t, err, &trinoErr)
-	expected := ErrTrino{
+	expected := trino.ErrTrino{
 		Message:   "line 1:15: Catalog 'catalog'",
 		SqlState:  "",
 		ErrorCode: 44,
 		ErrorName: "CATALOG_NOT_FOUND",
 		ErrorType: "USER_ERROR",
-		ErrorLocation: ErrorLocation{
+		ErrorLocation: trino.ErrorLocation{
 			LineNumber:   1,
 			ColumnNumber: 15,
 		},
-		FailureInfo: FailureInfo{
+		FailureInfo: trino.FailureInfo{
 			Type:    "io.trino.spi.TrinoException",
 			Message: "line 1:15: Catalog 'catalog'",
 		},
@@ -242,7 +243,7 @@ func TestIntegrationQueryNextAfterClose(t *testing.T) {
 	// panic if we call driverRows.Next after we closed the driverStmt.
 
 	ctx := context.Background()
-	conn, err := (&Driver{}).Open(integrationDSN(t))
+	conn, err := (&trino.Driver{}).Open(integrationDSN(t))
 	require.NoError(t, err, "Failed to open connection")
 	defer conn.Close()
 
@@ -367,9 +368,9 @@ func TestIntegrationPreparedStatementScopedToStatement(t *testing.T) {
 	assert.Equal(t, 1, value)
 	require.NoError(t, stmt.Close())
 
-	err = conn.QueryRowContext(ctx, "EXECUTE "+preparedStatementName+" USING 1").Scan(&value)
+	err = conn.QueryRowContext(ctx, "EXECUTE _trino_go USING 1").Scan(&value)
 
-	require.ErrorContains(t, err, "Prepared statement not found: "+preparedStatementName)
+	require.ErrorContains(t, err, "Prepared statement not found: _trino_go")
 }
 
 func TestIntegrationLargeQuery(t *testing.T) {
@@ -389,7 +390,7 @@ func TestIntegrationLargeQuery(t *testing.T) {
 }
 
 func TestQueryForUsername(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -416,7 +417,7 @@ type TestQueryProgressCallback struct {
 	statusMap   map[time.Time]string
 }
 
-func (qpc *TestQueryProgressCallback) Update(qpi QueryProgressInfo) {
+func (qpc *TestQueryProgressCallback) Update(qpi trino.QueryProgressInfo) {
 	if qpc.progressMap == nil {
 		qpc.progressMap = map[time.Time]float64{}
 		qpc.statusMap = map[time.Time]string{}
@@ -426,7 +427,7 @@ func (qpc *TestQueryProgressCallback) Update(qpi QueryProgressInfo) {
 }
 
 func TestQueryProgressWithCallback(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -439,11 +440,11 @@ func TestQueryProgressWithCallback(t *testing.T) {
 	callback := &TestQueryProgressCallback{}
 
 	_, err = db.Query("SELECT 2", sql.Named("X-Trino-Progress-Callback", callback))
-	assert.EqualError(t, err, ErrInvalidProgressCallbackHeader.Error(), "unexpected error")
+	assert.EqualError(t, err, trino.ErrInvalidProgressCallbackHeader.Error(), "unexpected error")
 }
 
 func TestQueryProgressWithCallbackPeriod(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -510,7 +511,7 @@ func TestSetPath(t *testing.T) {
 }
 
 func TestSession(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(t) + "?custom_client=" + uncompressedClient,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -545,7 +546,7 @@ func TestSession(t *testing.T) {
 }
 
 func TestExec(t *testing.T) {
-	c := &Config{
+	c := &trino.Config{
 		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
@@ -565,7 +566,7 @@ func TestExec(t *testing.T) {
 		789, "ghi", nil)
 	require.NoError(t, err, "Failed executing INSERT query")
 	_, err = result.LastInsertId()
-	assert.ErrorIs(t, err, ErrOperationNotSupported)
+	assert.ErrorIs(t, err, trino.ErrOperationNotSupported)
 	numRows, err := result.RowsAffected()
 	require.NoError(t, err, "Failed checking rows affected")
 	assert.Equal(t, int64(3), numRows)

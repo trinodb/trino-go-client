@@ -706,11 +706,11 @@ You can build the client code locally and run the unit tests, which need no
 server, with the following command:
 
 ```
-go test -short -v -race ./...
+go test -v -race ./...
 ```
 
-Without `-short` the integration tests also run, starting Trino in Docker.
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for the available flags.
+The integration tests, which start Trino in Docker, live in the `integration`
+module. See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to run them.
 
 ## Contributing
 

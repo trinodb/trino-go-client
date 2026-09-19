@@ -1,4 +1,4 @@
-package trino
+package integration
 
 import (
 	"context"
@@ -36,7 +36,7 @@ func TestIntegrationSelectTpchCustomer(t *testing.T) {
 				if !spoolingProtocolSupported {
 					t.Skip("Skipping test when spooling protocol is not supported.")
 				}
-				args = append(args, sql.Named(trinoEncoding, tc.encoding))
+				args = append(args, sql.Named("encoding", tc.encoding))
 			}
 			rows, err := db.Query(fmt.Sprintf("SELECT * FROM tpch.sf1.customer LIMIT %d", tc.limit), args...)
 			require.NoError(t, err, "Query failed")
@@ -84,9 +84,9 @@ func TestSpoolingIntegrationOrderedResults(t *testing.T) {
 	`
 
 	rows, err := db.Query(query,
-		sql.Named(trinoEncoding, "json"),
-		sql.Named(trinoSpoolingWorkerCount, "4"),
-		sql.Named(trinoMaxOutOfOrdersSegments, "8"))
+		sql.Named("encoding", "json"),
+		sql.Named("spooling_worker_count", "4"),
+		sql.Named("max_out_of_order_segments", "8"))
 	require.NoError(t, err, "Query failed")
 	defer rows.Close()
 
@@ -122,7 +122,7 @@ func TestIntegrationCancelSpooledQuery(t *testing.T) {
 	t.Cleanup(cancel)
 
 	query := "SELECT * FROM TABLE(sequence(start => 1, stop => 50000000)) ORDER BY sequential_number"
-	rows, err := db.QueryContext(ctx, query, sql.Named(trinoEncoding, "json"))
+	rows, err := db.QueryContext(ctx, query, sql.Named("encoding", "json"))
 	require.NoError(t, err)
 	require.True(t, rows.Next(), "no first row: %v", rows.Err())
 	queryID := findRunningQuery(t, db, source, query)

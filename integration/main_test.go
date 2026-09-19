@@ -1,4 +1,4 @@
-package trino
+package integration
 
 import (
 	"context"
@@ -32,6 +32,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	dt "github.com/ory/dockertest/v4"
 	"github.com/stretchr/testify/require"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 const (
@@ -88,7 +89,7 @@ var (
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-	if err := RegisterCustomClient(uncompressedClient, &http.Client{Transport: &http.Transport{DisableCompression: true}}); err != nil {
+	if err := trino.RegisterCustomClient(uncompressedClient, &http.Client{Transport: &http.Transport{DisableCompression: true}}); err != nil {
 		log.Fatalf("Could not register the %s client: %s", uncompressedClient, err)
 	}
 	if *trinoImageTagFlag == "" {
@@ -207,7 +208,7 @@ func startContainers(ctx context.Context) {
 	if err != nil {
 		setupFatal(ctx, "Failed to load the TLS config: %s", err)
 	}
-	if err := RegisterCustomClient(tlsClient, &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}); err != nil {
+	if err := trino.RegisterCustomClient(tlsClient, &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}); err != nil {
 		setupFatal(ctx, "Could not register the %s client: %s", tlsClient, err)
 	}
 	tlsServer = "https://admin:admin@localhost:" + trinoContainer.GetPort("8443/tcp") + "?custom_client=" + tlsClient
@@ -675,7 +676,7 @@ type queryProtocol struct {
 func queryProtocols() []queryProtocol {
 	protocols := []queryProtocol{{name: "direct protocol"}}
 	if spoolingProtocolSupported {
-		protocols = append(protocols, queryProtocol{name: "spooling protocol", args: []any{sql.Named(trinoEncoding, "json")}})
+		protocols = append(protocols, queryProtocol{name: "spooling protocol", args: []any{sql.Named("encoding", "json")}})
 	}
 	return protocols
 }
