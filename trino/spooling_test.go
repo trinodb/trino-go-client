@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -424,6 +425,29 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 			require.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+func TestSpoolingProtocolAcknowledgesSegments(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg0", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+		spooledSegment("seg1", map[string]any{"segmentSize": 8, "rowOffset": 1, "rowsCount": 1}),
+	))
+	fc.serveSegment("seg0", []byte("[[1000]]"))
+	fc.serveSegment("seg1", []byte("[[1001]]"))
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	assert.Equal(t, []int{1000, 1001}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+
+	// acknowledgements are sent in the background after each download
+	require.Eventually(t, func() bool {
+		acked := fc.ackedSegments()
+		return slices.Contains(acked, "seg0") && slices.Contains(acked, "seg1")
+	}, 5*time.Second, time.Millisecond, "every downloaded segment must be acknowledged")
 }
 
 // newHeartbeatCoordinator serves a single spooled segment whose download
