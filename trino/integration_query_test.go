@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"fmt"
 	"io"
 	"sort"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -383,10 +383,7 @@ func TestIntegrationQueryContext(t *testing.T) {
 }
 
 func TestIntegrationLargeQuery(t *testing.T) {
-	version, err := strconv.Atoi(*trinoImageTagFlag)
-	if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 418) {
-		t.Skip("Skipping test when not using Trino 418 or later.")
-	}
+	requireServerVersion(t, 418)
 	dsn := integrationDSN(t)
 	dsn += "?explicitPrepare=false"
 	db := integrationOpen(t, dsn)
@@ -556,11 +553,12 @@ func TestExec(t *testing.T) {
 	require.NoError(t, err)
 
 	db := integrationOpen(t, dsn)
+	table := uniqueTable(t, db, "memory.default")
 
-	_, err = db.Exec("CREATE TABLE memory.default.test (id INTEGER, name VARCHAR, optional VARCHAR)")
+	_, err = db.Exec("CREATE TABLE " + table + " (id INTEGER, name VARCHAR, optional VARCHAR)")
 	require.NoError(t, err, "Failed executing CREATE TABLE query")
 
-	result, err := db.Exec("INSERT INTO memory.default.test (id, name, optional) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)",
+	result, err := db.Exec("INSERT INTO "+table+" (id, name, optional) VALUES (?, ?, ?), (?, ?, ?), (?, ?, ?)",
 		123, "abc", nil,
 		456, "def", "present",
 		789, "ghi", nil)
@@ -571,8 +569,8 @@ func TestExec(t *testing.T) {
 	require.NoError(t, err, "Failed checking rows affected")
 	assert.Equal(t, int64(3), numRows)
 
-	rows, err := db.Query("SELECT * FROM memory.default.test")
-	require.NoError(t, err, "Failed executing DELETE query")
+	rows, err := db.Query("SELECT * FROM " + table)
+	require.NoError(t, err, "Failed executing SELECT query")
 
 	expectedIds := []int{123, 456, 789}
 	expectedNames := []string{"abc", "def", "ghi"}
@@ -597,7 +595,16 @@ func TestExec(t *testing.T) {
 	assert.Equal(t, expectedIds, actualIds)
 	assert.Equal(t, expectedNames, actualNames)
 	assert.Equal(t, expectedOptionals, actualOptionals)
+}
 
-	_, err = db.Exec("DROP TABLE memory.default.test")
-	require.NoError(t, err, "Failed executing DROP TABLE query")
+// uniqueTable returns a table name no other run uses, and drops the table
+// when the test ends, so a failed run does not break the next one.
+func uniqueTable(t testing.TB, db *sql.DB, schema string) string {
+	t.Helper()
+	table := fmt.Sprintf("%s.test_%d", schema, time.Now().UnixNano())
+	t.Cleanup(func() {
+		_, err := db.Exec("DROP TABLE IF EXISTS " + table)
+		require.NoError(t, err, "Failed dropping %s", table)
+	})
+	return table
 }

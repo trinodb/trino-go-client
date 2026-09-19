@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"strconv"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -18,10 +18,7 @@ import (
 )
 
 func TestRoleHeaderSupport(t *testing.T) {
-	version, err := strconv.Atoi(*trinoImageTagFlag)
-	if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 458) {
-		t.Skip("Skipping test when not using Trino 458 or later.")
-	}
+	requireServerVersion(t, 458)
 	tests := []struct {
 		name         string
 		config       Config
@@ -184,7 +181,7 @@ func TestIntegrationAccessToken(t *testing.T) {
 }
 
 func generateToken() (string, error) {
-	privateKeyPEM, err := os.ReadFile("etc/secrets/private_key.pem")
+	privateKeyPEM, err := os.ReadFile(filepath.Join(secretsDir, "private_key.pem"))
 	if err != nil {
 		return "", fmt.Errorf("error reading private key file: %w", err)
 	}

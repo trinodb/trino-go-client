@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"math"
 	"reflect"
-	"strconv"
 	"testing"
 	"time"
 
@@ -249,8 +248,7 @@ func TestIntegrationTimeTzArgs(t *testing.T) {
 func TestIntegrationNumericArgs(t *testing.T) {
 	dsns := []string{integrationDSN(t)}
 	// EXECUTE IMMEDIATE, used when explicit prepare is disabled, needs Trino 418 or later.
-	version, err := strconv.Atoi(*trinoImageTagFlag)
-	if (err != nil && *trinoImageTagFlag == "latest") || (err == nil && version >= 418) {
+	if serverVersion >= 418 {
 		dsns = append(dsns, integrationDSN(t)+"?explicitPrepare=false")
 	}
 	for _, dsn := range dsns {
@@ -278,10 +276,7 @@ func TestIntegrationNumericArgs(t *testing.T) {
 }
 
 func TestIntgrationNumberType(t *testing.T) {
-	version, err := strconv.Atoi(*trinoImageTagFlag)
-	if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 480) {
-		t.Skip("Skipping test when using a custom integration server.")
-	}
+	requireServerVersion(t, 480)
 
 	db := integrationOpen(t)
 

@@ -13,12 +13,17 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"math"
 	"math/big"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -36,14 +41,23 @@ const (
 	DockerLocalStackName = "localstack"
 	bucketName           = "spooling"
 	DockerTrinoName      = "trino-go-client-tests"
-	MAXRetries           = 10
 	TrinoNetwork         = "trino-network"
+
+	uncompressedClient = "uncompressed"
+	tlsClient          = "integration-tls"
 )
 
 var (
-	pool                      dt.ClosablePool
-	trinoContainer            dt.ClosableResource
-	trinoNetwork              dt.ClosableNetwork
+	pool           dt.ClosablePool
+	trinoContainer dt.ClosableResource
+	trinoNetwork   dt.ClosableNetwork
+	// secretsDir holds the generated TLS certificate and the password file
+	// mounted into the container.
+	secretsDir string
+
+	// serverVersion is the numeric Trino version reported by the server under
+	// test, whether it runs in the container or behind -trino_server_dsn.
+	serverVersion             int
 	spoolingProtocolSupported bool
 
 	trinoImageTagFlag = flag.String(
@@ -71,11 +85,6 @@ var (
 	tlsServer = ""
 )
 
-const (
-	uncompressedClient = "uncompressed"
-	tlsClient          = "integration-tls"
-)
-
 func TestMain(m *testing.M) {
 	flag.Parse()
 	if err := RegisterCustomClient(uncompressedClient, &http.Client{Transport: &http.Transport{DisableCompression: true}}); err != nil {
@@ -85,124 +94,192 @@ func TestMain(m *testing.M) {
 		*trinoImageTagFlag = "latest"
 	}
 
-	if *trinoImageTagFlag == "latest" {
-		spoolingProtocolSupported = true
-	} else {
-		version, err := strconv.Atoi(*trinoImageTagFlag)
-		if err != nil {
-			log.Fatalf("Invalid trino_image_tag: %s", *trinoImageTagFlag)
-		}
-		spoolingProtocolSupported = version >= 466
-	}
-
 	ctx := context.Background()
-
-	var err error
-	if *integrationServerFlag == "" && !testing.Short() {
-		pool, err = dt.NewPool(ctx, "", dt.WithMaxWait(1*time.Minute))
+	if !testing.Short() {
+		if *integrationServerFlag == "" {
+			startContainers(ctx)
+		}
+		version, err := detectServerVersion(ctx, *integrationServerFlag)
 		if err != nil {
-			log.Fatalf("Could not connect to docker: %s", err)
+			setupFatal(ctx, "Could not read the Trino version from %s: %s", *integrationServerFlag, err)
 		}
-
-		removeExistingContainer(ctx, DockerTrinoName)
-		if spoolingProtocolSupported {
-			removeExistingContainer(ctx, DockerLocalStackName)
-		}
-
-		trinoNetwork = createNetwork(ctx)
-
-		wd, err := os.Getwd()
-		if err != nil {
-			setupFatal(ctx, "Failed to get working directory: %s", err)
-		}
-
-		if spoolingProtocolSupported {
-			if err := setupLocalStack(ctx); err != nil {
-				setupFatal(ctx, "Failed to start LocalStack: %s", err)
-			}
-		}
-
-		err = generateCerts(wd + "/etc/secrets")
-		if err != nil {
-			setupFatal(ctx, "Could not generate TLS certificates: %s", err)
-		}
-
-		mounts := []string{
-			wd + "/etc/secrets:/etc/trino/secrets",
-			wd + "/etc/jvm.config:/etc/trino/jvm.config",
-			wd + "/etc/node.properties:/etc/trino/node.properties",
-			wd + "/etc/password-authenticator.properties:/etc/trino/password-authenticator.properties",
-			wd + "/etc/catalog/memory.properties:/etc/trino/catalog/memory.properties",
-			wd + "/etc/catalog/tpch.properties:/etc/trino/catalog/tpch.properties",
-		}
-		version, err := strconv.Atoi(*trinoImageTagFlag)
-		if (err != nil && *trinoImageTagFlag == "latest") || (err == nil && version >= 458) {
-			mounts = append(mounts, wd+"/etc/catalog/hive.properties:/etc/trino/catalog/hive.properties")
-		}
-
-		if spoolingProtocolSupported {
-			version, err := strconv.Atoi(*trinoImageTagFlag)
-			if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 477) {
-				mounts = append(mounts, wd+"/etc/config-pre-477version.properties:/etc/trino/config.properties")
-			} else {
-				mounts = append(mounts, wd+"/etc/config.properties:/etc/trino/config.properties")
-			}
-			mounts = append(mounts, wd+"/etc/spooling-manager.properties:/etc/trino/spooling-manager.properties")
-		} else {
-			mounts = append(mounts, wd+"/etc/config-pre-466version.properties:/etc/trino/config.properties")
-		}
-		trinoContainer = runContainer(ctx, "trinodb/trino",
-			dt.WithName(DockerTrinoName),
-			dt.WithTag(*trinoImageTagFlag),
-			dt.WithMounts(mounts),
-			dt.WithContainerConfig(func(c *container.Config) {
-				c.ExposedPorts = network.PortSet{
-					network.MustParsePort("8080/tcp"): {},
-					network.MustParsePort("8443/tcp"): {},
-				}
-			}),
-			dt.WithHostConfig(func(hc *container.HostConfig) {
-				hc.NetworkMode = container.NetworkMode(trinoNetwork.ID())
-				hc.Ulimits = []*container.Ulimit{
-					{
-						Name: "nofile",
-						Hard: 4096,
-						Soft: 4096,
-					},
-				}
-			}),
-		)
-
-		waitForContainerHealth(ctx, trinoContainer, "trino")
-
-		err = grantAdminRoleToTestUser(ctx)
-		if err != nil {
-			setupFatal(ctx, "Failed to grant admin role to test user: %s", err)
-		}
-
-		*integrationServerFlag = "http://test@localhost:" + trinoContainer.GetPort("8080/tcp")
-
-		tlsConfig, err := getTLSConfig(wd + "/etc/secrets")
-		if err != nil {
-			setupFatal(ctx, "Failed to load the TLS config: %s", err)
-		}
-		if err := RegisterCustomClient(tlsClient, &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}); err != nil {
-			setupFatal(ctx, "Could not register the %s client: %s", tlsClient, err)
-		}
-		tlsServer = "https://admin:admin@localhost:" + trinoContainer.GetPort("8443/tcp") + "?custom_client=" + tlsClient
+		serverVersion = version
+		spoolingProtocolSupported = serverVersion >= 466
+		log.Printf("Running integration tests against Trino %d", serverVersion)
 	}
 
 	code := m.Run()
 
-	if pool != nil {
-		if *noCleanup {
-			log.Print("Leaving Docker containers running, as requested by -no_cleanup")
-		} else if err := pool.Close(ctx); err != nil {
-			log.Fatalf("Could not clean up Docker resources: %s", err)
+	releaseDockerResources(ctx)
+	os.Exit(code)
+}
+
+// startContainers runs Trino, and LocalStack when the image supports the
+// spooling protocol, and points the integration tests at them.
+func startContainers(ctx context.Context) {
+	var err error
+	pool, err = dt.NewPool(ctx, "", dt.WithMaxWait(1*time.Minute))
+	if err != nil {
+		log.Fatalf("Could not connect to Docker: %s\nStart Docker, pass -trino_server_dsn to test a running Trino, or pass -short to skip the integration tests", err)
+	}
+	stopOnSignal(ctx)
+
+	removeExistingContainer(ctx, DockerTrinoName)
+	removeExistingContainer(ctx, DockerLocalStackName)
+	trinoNetwork = createNetwork(ctx)
+
+	wd, err := os.Getwd()
+	if err != nil {
+		setupFatal(ctx, "Failed to get working directory: %s", err)
+	}
+
+	imageVersion := imageVersion(ctx)
+	if imageVersion >= 466 {
+		setupLocalStack(ctx)
+	}
+
+	secretsDir, err = prepareSecrets(wd + "/etc/secrets")
+	if err != nil {
+		setupFatal(ctx, "Could not prepare the TLS certificates: %s", err)
+	}
+
+	mounts := []string{
+		secretsDir + ":/etc/trino/secrets",
+		wd + "/etc/jvm.config:/etc/trino/jvm.config",
+		wd + "/etc/node.properties:/etc/trino/node.properties",
+		wd + "/etc/password-authenticator.properties:/etc/trino/password-authenticator.properties",
+		wd + "/etc/catalog/memory.properties:/etc/trino/catalog/memory.properties",
+		wd + "/etc/catalog/tpch.properties:/etc/trino/catalog/tpch.properties",
+	}
+	if imageVersion >= 458 {
+		mounts = append(mounts, wd+"/etc/catalog/hive.properties:/etc/trino/catalog/hive.properties")
+	}
+	switch {
+	case imageVersion < 466:
+		mounts = append(mounts, wd+"/etc/config-pre-466version.properties:/etc/trino/config.properties")
+	case imageVersion < 477:
+		mounts = append(mounts, wd+"/etc/config-pre-477version.properties:/etc/trino/config.properties")
+	default:
+		mounts = append(mounts, wd+"/etc/config.properties:/etc/trino/config.properties")
+	}
+	if imageVersion >= 466 {
+		mounts = append(mounts, wd+"/etc/spooling-manager.properties:/etc/trino/spooling-manager.properties")
+	}
+
+	trinoContainer = runContainer(ctx, "trinodb/trino",
+		dt.WithName(DockerTrinoName),
+		dt.WithTag(*trinoImageTagFlag),
+		dt.WithMounts(mounts),
+		dt.WithContainerConfig(func(c *container.Config) {
+			c.ExposedPorts = network.PortSet{
+				network.MustParsePort("8080/tcp"): {},
+				network.MustParsePort("8443/tcp"): {},
+			}
+		}),
+		dt.WithHostConfig(func(hc *container.HostConfig) {
+			hc.NetworkMode = container.NetworkMode(trinoNetwork.ID())
+			hc.Ulimits = []*container.Ulimit{
+				{
+					Name: "nofile",
+					Hard: 4096,
+					Soft: 4096,
+				},
+			}
+		}),
+	)
+
+	waitForContainerHealth(ctx, trinoContainer, "trino")
+
+	if imageVersion >= 458 {
+		if err := grantAdminRoleToTestUser(ctx); err != nil {
+			setupFatal(ctx, "Failed to grant the admin role to the test user: %s", err)
 		}
 	}
 
-	os.Exit(code)
+	*integrationServerFlag = "http://test@localhost:" + trinoContainer.GetPort("8080/tcp")
+
+	tlsConfig, err := getTLSConfig(secretsDir)
+	if err != nil {
+		setupFatal(ctx, "Failed to load the TLS config: %s", err)
+	}
+	if err := RegisterCustomClient(tlsClient, &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}); err != nil {
+		setupFatal(ctx, "Could not register the %s client: %s", tlsClient, err)
+	}
+	tlsServer = "https://admin:admin@localhost:" + trinoContainer.GetPort("8443/tcp") + "?custom_client=" + tlsClient
+}
+
+// imageVersion is the Trino version the -trino_image_tag names, used for the
+// decisions that must be made before the container starts; "latest" counts as
+// newer than any release.
+func imageVersion(ctx context.Context) int {
+	if *trinoImageTagFlag == "latest" {
+		return math.MaxInt
+	}
+	version, err := strconv.Atoi(*trinoImageTagFlag)
+	if err != nil {
+		setupFatal(ctx, "Invalid -trino_image_tag %q: expected \"latest\" or a release number", *trinoImageTagFlag)
+	}
+	return version
+}
+
+var versionPrefix = regexp.MustCompile(`^\d+`)
+
+// detectServerVersion asks the coordinator which Trino release it runs, so
+// tests can be gated on the server actually under test rather than on the
+// image tag, which says nothing about a server passed with -trino_server_dsn.
+func detectServerVersion(ctx context.Context, dsn string) (int, error) {
+	dsn, err := addQueryTimeout(dsn)
+	if err != nil {
+		return 0, err
+	}
+	db, err := sql.Open("trino", dsn)
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+
+	var nodeVersion string
+	if err := db.QueryRowContext(ctx, "SELECT node_version FROM system.runtime.nodes WHERE coordinator").Scan(&nodeVersion); err != nil {
+		return 0, err
+	}
+	digits := versionPrefix.FindString(nodeVersion)
+	if digits == "" {
+		return 0, fmt.Errorf("node_version %q does not start with a release number", nodeVersion)
+	}
+	return strconv.Atoi(digits)
+}
+
+// stopOnSignal removes the containers when the run is interrupted, since
+// TestMain does not get to run its cleanup then.
+func stopOnSignal(ctx context.Context) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		sig := <-signals
+		log.Printf("Received %s, stopping", sig)
+		releaseDockerResources(ctx)
+		os.Exit(130)
+	}()
+}
+
+// releaseDockerResources removes the containers, the network, and the
+// generated secrets, unless -no_cleanup asks to keep them for inspection.
+func releaseDockerResources(ctx context.Context) {
+	if pool == nil {
+		return
+	}
+	if *noCleanup {
+		log.Print("Leaving Docker containers running, as requested by -no_cleanup")
+		return
+	}
+	if err := pool.Close(ctx); err != nil {
+		log.Printf("Could not clean up Docker resources: %s", err)
+	}
+	if secretsDir != "" {
+		if err := os.RemoveAll(secretsDir); err != nil {
+			log.Printf("Could not remove %s: %s", secretsDir, err)
+		}
+	}
 }
 
 // runContainer starts a container. The pool tracks it and removes it on Close.
@@ -229,7 +306,7 @@ func removeExistingContainer(ctx context.Context, name string) {
 		Force:         true,
 		RemoveVolumes: true,
 	}); err != nil {
-		log.Fatalf("Could not remove container %s left over from a previous run: %s", name, err)
+		setupFatal(ctx, "Could not remove container %s left over from a previous run: %s", name, err)
 	}
 }
 
@@ -240,14 +317,12 @@ func removeExistingContainer(ctx context.Context, name string) {
 // container can be inspected.
 func setupFatal(ctx context.Context, format string, v ...any) {
 	log.Printf(format, v...)
-	if *noCleanup {
-		log.Print("Leaving Docker containers running, as requested by -no_cleanup")
-	} else if err := pool.Close(ctx); err != nil {
-		log.Printf("Could not clean up Docker resources: %s", err)
-	}
+	releaseDockerResources(ctx)
 	os.Exit(1)
 }
 
+// grantAdminRoleToTestUser lets the test user take the hive admin role, which
+// the role tests rely on. The CLI reports failures through its exit code only.
 func grantAdminRoleToTestUser(ctx context.Context) error {
 	grantSQL := "SET ROLE admin IN hive; GRANT admin TO USER test IN hive;"
 
@@ -256,12 +331,14 @@ func grantAdminRoleToTestUser(ctx context.Context) error {
 		"--user", "admin",
 		"--execute", grantSQL,
 	}
-	_, err := trinoContainer.Exec(ctx, execCmd)
+	result, err := trinoContainer.Exec(ctx, execCmd)
 	if err != nil {
-		log.Printf("Warning: Failed to execute GRANT: %s", err)
+		return err
 	}
-
-	return err
+	if result.ExitCode != 0 {
+		return fmt.Errorf("trino CLI exited with code %d\nstdout: %s\nstderr: %s", result.ExitCode, result.StdOut, result.StdErr)
+	}
+	return nil
 }
 
 // createNetwork builds the network the containers share, first deleting one
@@ -292,6 +369,7 @@ func createNetwork(ctx context.Context) dt.ClosableNetwork {
 }
 
 // inspectContainer looks up a container by name or ID, reporting whether it exists.
+// inspectContainer looks up a container by name or ID, reporting whether it exists.
 func inspectContainer(ctx context.Context, nameOrID string) (container.InspectResponse, bool) {
 	resp, err := pool.Client().ContainerInspect(ctx, nameOrID, mobyclient.ContainerInspectOptions{})
 	if err != nil {
@@ -301,7 +379,7 @@ func inspectContainer(ctx context.Context, nameOrID string) (container.InspectRe
 	return resp.Container, true
 }
 
-func setupLocalStack(ctx context.Context) error {
+func setupLocalStack(ctx context.Context) {
 	localstackContainer := runContainer(ctx, "localstack/localstack",
 		dt.WithName(DockerLocalStackName),
 		// Pinned: from the 2026.x line on, the image refuses to start without a
@@ -322,25 +400,17 @@ func setupLocalStack(ctx context.Context) error {
 		}),
 	)
 
-	localstackPort := localstackContainer.GetPort("4566/tcp")
-	s3Endpoint := "http://localhost:" + localstackPort
-
+	s3Endpoint := "http://localhost:" + localstackContainer.GetPort("4566/tcp")
 	log.Println("LocalStack started at:", s3Endpoint)
 
 	waitForContainerHealth(ctx, localstackContainer, "localstack")
 
-	var err error
-	for retry := 0; retry < MAXRetries; retry++ {
-		err = createS3Bucket(s3Endpoint, "test", "test", bucketName)
-		if err == nil {
-			log.Println("S3 bucket created successfully")
-			return nil
-		}
-		log.Printf("Failed to create S3 bucket, retrying... (%d/%d)\n", retry+1, MAXRetries)
-		time.Sleep(2 * time.Second)
+	// A zero timeout makes the pool fall back to the max wait it was built with.
+	if err := pool.Retry(ctx, 0, func() error {
+		return createS3Bucket(s3Endpoint, "test", "test", bucketName)
+	}); err != nil {
+		setupFatal(ctx, "Could not create the %s bucket in LocalStack: %s\nContainer logs:\n%s", bucketName, err, getLogs(ctx, localstackContainer))
 	}
-
-	return fmt.Errorf("failed to create S3 bucket after multiple attempts: %w", err)
 }
 
 func createS3Bucket(endpoint, accessKey, secretKey, bucketName string) error {
@@ -391,6 +461,31 @@ func waitForContainerHealth(ctx context.Context, c dt.ClosableResource, containe
 	}); err != nil {
 		setupFatal(ctx, "Timed out waiting for container %s to get ready: %s\nContainer logs:\n%s", containerName, err, getLogs(ctx, c))
 	}
+}
+
+// prepareSecrets builds the directory mounted at /etc/trino/secrets: the
+// password file from the repository, and a certificate generated for this run.
+// A temporary directory keeps generated files out of the source tree; it is
+// world-readable so the container's user can read it.
+func prepareSecrets(sourceDir string) (string, error) {
+	dir, err := os.MkdirTemp("", "trino-go-client-secrets-")
+	if err != nil {
+		return "", err
+	}
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return "", err
+	}
+	passwords, err := os.ReadFile(filepath.Join(sourceDir, "password.db"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "password.db"), passwords, 0o644); err != nil {
+		return "", err
+	}
+	if err := generateCerts(dir); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 func generateCerts(dir string) error {
@@ -509,6 +604,16 @@ func integrationDSN(t testing.TB) string {
 	return *integrationServerFlag
 }
 
+// requireServerVersion skips the test unless the server under test is at
+// least the given Trino release.
+func requireServerVersion(t testing.TB, minimum int) {
+	t.Helper()
+	integrationDSN(t)
+	if serverVersion < minimum {
+		t.Skipf("Skipping test: needs Trino %d or later, the server runs %d", minimum, serverVersion)
+	}
+}
+
 // integrationOpen opens a connection to the integration test server, or to
 // dsn when given, and closes it when the test ends. Queries time out after
 // -trino_query_timeout unless the DSN sets its own query_timeout.
@@ -518,23 +623,26 @@ func integrationOpen(t testing.TB, dsn ...string) *sql.DB {
 	if len(dsn) > 0 {
 		target = dsn[0]
 	}
-	db, err := sql.Open("trino", withQueryTimeout(t, target))
+	target, err := addQueryTimeout(target)
+	require.NoError(t, err)
+	db, err := sql.Open("trino", target)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	return db
 }
 
-func withQueryTimeout(t testing.TB, dsn string) string {
-	t.Helper()
+func addQueryTimeout(dsn string) (string, error) {
 	parsed, err := url.Parse(dsn)
-	require.NoError(t, err, "invalid DSN %q", dsn)
+	if err != nil {
+		return "", fmt.Errorf("invalid DSN %q: %w", dsn, err)
+	}
 	query := parsed.Query()
 	if query.Get("query_timeout") != "" {
-		return dsn
+		return dsn, nil
 	}
 	query.Set("query_timeout", integrationServerQueryTimeout.String())
 	parsed.RawQuery = query.Encode()
-	return parsed.String()
+	return parsed.String(), nil
 }
 
 func contextSleep(ctx context.Context, d time.Duration) error {
