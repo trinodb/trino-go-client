@@ -114,7 +114,10 @@ func TestIntegrationCancelSpooledQuery(t *testing.T) {
 		t.Skip("Skipping test when spooling protocol is not supported.")
 	}
 	source := "cancel-spooled-test-" + strconv.FormatInt(time.Now().UnixNano(), 10)
-	db := integrationOpen(t, integrationDSN(t)+"?source="+source)
+	// The global sort must finish before the first row streams back, which
+	// can take longer than the default query_timeout on a busy CI runner, so
+	// this DSN gets its own generous one instead of the flag's default.
+	db := integrationOpen(t, integrationDSN(t)+"?source="+source+"&query_timeout=1m")
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
