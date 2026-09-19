@@ -294,7 +294,7 @@ func TestIntegrationQueryContext(t *testing.T) {
 		},
 		{
 			name:           "Context Deadline Exceeded",
-			timeout:        3 * time.Second,
+			timeout:        time.Second,
 			expectedErrMsg: "context deadline exceeded",
 		},
 	}

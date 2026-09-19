@@ -3,6 +3,7 @@ package trino
 import (
 	"database/sql"
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -30,6 +31,9 @@ func TestIntegrationSelectTpchCustomer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var args []any
 			if tc.encoding != "" {
+				if !spoolingProtocolSupported {
+					t.Skip("Skipping test when spooling protocol is not supported.")
+				}
 				args = append(args, sql.Named(trinoEncoding, tc.encoding))
 			}
 			rows, err := db.Query(fmt.Sprintf("SELECT * FROM tpch.sf1.customer LIMIT %d", tc.limit), args...)
@@ -65,16 +69,22 @@ func TestSpoolingIntegrationOrderedResults(t *testing.T) {
 	}
 	db := integrationOpen(t)
 
+	// The container caps spooled segments at 256kB, so this result spans
+	// several segments that four workers download concurrently.
+	const rowCount = 200_000
 	query := `
 		SELECT *
 		FROM TABLE(sequence(
 			start => 1,
-			stop => 5000000
+			stop => ` + strconv.Itoa(rowCount) + `
 		))
 		ORDER BY sequential_number
 	`
 
-	rows, err := db.Query(query, sql.Named(trinoEncoding, "json"))
+	rows, err := db.Query(query,
+		sql.Named(trinoEncoding, "json"),
+		sql.Named(trinoSpoolingWorkerCount, "4"),
+		sql.Named(trinoMaxOutOfOrdersSegments, "8"))
 	require.NoError(t, err, "Query failed")
 	defer rows.Close()
 
@@ -92,5 +102,5 @@ func TestSpoolingIntegrationOrderedResults(t *testing.T) {
 	}
 
 	require.NoError(t, rows.Err(), "Rows iteration error")
-	assert.Equal(t, 5_000_000, expected-1, "row count")
+	assert.Equal(t, rowCount, expected-1, "row count")
 }
