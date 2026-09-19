@@ -16,7 +16,6 @@ import (
 	"math"
 	"math/big"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -38,10 +37,14 @@ import (
 )
 
 const (
-	DockerLocalStackName = "localstack"
-	bucketName           = "spooling"
-	DockerTrinoName      = "trino-go-client-tests"
-	TrinoNetwork         = "trino-network"
+	// DockerS3Name is the S3 emulator's container name, and the host Trino
+	// reaches it by on the shared network.
+	DockerS3Name    = "s3"
+	bucketName      = "spooling"
+	DockerTrinoName = "trino-go-client-tests"
+	TrinoNetwork    = "trino-network"
+	// legacyS3Name is the container name older checkouts used for the emulator.
+	legacyS3Name = "localstack"
 
 	uncompressedClient = "uncompressed"
 	tlsClient          = "integration-tls"
@@ -114,7 +117,7 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// startContainers runs Trino, and LocalStack when the image supports the
+// startContainers runs Trino, and an S3 emulator when the image supports the
 // spooling protocol, and points the integration tests at them.
 func startContainers(ctx context.Context) {
 	var err error
@@ -125,7 +128,8 @@ func startContainers(ctx context.Context) {
 	stopOnSignal(ctx)
 
 	removeExistingContainer(ctx, DockerTrinoName)
-	removeExistingContainer(ctx, DockerLocalStackName)
+	removeExistingContainer(ctx, DockerS3Name)
+	removeExistingContainer(ctx, legacyS3Name)
 	trinoNetwork = createNetwork(ctx)
 
 	wd, err := os.Getwd()
@@ -135,7 +139,7 @@ func startContainers(ctx context.Context) {
 
 	imageVersion := imageVersion(ctx)
 	if imageVersion >= 466 {
-		setupLocalStack(ctx)
+		setupS3Emulator(ctx)
 	}
 
 	secretsDir, err = prepareSecrets(wd + "/etc/secrets")
@@ -315,9 +319,8 @@ func removeExistingContainer(ctx context.Context, name string) {
 
 // setupFatal stops a run that could not build its fixtures, and removes the
 // containers it had already started. The next run would remove them anyway, but
-// until then they hold their ports - LocalStack binds 4566 and 4571 - and a
-// Trino container keeps using CPU. -no_cleanup still keeps them, so a broken
-// container can be inspected.
+// until then a Trino container keeps using CPU. -no_cleanup still keeps them,
+// so a broken container can be inspected.
 func setupFatal(ctx context.Context, format string, v ...any) {
 	log.Printf(format, v...)
 	releaseDockerResources(ctx)
@@ -382,37 +385,47 @@ func inspectContainer(ctx context.Context, nameOrID string) (container.InspectRe
 	return resp.Container, true
 }
 
-func setupLocalStack(ctx context.Context) {
-	localstackContainer := runContainer(ctx, "localstack/localstack",
-		dt.WithName(DockerLocalStackName),
-		// Pinned: from the 2026.x line on, the image refuses to start without a
-		// LOCALSTACK_AUTH_TOKEN. 4.14 is the last release that runs license-free.
-		dt.WithTag("4.14"),
+// setupS3Emulator starts the object store the spooling protocol writes its
+// segments to, and creates the bucket. Trino addresses it by container name on
+// the shared network; the host port is only used to create the bucket.
+//
+// Floci is an MIT-licensed AWS emulator: a 77 MB native image that starts in
+// well under a second, needs no licence token, and implements what Trino's S3
+// filesystem uses, including multipart uploads and the SSE-C headers the
+// spooling manager encrypts segments with.
+func setupS3Emulator(ctx context.Context) {
+	s3Container := runContainer(ctx, "floci/floci",
+		dt.WithName(DockerS3Name),
+		dt.WithTag("2.1.0"),
 		dt.WithEnv([]string{
-			"SERVICES=s3",
-			"region_name=us-east-1",
-			"AWS_ACCESS_KEY_ID=test",
-			"AWS_SECRET_ACCESS_KEY=test",
+			"FLOCI_STORAGE_MODE=memory",
+			"FLOCI_DEFAULT_REGION=us-east-1",
 		}),
-		dt.WithPortBindings(network.PortMap{
-			network.MustParsePort("4566/tcp"): {{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "4566"}},
-			network.MustParsePort("4571/tcp"): {{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "4571"}},
+		dt.WithContainerConfig(func(c *container.Config) {
+			// the image's own check runs every 5 seconds, which is most of
+			// the time this container needs to become ready
+			c.Healthcheck = &container.HealthConfig{
+				Test:     []string{"CMD", "/usr/local/bin/healthcheck.sh"},
+				Interval: 250 * time.Millisecond,
+				Timeout:  3 * time.Second,
+				Retries:  40,
+			}
 		}),
 		dt.WithHostConfig(func(hc *container.HostConfig) {
 			hc.NetworkMode = container.NetworkMode(trinoNetwork.ID())
 		}),
 	)
 
-	s3Endpoint := "http://localhost:" + localstackContainer.GetPort("4566/tcp")
-	log.Println("LocalStack started at:", s3Endpoint)
+	s3Endpoint := "http://localhost:" + s3Container.GetPort("4566/tcp")
+	log.Println("S3 emulator started at:", s3Endpoint)
 
-	waitForContainerHealth(ctx, localstackContainer, "localstack")
+	waitForContainerHealth(ctx, s3Container, "s3")
 
 	// A zero timeout makes the pool fall back to the max wait it was built with.
 	if err := pool.Retry(ctx, 0, func() error {
 		return createS3Bucket(s3Endpoint, "test", "test", bucketName)
 	}); err != nil {
-		setupFatal(ctx, "Could not create the %s bucket in LocalStack: %s\nContainer logs:\n%s", bucketName, err, getLogs(ctx, localstackContainer))
+		setupFatal(ctx, "Could not create the %s bucket in the S3 emulator: %s\nContainer logs:\n%s", bucketName, err, getLogs(ctx, s3Container))
 	}
 }
 

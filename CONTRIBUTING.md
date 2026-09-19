@@ -19,7 +19,7 @@ seconds:
 go test -short -v -race ./...
 ```
 
-The integration tests start Trino, and LocalStack for the spooling protocol,
+The integration tests start Trino, and an S3 emulator for the spooling protocol,
 in Docker:
 
 ```bash
