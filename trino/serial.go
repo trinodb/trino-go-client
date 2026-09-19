@@ -132,11 +132,10 @@ func Serial(v interface{}) (string, error) {
 	case uint64:
 		return strconv.FormatUint(x, 10), nil
 
-		// float32, float64 not supported because digit precision will easily cause large problems
 	case float32:
-		return "", UnsupportedArgError{"float32"}
+		return serialFloat("REAL", float64(x), 32), nil
 	case float64:
-		return "", UnsupportedArgError{"float64"}
+		return serialFloat("DOUBLE", x, 64), nil
 
 	case Numeric:
 		if !numericLiteral.MatchString(string(x)) {
@@ -206,6 +205,22 @@ func Serial(v interface{}) (string, error) {
 	// TODO - consider the remaining types in https://trino.io/docs/current/language/types.html (Row, IP, ...)
 
 	return "", UnsupportedArgError{fmt.Sprintf("%T", v)}
+}
+
+// serialFloat formats a typed literal using the shortest representation
+// that parses back to the same value, so no precision is lost on the way
+// to the server. Infinities are spelled the way Trino's varchar cast expects.
+func serialFloat(typeName string, value float64, bitSize int) string {
+	var literal string
+	switch {
+	case math.IsInf(value, 1):
+		literal = "Infinity"
+	case math.IsInf(value, -1):
+		literal = "-Infinity"
+	default:
+		literal = strconv.FormatFloat(value, 'g', -1, bitSize)
+	}
+	return typeName + " '" + literal + "'"
 }
 
 func serialSlice(v []interface{}) (string, error) {

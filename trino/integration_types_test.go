@@ -190,8 +190,8 @@ func TestIntegrationArgsConversion(t *testing.T) {
 			AND col_small = ?
 			AND col_int = ?
 			AND col_big = ?
-			AND col_real = cast(? as real)
-			AND col_double = cast(? as double)
+			AND col_real = ?
+			AND col_double = ?
 			AND col_ts = ?
 			AND col_varchar = ?
 			AND col_varbinary = ?
@@ -200,8 +200,8 @@ func TestIntegrationArgsConversion(t *testing.T) {
 		int16(1),
 		int32(1),
 		int64(1),
-		Numeric("1"),
-		Numeric("1"),
+		float32(1),
+		float64(1),
 		time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC),
 		"string",
 		[]byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff},
@@ -273,6 +273,33 @@ func TestIntegrationNumericArgs(t *testing.T) {
 		err := db.QueryRow("SELECT * FROM (VALUES (99)) AS t(nan) WHERE nan = ?", Numeric("NaN")).Scan(&value)
 		require.ErrorContains(t, err, `Numeric "NaN" is not a decimal or scientific number literal`, dsn)
 	}
+}
+
+func TestIntegrationFloatArgs(t *testing.T) {
+	db := integrationOpen(t)
+	for _, tc := range []struct {
+		arg     any
+		literal string
+	}{
+		{float32(0.1), "REAL '0.1'"},
+		{float32(-1.5), "REAL '-1.5'"},
+		{0.1, "DOUBLE '0.1'"},
+		{1e-7, "DOUBLE '1e-7'"},
+		{math.MaxFloat64, "DOUBLE '1.7976931348623157e308'"},
+		{math.Inf(1), "infinity()"},
+		{math.Inf(-1), "-infinity()"},
+		{float32(math.Inf(1)), "CAST(infinity() AS REAL)"},
+	} {
+		var equal bool
+		err := db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal)
+		require.NoError(t, err, tc.literal)
+		require.True(t, equal, "%v did not round-trip as %s", tc.arg, tc.literal)
+	}
+
+	var isNaN bool
+	err := db.QueryRow("SELECT is_nan(?)", math.NaN()).Scan(&isNaN)
+	require.NoError(t, err)
+	require.True(t, isNaN, "NaN did not round-trip")
 }
 
 func TestIntgrationNumberType(t *testing.T) {
