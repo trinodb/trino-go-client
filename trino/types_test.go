@@ -385,7 +385,7 @@ func TestTypeConversion(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%s %v", tc.dataType, tc.sample), func(t *testing.T) {
-			converter, err := newTypeConverter(tc.dataType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments})
+			converter, err := newTypeConverter(tc.dataType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments}, time.Local)
 			require.NoError(t, err)
 
 			t.Run("nil", func(t *testing.T) {
@@ -493,7 +493,7 @@ func TestConvertValueFloatSpecialValues(t *testing.T) {
 	}
 
 	for _, rawType := range []string{"real", "double"} {
-		converter, err := newTypeConverter(rawType, typeSignature{RawType: rawType})
+		converter, err := newTypeConverter(rawType, typeSignature{RawType: rawType}, time.Local)
 		require.NoError(t, err)
 		for _, tc := range cases {
 			t.Run(fmt.Sprintf("%s %v", rawType, tc.sample), func(t *testing.T) {
@@ -512,7 +512,7 @@ func TestConvertValueFloatSpecialValues(t *testing.T) {
 
 func TestConvertValueRejectsUnsupportedType(t *testing.T) {
 	t.Parallel()
-	converter, err := newTypeConverter("HyperLogLog", typeSignature{RawType: "HyperLogLog"})
+	converter, err := newTypeConverter("HyperLogLog", typeSignature{RawType: "HyperLogLog"}, time.Local)
 	require.NoError(t, err)
 
 	_, err = converter.ConvertValue("AAI=")
@@ -522,7 +522,7 @@ func TestConvertValueRejectsUnsupportedType(t *testing.T) {
 
 func TestConvertValueRejectsInvalidVarbinary(t *testing.T) {
 	t.Parallel()
-	converter, err := newTypeConverter("varbinary", typeSignature{RawType: "varbinary"})
+	converter, err := newTypeConverter("varbinary", typeSignature{RawType: "varbinary"}, time.Local)
 	require.NoError(t, err)
 
 	_, err = converter.ConvertValue("not base64!")
@@ -549,7 +549,7 @@ func TestNewTypeConverterRejectsWrongArgumentKinds(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newTypeConverter(tc.rawType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments})
+			_, err := newTypeConverter(tc.rawType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments}, time.Local)
 
 			require.ErrorIs(t, err, ErrInvalidResponseType)
 		})
@@ -608,4 +608,68 @@ func TestParseNullTimeWithLocationRejectsBadInput(t *testing.T) {
 			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+// Values without a zone are interpreted in the converter's location, values
+// carrying a zone keep it.
+func TestTypeConversionUsesLocation(t *testing.T) {
+	t.Parallel()
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	require.NoError(t, err)
+
+	cases := []struct {
+		dataType string
+		sample   string
+		want     time.Time
+	}{
+		{dataType: "date", sample: "2017-07-10", want: time.Date(2017, 7, 10, 0, 0, 0, 0, tokyo)},
+		{dataType: "time", sample: "01:02:03.000", want: time.Date(0, 1, 1, 1, 2, 3, 0, tokyo)},
+		{dataType: "timestamp", sample: "2017-07-10 01:02:03.000", want: time.Date(2017, 7, 10, 1, 2, 3, 0, tokyo)},
+		{dataType: "timestamp with time zone", sample: "2017-07-10 01:02:03.000 UTC", want: time.Date(2017, 7, 10, 1, 2, 3, 0, time.UTC)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.dataType, func(t *testing.T) {
+			converter, err := newTypeConverter(tc.dataType, typeSignature{RawType: tc.dataType}, tokyo)
+			require.NoError(t, err)
+
+			got, err := converter.ConvertValue(tc.sample)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+			assert.Equal(t, tc.want.Location().String(), got.(time.Time).Location().String())
+		})
+	}
+}
+
+func TestNullSliceTimeLocation(t *testing.T) {
+	t.Parallel()
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	require.NoError(t, err)
+	want := NullTime{Valid: true, Time: time.Date(2017, 7, 10, 1, 2, 3, 0, tokyo)}
+	sample := "2017-07-10 01:02:03.000"
+
+	t.Run("one dimension", func(t *testing.T) {
+		scanner := NullSliceTime{Location: tokyo}
+		require.NoError(t, scanner.Scan(nest(1, sample)))
+		assert.Equal(t, []NullTime{want}, scanner.SliceTime)
+	})
+
+	t.Run("two dimensions", func(t *testing.T) {
+		scanner := NullSlice2Time{Location: tokyo}
+		require.NoError(t, scanner.Scan(nest(2, sample)))
+		assert.Equal(t, [][]NullTime{{want}}, scanner.Slice2Time)
+	})
+
+	t.Run("three dimensions", func(t *testing.T) {
+		scanner := NullSlice3Time{Location: tokyo}
+		require.NoError(t, scanner.Scan(nest(3, sample)))
+		assert.Equal(t, [][][]NullTime{{{want}}}, scanner.Slice3Time)
+	})
+
+	t.Run("nil location means time.Local", func(t *testing.T) {
+		var scanner NullSliceTime
+		require.NoError(t, scanner.Scan(nest(1, sample)))
+		assert.Equal(t, time.Local, scanner.SliceTime[0].Time.Location())
+	})
 }
