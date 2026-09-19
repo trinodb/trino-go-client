@@ -14,6 +14,7 @@ import (
 )
 
 func TestFormatDSN(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		config *Config
@@ -166,6 +167,7 @@ func TestFormatDSN(t *testing.T) {
 }
 
 func TestFormatDSNRejects(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		config *Config
@@ -234,6 +236,7 @@ FKu5ZAlRfb2aYegr49DHhzoVAdInWQmP+5EZEUD1
 -----END CERTIFICATE-----`
 
 func TestParseDSNToConfig(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		config *Config
@@ -312,6 +315,7 @@ func TestParseDSNToConfig(t *testing.T) {
 }
 
 func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
+	t.Parallel()
 	complexDSN := "https://user:pass@localhost:8080/?" +
 		"source=test-source&" +
 		"catalog=test_catalog&" +
@@ -388,6 +392,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 }
 
 func TestParseDSNPasswordRequiresTLS(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		dsn     string
@@ -424,6 +429,7 @@ func TestParseDSNPasswordRequiresTLS(t *testing.T) {
 }
 
 func TestInvalidExtraCredentials(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		credentials map[string]string
@@ -471,6 +477,7 @@ func TestInvalidExtraCredentials(t *testing.T) {
 }
 
 func TestConnErrorDSN(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		dsn  string
@@ -494,6 +501,7 @@ func TestConnErrorDSN(t *testing.T) {
 }
 
 func TestRegisterCustomClientReserved(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []string{"true", "false"} {
 		t.Run(fmt.Sprintf("%v", tc), func(t *testing.T) {
 			require.Errorf(t,
@@ -504,6 +512,7 @@ func TestRegisterCustomClientReserved(t *testing.T) {
 }
 
 func TestHeartbeatIntervalDSNParse(t *testing.T) {
+	t.Parallel()
 	base := "http://user@127.0.0.1:9"
 
 	for _, tc := range []struct {
@@ -531,6 +540,7 @@ func TestHeartbeatIntervalDSNParse(t *testing.T) {
 }
 
 func TestHeartbeatIntervalFormatDSNRoundTrip(t *testing.T) {
+	t.Parallel()
 	hb := 90 * time.Second
 	c := &Config{
 		ServerURI:         "http://user@localhost:8080",
@@ -546,6 +556,7 @@ func TestHeartbeatIntervalFormatDSNRoundTrip(t *testing.T) {
 }
 
 func TestHeartbeatIntervalPingRejectsInvalidDSN(t *testing.T) {
+	t.Parallel()
 	db, err := sql.Open("trino", "http://user@127.0.0.1:9/?heartbeat_interval=0s")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
@@ -556,6 +567,7 @@ func TestHeartbeatIntervalPingRejectsInvalidDSN(t *testing.T) {
 }
 
 func TestSSLCertPath(t *testing.T) {
+	t.Parallel()
 	db, err := sql.Open("trino", "https://localhost:9?SSLCertPath=/tmp/invalid_test.cert")
 	require.NoError(t, err)
 
@@ -570,6 +582,7 @@ func TestSSLCertPath(t *testing.T) {
 }
 
 func TestWithoutSSLCertPath(t *testing.T) {
+	t.Parallel()
 	db, err := sql.Open("trino", "https://localhost:9")
 	require.NoError(t, err)
 

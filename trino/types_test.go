@@ -13,6 +13,7 @@ import (
 )
 
 func TestTypeConversion(t *testing.T) {
+	t.Parallel()
 	utc, err := time.LoadLocation("UTC")
 	require.NoError(t, err)
 	paris, err := time.LoadLocation("Europe/Paris")
@@ -403,6 +404,7 @@ func nest(depth int, value interface{}) interface{} {
 }
 
 func TestSliceTypeConversion(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		scanner sql.Scanner

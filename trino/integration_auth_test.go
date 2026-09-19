@@ -176,7 +176,7 @@ func TestIntegrationAccessToken(t *testing.T) {
 	accessToken, err := generateToken()
 	require.NoError(t, err)
 
-	dsn := tlsServer + "?accessToken=" + accessToken
+	dsn := tlsServer + "&accessToken=" + accessToken
 
 	db := integrationOpen(t, dsn)
 

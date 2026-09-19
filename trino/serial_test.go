@@ -24,6 +24,7 @@ import (
 )
 
 func TestSerial(t *testing.T) {
+	t.Parallel()
 	paris, err := time.LoadLocation("Europe/Paris")
 	require.NoError(t, err)
 	scenarios := []struct {

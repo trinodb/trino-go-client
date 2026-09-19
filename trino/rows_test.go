@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime/debug"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,6 +15,7 @@ import (
 )
 
 func TestQueryCancellation(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(&stmtResponse{
@@ -43,30 +45,27 @@ func TestQueryCancellation(t *testing.T) {
 // fatal error: stack overflow
 func TestFetchNoStackOverflow(t *testing.T) {
 	previousSetting := debug.SetMaxStack(50 * 1024)
-	defer debug.SetMaxStack(previousSetting)
-	count := 0
-	var buf *bytes.Buffer
+	t.Cleanup(func() { debug.SetMaxStack(previousSetting) })
+	var count atomic.Int32
+	var nextPage bytes.Buffer
 	var ts *httptest.Server
 	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if count <= 50 {
-			if buf == nil {
-				buf = new(bytes.Buffer)
-				json.NewEncoder(buf).Encode(&stmtResponse{
-					ID:      "fake-query",
-					NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
-				})
-			}
+		if count.Add(1) <= 51 {
 			w.WriteHeader(http.StatusOK)
-			w.Write(buf.Bytes())
-			count++
+			_, _ = w.Write(nextPage.Bytes())
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&stmtResponse{
+		_ = json.NewEncoder(w).Encode(&stmtResponse{
 			Error: ErrTrino{
 				ErrorName: "TEST",
 			},
 		})
+	}))
+	t.Cleanup(ts.Close)
+	require.NoError(t, json.NewEncoder(&nextPage).Encode(&stmtResponse{
+		ID:      "fake-query",
+		NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
 	}))
 
 	db, err := sql.Open("trino", ts.URL)
@@ -82,6 +81,7 @@ func TestFetchNoStackOverflow(t *testing.T) {
 }
 
 func TestProtocolErrorHandling(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		data    interface{}
@@ -118,6 +118,7 @@ func TestProtocolErrorHandling(t *testing.T) {
 }
 
 func TestSetRoleHeader(t *testing.T) {
+	t.Parallel()
 	fc := newFakeCoordinator(t)
 	fc.respond(
 		pageOf(&stmtResponse{ID: fakeQueryID, Stats: stmtStats{State: "RUNNING"}}).
@@ -146,6 +147,7 @@ func TestSetRoleHeader(t *testing.T) {
 }
 
 func TestUnsupportedHeader(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set(trinoSetPathHeader, "foo.bar")
 		w.WriteHeader(http.StatusOK)
@@ -165,6 +167,7 @@ func TestUnsupportedHeader(t *testing.T) {
 }
 
 func TestUnsupportedTransaction(t *testing.T) {
+	t.Parallel()
 	db, err := sql.Open("trino", "http://localhost:9")
 	require.NoError(t, err)
 

@@ -15,6 +15,7 @@ import (
 )
 
 func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name           string
 		segment        map[string]any
@@ -71,6 +72,7 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 }
 
 func TestSpoolingProtocolToManyOutOfOrderSegmentDownload(t *testing.T) {
+	t.Parallel()
 	fc := newFakeCoordinator(t)
 	fc.respond(statementPage(), spooledPage("json",
 		spooledSegment("seg0", map[string]any{"segmentSize": 8, "rowOffset": 30, "rowsCount": 1}),
@@ -93,6 +95,7 @@ func TestSpoolingProtocolToManyOutOfOrderSegmentDownload(t *testing.T) {
 }
 
 func TestSpoolingProtocolOutOfOrderSegment(t *testing.T) {
+	t.Parallel()
 	fc := newFakeCoordinator(t)
 	// the segments are listed in reverse row order
 	fc.respond(statementPage(), spooledPage("json",
@@ -203,6 +206,7 @@ func mustDecodeBase64(encoded string) []byte {
 }
 
 func TestSpoolingProtocolRejectsMoreWorkersThanOutOfOrderSegments(t *testing.T) {
+	t.Parallel()
 	fc := newFakeCoordinator(t)
 	db := fc.open(t, "")
 
@@ -216,6 +220,7 @@ func TestSpoolingProtocolRejectsMoreWorkersThanOutOfOrderSegments(t *testing.T) 
 }
 
 func TestSpoolingProtocolOnlyWithInlineSegments(t *testing.T) {
+	t.Parallel()
 	fc := newFakeCoordinator(t)
 	fc.respond(statementPage(), spooledPage("json",
 		inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 0}),
@@ -235,6 +240,7 @@ func TestSpoolingProtocolOnlyWithInlineSegments(t *testing.T) {
 }
 
 func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name     string
 		segment  map[string]any
@@ -279,6 +285,7 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 }
 
 func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
+	t.Parallel()
 	validMetadata := map[string]any{"segmentSize": 3679, "uncompressedSize": 2, "rowOffset": 0}
 	cases := []struct {
 		name                          string
@@ -445,6 +452,7 @@ func newHeartbeatCoordinator(t testing.TB, heartbeat http.HandlerFunc, release <
 }
 
 func TestHeartbeat(t *testing.T) {
+	t.Parallel()
 	const interval = 10 * time.Millisecond
 	cases := []struct {
 		name string
@@ -530,6 +538,7 @@ func TestHeartbeat(t *testing.T) {
 }
 
 func TestHeartbeatDoesNotDelayClose(t *testing.T) {
+	t.Parallel()
 	heartbeatSent := make(chan struct{}, 1)
 	unblockHeartbeat := make(chan struct{})
 	downloadReady := make(chan struct{})

@@ -6,7 +6,6 @@ import (
 	"database/sql/driver"
 	"errors"
 	"io"
-	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -304,10 +303,7 @@ func TestIntegrationQueryContext(t *testing.T) {
 		},
 	}
 
-	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
-	require.NoError(t, err)
-
-	dsn := integrationDSN(t) + "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=uncompressed"
+	dsn := integrationDSN(t) + "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=" + uncompressedClient
 	db := integrationOpen(t, dsn)
 
 	for _, tt := range tests {
@@ -516,10 +512,8 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 }
 
 func TestSession(t *testing.T) {
-	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
-	require.NoError(t, err)
 	c := &Config{
-		ServerURI:         integrationDSN(t) + "?custom_client=uncompressed",
+		ServerURI:         integrationDSN(t) + "?custom_client=" + uncompressedClient,
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
