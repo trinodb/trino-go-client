@@ -4,25 +4,19 @@ import (
 	"database/sql"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func BenchmarkQuery(b *testing.B) {
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(b),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(b, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(b, err)
-
-	b.Cleanup(func() {
-		assert.NoError(b, db.Close())
-	})
+	db := integrationOpen(b, dsn)
 
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
 	for n := 0; n < b.N; n++ {
@@ -44,19 +38,14 @@ func BenchmarkQuery(b *testing.B) {
 // - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets.
 func BenchmarkSpoolingProtocolSpooledSegmentlJsonZstdDecoderQuery(b *testing.B) {
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(b),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(b, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(b, err)
-
-	b.Cleanup(func() {
-		assert.NoError(b, db.Close())
-	})
+	db := integrationOpen(b, dsn)
 
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
 	for n := 0; n < b.N; n++ {
@@ -78,19 +67,14 @@ func BenchmarkSpoolingProtocolSpooledSegmentlJsonZstdDecoderQuery(b *testing.B) 
 // - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets.
 func BenchmarkSpoolingProtocolSpooledSegmentJsonLz4DecoderQuery(b *testing.B) {
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(b),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(b, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(b, err)
-
-	b.Cleanup(func() {
-		assert.NoError(b, db.Close())
-	})
+	db := integrationOpen(b, dsn)
 
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
 	for n := 0; n < b.N; n++ {
@@ -112,19 +96,14 @@ func BenchmarkSpoolingProtocolSpooledSegmentJsonLz4DecoderQuery(b *testing.B) {
 // - **`protocol.spooling.inlining.max-rows`**: Default is 1000, determining when spooling is triggered to manage large result sets
 func BenchmarkSpoolingProtocolSpooledSegmentJsonDecoderQuery(b *testing.B) {
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(b),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(b, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(b, err)
-
-	b.Cleanup(func() {
-		assert.NoError(b, db.Close())
-	})
+	db := integrationOpen(b, dsn)
 
 	q := `SELECT * FROM tpch.sf1.orders LIMIT 10000000`
 	for n := 0; n < b.N; n++ {

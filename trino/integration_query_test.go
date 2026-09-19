@@ -30,7 +30,6 @@ type nodesRow struct {
 
 func TestIntegrationSelectQueryIterator(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 	rows, err := db.Query("SELECT * FROM system.runtime.nodes")
 	require.NoError(t, err)
 	defer rows.Close()
@@ -54,7 +53,6 @@ func TestIntegrationSelectQueryIterator(t *testing.T) {
 
 func TestIntegrationSelectQueryNoResult(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 	row := db.QueryRow("SELECT * FROM system.runtime.nodes where false")
 	var col nodesRow
 	err := row.Scan(
@@ -69,7 +67,6 @@ func TestIntegrationSelectQueryNoResult(t *testing.T) {
 
 func TestIntegrationSelectFailedQuery(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 	rows, err := db.Query("SELECT * FROM catalog.schema.do_not_exist")
 	if err == nil {
 		rows.Close()
@@ -117,7 +114,6 @@ type tpchRow struct {
 
 func TestIntegrationSelectTpch1000(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000")
 	require.NoError(t, err)
 	defer rows.Close()
@@ -143,7 +139,6 @@ func TestIntegrationSelectTpch1000(t *testing.T) {
 
 func TestIntegrationSelectCancelQuery(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 	deadline := time.Now().Add(200 * time.Millisecond)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
@@ -174,10 +169,9 @@ func TestIntegrationSelectCancelQuery(t *testing.T) {
 }
 
 func TestIntegrationSessionProperties(t *testing.T) {
-	dsn := *integrationServerFlag
+	dsn := integrationDSN(t)
 	dsn += "?session_properties=query_max_run_time%3A10m%3Bquery_priority%3A2"
 	db := integrationOpen(t, dsn)
-	defer db.Close()
 	rows, err := db.Query("SHOW SESSION")
 	require.NoError(t, err)
 	for rows.Next() {
@@ -253,7 +247,6 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 
 		t.Run(scenario.name, func(t *testing.T) {
 			db := integrationOpen(t)
-			defer db.Close()
 
 			rows, err := db.Query(scenario.query, scenario.args...)
 			if scenario.expectedError != nil {
@@ -278,7 +271,7 @@ func TestIntegrationQueryNextAfterClose(t *testing.T) {
 	// panic if we call driverRows.Next after we closed the driverStmt.
 
 	ctx := context.Background()
-	conn, err := (&Driver{}).Open(*integrationServerFlag)
+	conn, err := (&Driver{}).Open(integrationDSN(t))
 	require.NoError(t, err, "Failed to open connection")
 	defer conn.Close()
 
@@ -302,7 +295,6 @@ func TestIntegrationQueryNextAfterClose(t *testing.T) {
 
 func TestIntegrationExec(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 
 	_, err := db.Query(`SELECT count(*) FROM nation`)
 	require.ErrorContains(t, err, "Schema must be specified when session schema is not set")
@@ -320,10 +312,9 @@ func TestIntegrationExec(t *testing.T) {
 }
 
 func TestIntegrationUnsupportedHeader(t *testing.T) {
-	dsn := *integrationServerFlag
+	dsn := integrationDSN(t)
 	dsn += "?catalog=tpch&schema=sf10"
 	db := integrationOpen(t, dsn)
-	defer db.Close()
 	cases := []struct {
 		query string
 		err   error
@@ -364,9 +355,8 @@ func TestIntegrationQueryContext(t *testing.T) {
 	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
 	require.NoError(t, err)
 
-	dsn := *integrationServerFlag + "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=uncompressed"
+	dsn := integrationDSN(t) + "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
-	defer db.Close()
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -453,10 +443,9 @@ func TestIntegrationLargeQuery(t *testing.T) {
 	if (err != nil && *trinoImageTagFlag != "latest") || (err == nil && version < 418) {
 		t.Skip("Skipping test when not using Trino 418 or later.")
 	}
-	dsn := *integrationServerFlag
+	dsn := integrationDSN(t)
 	dsn += "?explicitPrepare=false"
 	db := integrationOpen(t, dsn)
-	defer db.Close()
 	rows, err := db.Query("SELECT ?, '"+strings.Repeat("a", 5000000)+"'", 42)
 	require.NoError(t, err)
 	defer rows.Close()
@@ -469,23 +458,15 @@ func TestIntegrationLargeQuery(t *testing.T) {
 }
 
 func TestQueryForUsername(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping test in short mode.")
-	}
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
+	db := integrationOpen(t, dsn)
 
 	rows, err := db.Query("SELECT current_user", sql.Named("X-Trino-User", string("TestUser")))
 	require.NoError(t, err, "Failed executing query")
@@ -510,23 +491,15 @@ func (qpc *TestQueryProgressCallback) Update(qpi QueryProgressInfo) {
 }
 
 func TestQueryProgressWithCallback(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping test in short mode.")
-	}
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
+	db := integrationOpen(t, dsn)
 
 	callback := &TestQueryProgressCallback{}
 
@@ -535,23 +508,15 @@ func TestQueryProgressWithCallback(t *testing.T) {
 }
 
 func TestQueryProgressWithCallbackPeriod(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping test in short mode.")
-	}
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
+	db := integrationOpen(t, dsn)
 
 	progressMap := make(map[time.Time]float64)
 	statusMap := make(map[time.Time]string)
@@ -599,25 +564,17 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 }
 
 func TestSession(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping test in short mode.")
-	}
 	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
 	require.NoError(t, err)
 	c := &Config{
-		ServerURI:         *integrationServerFlag + "?custom_client=uncompressed",
+		ServerURI:         integrationDSN(t) + "?custom_client=uncompressed",
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
+	db := integrationOpen(t, dsn)
 
 	_, err = db.Exec("SET SESSION join_distribution_type='BROADCAST'")
 	require.NoError(t, err, "Failed executing query")
@@ -644,23 +601,15 @@ func TestSession(t *testing.T) {
 }
 
 func TestExec(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping test in short mode.")
-	}
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
+	db := integrationOpen(t, dsn)
 
 	_, err = db.Exec("CREATE TABLE memory.default.test (id INTEGER, name VARCHAR, optional VARCHAR)")
 	require.NoError(t, err, "Failed executing CREATE TABLE query")

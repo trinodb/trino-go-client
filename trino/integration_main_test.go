@@ -487,17 +487,27 @@ func getLogs(ctx context.Context, c dt.ClosableResource) string {
 	return stdout + stderr
 }
 
-// integrationOpen opens a connection to the integration test server.
-func integrationOpen(t *testing.T, dsn ...string) *sql.DB {
+// integrationDSN returns the DSN of the integration test server, skipping the
+// test in short mode where no server is available.
+func integrationDSN(t testing.TB) string {
+	t.Helper()
 	if testing.Short() {
 		t.Skip("Skipping test in short mode.")
 	}
-	target := *integrationServerFlag
+	return *integrationServerFlag
+}
+
+// integrationOpen opens a connection to the integration test server, or to
+// dsn when given, and closes it when the test ends.
+func integrationOpen(t testing.TB, dsn ...string) *sql.DB {
+	t.Helper()
+	target := integrationDSN(t)
 	if len(dsn) > 0 {
 		target = dsn[0]
 	}
 	db, err := sql.Open("trino", target)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	return db
 }
 
