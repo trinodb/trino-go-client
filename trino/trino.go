@@ -98,6 +98,10 @@ var (
 	// ErrOperationNotSupported indicates that a database operation is not supported.
 	ErrOperationNotSupported = errors.New("trino: operation not supported")
 
+	// ErrTransactionInProgress indicates that a transaction is already open on
+	// the connection. Trino does not support nested transactions.
+	ErrTransactionInProgress = errors.New("trino: transaction already in progress")
+
 	// ErrQueryCancelled indicates that a query has been cancelled.
 	ErrQueryCancelled = errors.New("trino: query cancelled")
 
@@ -137,6 +141,18 @@ const (
 	trinoSetRoleHeader         = trinoHeaderPrefix + `Set-Role`
 	trinoRoleHeader            = trinoHeaderPrefix + `Role`
 	trinoExtraCredentialHeader = trinoHeaderPrefix + `Extra-Credential`
+
+	trinoTransactionHeader        = trinoHeaderPrefix + `Transaction-Id`
+	trinoStartedTransactionHeader = trinoHeaderPrefix + `Started-Transaction-Id`
+	trinoClearTransactionHeader   = trinoHeaderPrefix + `Clear-Transaction-Id`
+
+	// noTransactionID marks a request as coming from a transaction-aware client
+	// that has no transaction open yet. The server only allows START TRANSACTION
+	// when the transaction header is present, so it must be sent to open one.
+	noTransactionID = "NONE"
+
+	trinoErrorTransactionAlreadyAborted = "TRANSACTION_ALREADY_ABORTED"
+	trinoErrorNotInTransaction          = "NOT_IN_TRANSACTION"
 
 	trinoProgressCallbackParam       = trinoHeaderPrefix + `Progress-Callback`
 	trinoProgressCallbackPeriodParam = trinoHeaderPrefix + `Progress-Callback-Period`
@@ -537,6 +553,8 @@ type Conn struct {
 var (
 	_ driver.Conn               = &Conn{}
 	_ driver.ConnPrepareContext = &Conn{}
+	_ driver.ConnBeginTx        = &Conn{}
+	_ driver.SessionResetter    = &Conn{}
 )
 
 // formatRolesFromMap formats roles from a map into the Trino header format
@@ -818,7 +836,143 @@ func getCustomClient(key string) *http.Client {
 
 // Begin implements the driver.Conn interface.
 func (c *Conn) Begin() (driver.Tx, error) {
-	return nil, ErrOperationNotSupported
+	return c.BeginTx(context.Background(), driver.TxOptions{})
+}
+
+// BeginTx implements the driver.ConnBeginTx interface.
+//
+// Trino tracks transactions with the X-Trino-Transaction-Id header rather than
+// with connection state, and rejects START TRANSACTION unless that header is
+// present, so the header is sent as NONE to open the transaction. The ID the
+// server allocates is picked up in applyResponseHeaders and replayed on every
+// subsequent request made on this connection.
+func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, error) {
+	if c.transactionID() != "" {
+		return nil, ErrTransactionInProgress
+	}
+	query, err := startTransactionQuery(opts)
+	if err != nil {
+		return nil, err
+	}
+	c.setHTTPHeader(trinoTransactionHeader, noTransactionID)
+	if err := c.execInternal(ctx, query); err != nil {
+		c.deleteHTTPHeader(trinoTransactionHeader)
+		return nil, err
+	}
+	if c.transactionID() == "" {
+		c.deleteHTTPHeader(trinoTransactionHeader)
+		return nil, fmt.Errorf("trino: server did not return a %s header", trinoStartedTransactionHeader)
+	}
+	return &driverTx{conn: c}, nil
+}
+
+// ResetSession implements the driver.SessionResetter interface. It drops any
+// transaction state so a connection returning to the pool cannot leak its
+// transaction ID into unrelated queries.
+func (c *Conn) ResetSession(ctx context.Context) error {
+	c.deleteHTTPHeader(trinoTransactionHeader)
+	return nil
+}
+
+// transactionID returns the ID of the transaction open on this connection, or
+// an empty string when the connection is in autocommit mode.
+func (c *Conn) transactionID() string {
+	if id := c.httpHeaderValue(trinoTransactionHeader); id != noTransactionID {
+		return id
+	}
+	return ""
+}
+
+// execInternal runs a statement that returns no rows, on behalf of the driver
+// rather than the caller.
+func (c *Conn) execInternal(ctx context.Context, query string) error {
+	st := &driverStmt{conn: c, query: query}
+	defer st.Close()
+	_, err := st.ExecContext(ctx, nil)
+	return err
+}
+
+func startTransactionQuery(opts driver.TxOptions) (string, error) {
+	var modes []string
+	if sql.IsolationLevel(opts.Isolation) != sql.LevelDefault {
+		level, err := isolationLevelName(sql.IsolationLevel(opts.Isolation))
+		if err != nil {
+			return "", err
+		}
+		modes = append(modes, "ISOLATION LEVEL "+level)
+	}
+	if opts.ReadOnly {
+		modes = append(modes, "READ ONLY")
+	}
+	if len(modes) == 0 {
+		return "START TRANSACTION", nil
+	}
+	return "START TRANSACTION " + strings.Join(modes, ", "), nil
+}
+
+func isolationLevelName(level sql.IsolationLevel) (string, error) {
+	switch level {
+	case sql.LevelReadUncommitted:
+		return "READ UNCOMMITTED", nil
+	case sql.LevelReadCommitted:
+		return "READ COMMITTED", nil
+	case sql.LevelRepeatableRead:
+		return "REPEATABLE READ", nil
+	case sql.LevelSerializable:
+		return "SERIALIZABLE", nil
+	}
+	return "", fmt.Errorf("trino: unsupported transaction isolation level %q", level)
+}
+
+type driverTx struct {
+	conn *Conn
+}
+
+var _ driver.Tx = &driverTx{}
+
+// Commit implements the driver.Tx interface.
+func (tx *driverTx) Commit() error {
+	return tx.finish("COMMIT")
+}
+
+// Rollback implements the driver.Tx interface.
+func (tx *driverTx) Rollback() error {
+	err := tx.finish("ROLLBACK")
+	// Trino aborts a transaction itself as soon as a statement inside it fails,
+	// and then refuses ROLLBACK for sessions carrying catalog-scoped state such
+	// as roles. The transaction is discarded either way, which is all the caller
+	// asked for, so this is not an error to report.
+	if isTrinoErrorName(err, trinoErrorTransactionAlreadyAborted, trinoErrorNotInTransaction) {
+		return nil
+	}
+	return err
+}
+
+func (tx *driverTx) finish(query string) error {
+	if tx.conn == nil {
+		return sql.ErrTxDone
+	}
+	conn := tx.conn
+	tx.conn = nil
+	// Whether or not the statement succeeds the transaction is over for this
+	// connection, and keeping a dead ID around would fail every later query.
+	defer conn.deleteHTTPHeader(trinoTransactionHeader)
+	return conn.execInternal(context.Background(), query)
+}
+
+// isTrinoErrorName reports whether err is an error raised by the server with one
+// of the given Trino error names.
+func isTrinoErrorName(err error, names ...string) bool {
+	var trinoErr *ErrTrino
+	if !errors.As(err, &trinoErr) {
+		return false
+	}
+	for _, name := range names {
+		if trinoErr.ErrorName == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Prepare implements the driver.Conn interface.
@@ -969,6 +1123,12 @@ func (c *Conn) applyResponseHeaders(headers http.Header) {
 	if roles := headers.Values(trinoSetRoleHeader); len(roles) > 0 {
 		c.httpHeaders.Set(trinoRoleHeader, mergeRoles(c.httpHeaders.Get(trinoRoleHeader), roles))
 	}
+	if v := headers.Get(trinoStartedTransactionHeader); v != "" {
+		c.httpHeaders.Set(trinoTransactionHeader, v)
+	}
+	if v := headers.Get(trinoClearTransactionHeader); v != "" {
+		c.httpHeaders.Set(trinoTransactionHeader, noTransactionID)
+	}
 }
 
 // replaceHeaderEntry stores a name=value entry in a multi-valued header,
@@ -1018,6 +1178,18 @@ func (c *Conn) httpHeaderValues(name string) []string {
 	c.httpHeadersMu.RLock()
 	defer c.httpHeadersMu.RUnlock()
 	return slices.Clone(c.httpHeaders.Values(name))
+}
+
+func (c *Conn) httpHeaderValue(name string) string {
+	c.httpHeadersMu.RLock()
+	defer c.httpHeadersMu.RUnlock()
+	return c.httpHeaders.Get(name)
+}
+
+func (c *Conn) deleteHTTPHeader(name string) {
+	c.httpHeadersMu.Lock()
+	defer c.httpHeadersMu.Unlock()
+	c.httpHeaders.Del(name)
 }
 
 // ErrQueryFailed indicates that a query to Trino failed.

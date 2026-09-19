@@ -28,6 +28,7 @@ type fakeCoordinator struct {
 	mu         sync.Mutex
 	pages      []page
 	beforePage func(index int, r *http.Request)
+	statement  func(w http.ResponseWriter, r *http.Request, query string)
 	downloads  map[string]http.HandlerFunc
 	heartbeat  http.HandlerFunc
 	requests   []capturedRequest
@@ -113,6 +114,15 @@ func (fc *fakeCoordinator) handleSegment(name string, handler http.HandlerFunc) 
 	fc.downloads[name] = handler
 }
 
+// onStatement answers the initial POST itself, for queries whose response
+// depends on the statement text rather than on a fixed sequence of pages, as
+// transaction control does.
+func (fc *fakeCoordinator) onStatement(handler func(w http.ResponseWriter, r *http.Request, query string)) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	fc.statement = handler
+}
+
 // onPage runs hook before page index is served, so a test can block or
 // cancel a page fetch at a known point.
 func (fc *fakeCoordinator) onPage(hook func(index int, r *http.Request)) {
@@ -152,6 +162,7 @@ func (fc *fakeCoordinator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		body:   body,
 	})
 	heartbeat := fc.heartbeat
+	statement := fc.statement
 	fc.mu.Unlock()
 
 	switch {
@@ -164,6 +175,10 @@ func (fc *fakeCoordinator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/query/"):
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/statement":
+		if statement != nil {
+			statement(w, r, string(body))
+			return
+		}
 		fc.servePage(w, r, 0)
 	case strings.HasPrefix(r.URL.Path, "/v1/statement/"+fakeQueryID+"/"):
 		index, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/v1/statement/"+fakeQueryID+"/"))

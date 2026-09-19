@@ -14,6 +14,7 @@ Trino, and receive the resulting data.
 * HTTP Basic, Kerberos, and JSON web token (JWT) authentication
 * Per-query user information for access control
 * Support custom HTTP client (tunable conn pools, timeouts, TLS)
+* Transactions through `database/sql`, with isolation levels and read-only mode
 * Supports conversion from Trino to native Go data types
   * `string`, `sql.NullString`
   * `int64`, `sql.NullInt64`
@@ -533,6 +534,44 @@ following types:
 > [!NOTE]
 > `VARBINARY` columns are returned as base64-encoded strings when used within
 > `ROW`, `MAP`, or `ARRAY` values.
+
+## Transactions
+
+Use `db.Begin` or `db.BeginTx` to run several statements in a single Trino
+transaction:
+
+```go
+tx, err := db.BeginTx(ctx, nil)
+if err != nil {
+	return err
+}
+defer tx.Rollback()
+
+if _, err := tx.ExecContext(ctx, "DELETE FROM reports WHERE day = DATE '2025-01-01'"); err != nil {
+	return err
+}
+if _, err := tx.ExecContext(ctx, "INSERT INTO reports SELECT * FROM staging"); err != nil {
+	return err
+}
+return tx.Commit()
+```
+
+`sql.TxOptions` is honoured. `Isolation` accepts `sql.LevelDefault`,
+`sql.LevelReadUncommitted`, `sql.LevelReadCommitted`, `sql.LevelRepeatableRead`
+and `sql.LevelSerializable`; any other level is rejected. `ReadOnly` starts a
+`READ ONLY` transaction.
+
+A statement that fails aborts the whole transaction on the server. `Rollback`
+reports success in that case, while `Commit` returns an error.
+
+Transaction control statements must go through the returned `*sql.Tx`. Sending
+them directly, as in `db.Exec("START TRANSACTION")`, is rejected.
+
+> [!NOTE]
+> Transaction support depends on the connector. Connectors that only support
+> writes in autocommit mode, such as `memory`, reject writes inside a
+> multi-statement transaction, and the isolation levels a connector accepts
+> vary.
 
 ## Spooling Protocol
 

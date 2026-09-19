@@ -206,19 +206,6 @@ func TestSetPathHeader(t *testing.T) {
 	assert.Equal(t, "memory.default,tpch.tiny", requests[1].header.Get(trinoPathHeader), "server-set path should be sent in subsequent requests")
 }
 
-func TestUnsupportedTransaction(t *testing.T) {
-	t.Parallel()
-	db, err := sql.Open("trino", "http://localhost:9")
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
-
-	_, err = db.Begin()
-	require.ErrorIs(t, err, ErrOperationNotSupported)
-}
-
 func TestResponseHeadersUpdateFollowingRequests(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
@@ -315,21 +302,4 @@ func TestNextReturnsContextError(t *testing.T) {
 
 	assert.False(t, rows.Next())
 	assert.ErrorIs(t, rows.Err(), context.Canceled)
-}
-
-// Without transaction support the driver must not announce any to the
-// server; the header is what makes a coordinator accept START TRANSACTION.
-func TestNoTransactionHeaderSent(t *testing.T) {
-	t.Parallel()
-	fc := newFakeCoordinator(t)
-	fc.respond(statementPage(), resultPage([][]any{{1}}))
-	db := fc.open(t, "")
-
-	rows, err := db.Query("SELECT 1")
-	require.NoError(t, err)
-	require.NoError(t, rows.Close())
-
-	for _, request := range fc.capturedRequests() {
-		assert.Empty(t, request.header.Values("X-Trino-Transaction-Id"), "%s %s", request.method, request.path)
-	}
 }
