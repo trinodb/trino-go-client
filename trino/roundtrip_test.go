@@ -15,39 +15,23 @@ import (
 )
 
 func TestRoundTripRetryQueryError(t *testing.T) {
-	testcases := []struct {
-		Name                string
-		HttpStatus          int
-		ExpectedErrorStatus string
+	cases := []struct {
+		name    string
+		status  int
+		wantErr string
 	}{
-		{
-			Name:                "Test retry 502 Bad Gateway",
-			HttpStatus:          http.StatusBadGateway,
-			ExpectedErrorStatus: "200 OK",
-		},
-		{
-			Name:                "Test retry 503 Service Unavailable",
-			HttpStatus:          http.StatusServiceUnavailable,
-			ExpectedErrorStatus: "200 OK",
-		},
-		{
-			Name:                "Test retry 504 Gateway Timeout",
-			HttpStatus:          http.StatusGatewayTimeout,
-			ExpectedErrorStatus: "200 OK",
-		},
-		{
-			Name:                "Test no retry 404 Not Found",
-			HttpStatus:          http.StatusNotFound,
-			ExpectedErrorStatus: "404 Not Found",
-		},
+		{name: "retry 502 Bad Gateway", status: http.StatusBadGateway, wantErr: "200 OK"},
+		{name: "retry 503 Service Unavailable", status: http.StatusServiceUnavailable, wantErr: "200 OK"},
+		{name: "retry 504 Gateway Timeout", status: http.StatusGatewayTimeout, wantErr: "200 OK"},
+		{name: "no retry 404 Not Found", status: http.StatusNotFound, wantErr: "404 Not Found"},
 	}
-	for _, tc := range testcases {
-		t.Run(tc.Name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			count := 0
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if count == 0 {
 					count++
-					w.WriteHeader(tc.HttpStatus)
+					w.WriteHeader(tc.status)
 					return
 				}
 				w.WriteHeader(http.StatusOK)
@@ -68,7 +52,7 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 			})
 
 			_, err = db.Query("SELECT 1")
-			assert.ErrorContains(t, err, tc.ExpectedErrorStatus, "unexpected error: %w", err)
+			assert.ErrorContains(t, err, tc.wantErr, "unexpected error: %w", err)
 		})
 	}
 }
@@ -156,28 +140,27 @@ func TestTokenAuth(t *testing.T) {
 }
 
 func TestRoleHeader(t *testing.T) {
-	tests := []struct {
-		name           string
-		roles          map[string]string
-		namedArgRoles  map[string]string
-		expectedHeader string
+	cases := []struct {
+		name          string
+		roles         map[string]string
+		namedArgRoles map[string]string
+		wantHeader    string
 	}{
 		{
-			name:           "Roles from config",
-			roles:          map[string]string{"catalog1": "role1", "catalog2": "role2"},
-			namedArgRoles:  nil,
-			expectedHeader: `catalog1=ROLE{role1},catalog2=ROLE{role2}`,
+			name:       "roles from config",
+			roles:      map[string]string{"catalog1": "role1", "catalog2": "role2"},
+			wantHeader: `catalog1=ROLE{role1},catalog2=ROLE{role2}`,
 		},
 		{
-			name:           "Override dsn roles with named argument",
-			roles:          map[string]string{"catalog1": "role1"},
-			namedArgRoles:  map[string]string{"catalog3": "role3", "catalog4": "role4", "catalog5": "ALL"},
-			expectedHeader: `catalog3=ROLE{role3},catalog4=ROLE{role4},catalog5=ALL`,
+			name:          "override dsn roles with named argument",
+			roles:         map[string]string{"catalog1": "role1"},
+			namedArgRoles: map[string]string{"catalog3": "role3", "catalog4": "role4", "catalog5": "ALL"},
+			wantHeader:    `catalog3=ROLE{role3},catalog4=ROLE{role4},catalog5=ALL`,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			var receivedHeader string
 			var serverURL string
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +174,7 @@ func TestRoleHeader(t *testing.T) {
 
 			c := &Config{
 				ServerURI: ts.URL,
-				Roles:     tt.roles,
+				Roles:     tc.roles,
 			}
 
 			dsn, err := c.FormatDSN()
@@ -199,13 +182,13 @@ func TestRoleHeader(t *testing.T) {
 			db, err := sql.Open("trino", dsn)
 			require.NoError(t, err)
 
-			if tt.namedArgRoles != nil {
-				_, _ = db.Query("SELECT 1", sql.Named("X-Trino-Role", tt.namedArgRoles))
+			if tc.namedArgRoles != nil {
+				_, _ = db.Query("SELECT 1", sql.Named("X-Trino-Role", tc.namedArgRoles))
 			} else {
 				_, _ = db.Query("SELECT 1")
 			}
 
-			assert.Equal(t, tt.expectedHeader, receivedHeader, "expected X-Trino-Role header to match")
+			assert.Equal(t, tc.wantHeader, receivedHeader, "expected X-Trino-Role header to match")
 		})
 	}
 }
@@ -288,39 +271,27 @@ func TestQueryTimeoutDeadline(t *testing.T) {
 		time.Sleep(200 * time.Millisecond) // Simulate slow response
 		w.WriteHeader(http.StatusOK)
 	}))
-	defer ts.Close()
+	t.Cleanup(ts.Close)
 
-	testcases := []struct {
-		name          string
-		queryTimeout  string
-		expectedError string
+	cases := []struct {
+		name         string
+		queryTimeout string
+		wantErr      string
 	}{
-		{
-			name:          "with timeout",
-			queryTimeout:  "100ms",
-			expectedError: "context deadline exceeded",
-		},
-		{
-			name:          "without timeout",
-			queryTimeout:  "10s",
-			expectedError: "EOF", // Default server response
-		},
-		{
-			name:          "bad timeout",
-			queryTimeout:  "abc",
-			expectedError: "trino: invalid timeout", // Default server response
-		},
+		{name: "with timeout", queryTimeout: "100ms", wantErr: "context deadline exceeded"},
+		{name: "without timeout", queryTimeout: "10s", wantErr: "EOF"}, // the empty response
+		{name: "bad timeout", queryTimeout: "abc", wantErr: "trino: invalid timeout"},
 	}
 
-	for _, tc := range testcases {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			println(ts.URL + "?query_timeout=" + tc.queryTimeout)
 			db, err := sql.Open("trino", ts.URL+"?query_timeout="+tc.queryTimeout)
 			require.NoError(t, err)
-			defer db.Close()
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
 
 			_, err = db.Query("SELECT 1")
-			assert.ErrorContains(t, err, tc.expectedError)
+			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }

@@ -3,6 +3,8 @@ package trino
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -16,203 +18,203 @@ func TestTypeConversion(t *testing.T) {
 	paris, err := time.LoadLocation("Europe/Paris")
 	require.NoError(t, err)
 
-	testcases := []struct {
-		DataType                   string
-		RawType                    string
-		Arguments                  []typeArgument
-		ResponseUnmarshalledSample interface{}
-		ExpectedGoValue            interface{}
+	cases := []struct {
+		dataType  string
+		rawType   string
+		arguments []typeArgument
+		sample    interface{}
+		want      interface{}
 	}{
 		{
-			DataType:                   "boolean",
-			RawType:                    "boolean",
-			ResponseUnmarshalledSample: true,
-			ExpectedGoValue:            true,
+			dataType: "boolean",
+			rawType:  "boolean",
+			sample:   true,
+			want:     true,
 		},
 		{
-			DataType:                   "varchar(1)",
-			RawType:                    "varchar",
-			ResponseUnmarshalledSample: "hello",
-			ExpectedGoValue:            "hello",
+			dataType: "varchar(1)",
+			rawType:  "varchar",
+			sample:   "hello",
+			want:     "hello",
 		},
 		{
-			DataType:                   "bigint",
-			RawType:                    "bigint",
-			ResponseUnmarshalledSample: json.Number("1234516165077230279"),
-			ExpectedGoValue:            int64(1234516165077230279),
+			dataType: "bigint",
+			rawType:  "bigint",
+			sample:   json.Number("1234516165077230279"),
+			want:     int64(1234516165077230279),
 		},
 		{
-			DataType:                   "double",
-			RawType:                    "double",
-			ResponseUnmarshalledSample: json.Number("1.0"),
-			ExpectedGoValue:            float64(1),
+			dataType: "double",
+			rawType:  "double",
+			sample:   json.Number("1.0"),
+			want:     float64(1),
 		},
 		{
-			DataType:                   "date",
-			RawType:                    "date",
-			ResponseUnmarshalledSample: "2017-07-10",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 0, 0, 0, 0, time.Local),
+			dataType: "date",
+			rawType:  "date",
+			sample:   "2017-07-10",
+			want:     time.Date(2017, 7, 10, 0, 0, 0, 0, time.Local),
 		},
 		{
-			DataType:                   "time",
-			RawType:                    "time",
-			ResponseUnmarshalledSample: "01:02:03.000",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.Local),
+			dataType: "time",
+			rawType:  "time",
+			sample:   "01:02:03.000",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.Local),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000 UTC",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, utc),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.000 UTC",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 0, utc),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000 +03:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.000 +03:00",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000+03:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.000+03:00",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000 -05:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.000 -05:00",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.000-05:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.000-05:00",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
 		},
 		{
-			DataType:                   "time",
-			RawType:                    "time",
-			ResponseUnmarshalledSample: "01:02:03.123456789",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.Local),
+			dataType: "time",
+			rawType:  "time",
+			sample:   "01:02:03.123456789",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.Local),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789 UTC",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, utc),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.123456789 UTC",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, utc),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789 +03:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.123456789 +03:00",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789+03:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.123456789+03:00",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789 -05:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.123456789 -05:00",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789-05:00",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.123456789-05:00",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
 		},
 		{
-			DataType:                   "time with time zone",
-			RawType:                    "time with time zone",
-			ResponseUnmarshalledSample: "01:02:03.123456789 Europe/Paris",
-			ExpectedGoValue:            time.Date(0, 1, 1, 1, 2, 3, 123456789, paris),
+			dataType: "time with time zone",
+			rawType:  "time with time zone",
+			sample:   "01:02:03.123456789 Europe/Paris",
+			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, paris),
 		},
 		{
-			DataType:                   "timestamp",
-			RawType:                    "timestamp",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.Local),
+			dataType: "timestamp",
+			rawType:  "timestamp",
+			sample:   "2017-07-10 01:02:03.000",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.Local),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 UTC",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, utc),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.000 UTC",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, utc),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 +03:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.000 +03:00",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000+03:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.000+03:00",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000 -04:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.000 -04:00",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.000-04:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.000-04:00",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
 		},
 		{
-			DataType:                   "timestamp",
-			RawType:                    "timestamp",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.Local),
+			dataType: "timestamp",
+			rawType:  "timestamp",
+			sample:   "2017-07-10 01:02:03.123456789",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.Local),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 UTC",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, utc),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.123456789 UTC",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, utc),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 +03:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.123456789 +03:00",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789+03:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.123456789+03:00",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 -04:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.123456789 -04:00",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789-04:00",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.123456789-04:00",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
 		},
 		{
-			DataType:                   "timestamp with time zone",
-			RawType:                    "timestamp with time zone",
-			ResponseUnmarshalledSample: "2017-07-10 01:02:03.123456789 Europe/Paris",
-			ExpectedGoValue:            time.Date(2017, 7, 10, 1, 2, 3, 123456789, paris),
+			dataType: "timestamp with time zone",
+			rawType:  "timestamp with time zone",
+			sample:   "2017-07-10 01:02:03.123456789 Europe/Paris",
+			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, paris),
 		},
 		{
-			DataType: "map(varchar,varchar)",
-			RawType:  "map",
-			Arguments: []typeArgument{
+			dataType: "map(varchar,varchar)",
+			rawType:  "map",
+			arguments: []typeArgument{
 				{
 					Kind: "NAMED_TYPE",
 					namedTypeSignature: namedTypeSignature{
@@ -230,14 +232,14 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			ResponseUnmarshalledSample: nil,
-			ExpectedGoValue:            nil,
+			sample: nil,
+			want:   nil,
 		},
 		{
 			// arrays return data as-is for slice scanners
-			DataType: "array(varchar)",
-			RawType:  "array",
-			Arguments: []typeArgument{
+			dataType: "array(varchar)",
+			rawType:  "array",
+			arguments: []typeArgument{
 				{
 					Kind: "NAMED_TYPE",
 					namedTypeSignature: namedTypeSignature{
@@ -247,14 +249,14 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			ResponseUnmarshalledSample: nil,
-			ExpectedGoValue:            nil,
+			sample: nil,
+			want:   nil,
 		},
 		{
 			// rows return data as-is for slice scanners
-			DataType: "row(int, varchar(1), timestamp, array(varchar(1)))",
-			RawType:  "row",
-			Arguments: []typeArgument{
+			dataType: "row(int, varchar(1), timestamp, array(varchar(1)))",
+			rawType:  "row",
+			arguments: []typeArgument{
 				{
 					Kind: "NAMED_TYPE",
 					namedTypeSignature: namedTypeSignature{
@@ -308,13 +310,13 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			ResponseUnmarshalledSample: []interface{}{
+			sample: []interface{}{
 				json.Number("1"),
 				"a",
 				"2017-07-10 01:02:03.000 UTC",
 				[]interface{}{"b"},
 			},
-			ExpectedGoValue: []interface{}{
+			want: []interface{}{
 				json.Number("1"),
 				"a",
 				"2017-07-10 01:02:03.000 UTC",
@@ -322,319 +324,138 @@ func TestTypeConversion(t *testing.T) {
 			},
 		},
 		{
-			DataType:                   "number",
-			RawType:                    "number",
-			ResponseUnmarshalledSample: "3.1415926535897932384626433832795028841971693993751",
-			ExpectedGoValue:            "3.1415926535897932384626433832795028841971693993751",
+			dataType: "number",
+			rawType:  "number",
+			sample:   "3.1415926535897932384626433832795028841971693993751",
+			want:     "3.1415926535897932384626433832795028841971693993751",
 		},
 		{
-			DataType:                   "number",
-			RawType:                    "number",
-			ResponseUnmarshalledSample: "12345678901234567890123456789012345678901234567890",
-			ExpectedGoValue:            "12345678901234567890123456789012345678901234567890",
+			dataType: "number",
+			rawType:  "number",
+			sample:   "12345678901234567890123456789012345678901234567890",
+			want:     "12345678901234567890123456789012345678901234567890",
 		},
 		{
-			DataType:                   "number",
-			RawType:                    "number",
-			ResponseUnmarshalledSample: "NaN",
-			ExpectedGoValue:            "NaN",
+			dataType: "number",
+			rawType:  "number",
+			sample:   "NaN",
+			want:     "NaN",
 		},
 		{
-			DataType:                   "number",
-			RawType:                    "number",
-			ResponseUnmarshalledSample: "Infinity",
-			ExpectedGoValue:            "Infinity",
+			dataType: "number",
+			rawType:  "number",
+			sample:   "Infinity",
+			want:     "Infinity",
 		},
 		{
-			DataType:                   "number",
-			RawType:                    "number",
-			ResponseUnmarshalledSample: "-Infinity",
-			ExpectedGoValue:            "-Infinity",
+			dataType: "number",
+			rawType:  "number",
+			sample:   "-Infinity",
+			want:     "-Infinity",
 		},
 		{
-			DataType:                   "Geometry",
-			RawType:                    "Geometry",
-			ResponseUnmarshalledSample: "Point (0 0)",
-			ExpectedGoValue:            "Point (0 0)",
+			dataType: "Geometry",
+			rawType:  "Geometry",
+			sample:   "Point (0 0)",
+			want:     "Point (0 0)",
 		},
 
 		{
-			DataType:                   "SphericalGeography",
-			RawType:                    "SphericalGeography",
-			ResponseUnmarshalledSample: "Point (0 0)",
-			ExpectedGoValue:            "Point (0 0)",
+			dataType: "SphericalGeography",
+			rawType:  "SphericalGeography",
+			sample:   "Point (0 0)",
+			want:     "Point (0 0)",
 		},
 	}
 
-	for _, tc := range testcases {
-		converter, err := newTypeConverter(tc.DataType, typeSignature{RawType: tc.RawType, Arguments: tc.Arguments})
-		assert.NoError(t, err)
-
-		t.Run(tc.DataType+":nil", func(t *testing.T) {
-			_, err := converter.ConvertValue(nil)
-			assert.NoError(t, err)
-		})
-
-		t.Run(tc.DataType+":bogus", func(t *testing.T) {
-			_, err := converter.ConvertValue(struct{}{})
-			assert.Error(t, err, "bogus data scanned with no error")
-		})
-
-		t.Run(tc.DataType+":sample", func(t *testing.T) {
-			v, err := converter.ConvertValue(tc.ResponseUnmarshalledSample)
+	for _, tc := range cases {
+		t.Run(fmt.Sprintf("%s %v", tc.dataType, tc.sample), func(t *testing.T) {
+			converter, err := newTypeConverter(tc.dataType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments})
 			require.NoError(t, err)
 
-			require.Equal(t,
-				v, tc.ExpectedGoValue,
-				"unexpected data from sample:\nhave %+v\nwant %+v", v, tc.ExpectedGoValue)
+			t.Run("nil", func(t *testing.T) {
+				_, err := converter.ConvertValue(nil)
+				assert.NoError(t, err)
+			})
+
+			t.Run("bogus", func(t *testing.T) {
+				_, err := converter.ConvertValue(struct{}{})
+				assert.Error(t, err, "bogus data scanned with no error")
+			})
+
+			t.Run("sample", func(t *testing.T) {
+				got, err := converter.ConvertValue(tc.sample)
+				require.NoError(t, err)
+
+				assert.Equal(t, tc.want, got)
+			})
 		})
 	}
+}
+
+// nest wraps value in depth levels of []interface{}, the shape Trino arrays
+// have after JSON decoding.
+func nest(depth int, value interface{}) interface{} {
+	for range depth {
+		value = []interface{}{value}
+	}
+	return value
 }
 
 func TestSliceTypeConversion(t *testing.T) {
-	testcases := []struct {
-		GoType                          string
-		Scanner                         sql.Scanner
-		TrinoResponseUnmarshalledSample interface{}
-		TestScanner                     func(t *testing.T, s sql.Scanner, isValid bool)
+	cases := []struct {
+		name    string
+		scanner sql.Scanner
+		depth   int
+		sample  interface{}
 	}{
-		{
-			GoType:                          "[]bool",
-			Scanner:                         &NullSliceBool{},
-			TrinoResponseUnmarshalledSample: []interface{}{true},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceBool)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[]string",
-			Scanner:                         &NullSliceString{},
-			TrinoResponseUnmarshalledSample: []interface{}{"hello"},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceString)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[]int64",
-			Scanner:                         &NullSliceInt64{},
-			TrinoResponseUnmarshalledSample: []interface{}{json.Number("1")},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceInt64)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-
-		{
-			GoType:                          "[]float64",
-			Scanner:                         &NullSliceFloat64{},
-			TrinoResponseUnmarshalledSample: []interface{}{json.Number("1.0")},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceFloat64)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[]time.Time",
-			Scanner:                         &NullSliceTime{},
-			TrinoResponseUnmarshalledSample: []interface{}{"2017-07-01"},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceTime)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[]map[string]interface{}",
-			Scanner:                         &NullSliceMap{},
-			TrinoResponseUnmarshalledSample: []interface{}{map[string]interface{}{"hello": "world"}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSliceMap)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
+		{name: "[]bool", scanner: &NullSliceBool{}, depth: 1, sample: true},
+		{name: "[]string", scanner: &NullSliceString{}, depth: 1, sample: "hello"},
+		{name: "[]int64", scanner: &NullSliceInt64{}, depth: 1, sample: json.Number("1")},
+		{name: "[]float64", scanner: &NullSliceFloat64{}, depth: 1, sample: json.Number("1.0")},
+		{name: "[]time.Time", scanner: &NullSliceTime{}, depth: 1, sample: "2017-07-01"},
+		{name: "[]map[string]interface{}", scanner: &NullSliceMap{}, depth: 1, sample: map[string]interface{}{"hello": "world"}},
+		{name: "[][]bool", scanner: &NullSlice2Bool{}, depth: 2, sample: true},
+		{name: "[][]string", scanner: &NullSlice2String{}, depth: 2, sample: "hello"},
+		{name: "[][]int64", scanner: &NullSlice2Int64{}, depth: 2, sample: json.Number("1")},
+		{name: "[][]float64", scanner: &NullSlice2Float64{}, depth: 2, sample: json.Number("1.0")},
+		{name: "[][]time.Time", scanner: &NullSlice2Time{}, depth: 2, sample: "2017-07-01"},
+		{name: "[][]map[string]interface{}", scanner: &NullSlice2Map{}, depth: 2, sample: map[string]interface{}{"hello": "world"}},
+		{name: "[][][]bool", scanner: &NullSlice3Bool{}, depth: 3, sample: true},
+		{name: "[][][]string", scanner: &NullSlice3String{}, depth: 3, sample: "hello"},
+		{name: "[][][]int64", scanner: &NullSlice3Int64{}, depth: 3, sample: json.Number("1")},
+		{name: "[][][]float64", scanner: &NullSlice3Float64{}, depth: 3, sample: json.Number("1.0")},
+		{name: "[][][]time.Time", scanner: &NullSlice3Time{}, depth: 3, sample: "2017-07-01"},
+		{name: "[][][]map[string]interface{}", scanner: &NullSlice3Map{}, depth: 3, sample: map[string]interface{}{"hello": "world"}},
 	}
-	for _, tc := range testcases {
-		t.Run(tc.GoType+":nil", func(t *testing.T) {
-			assert.NoError(t, tc.Scanner.Scan(nil))
-		})
 
-		t.Run(tc.GoType+":bogus", func(t *testing.T) {
-			assert.Error(t, tc.Scanner.Scan(struct{}{}))
-			assert.Error(t, tc.Scanner.Scan([]interface{}{struct{}{}}), "bogus data scanned with no error")
-		})
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Run("nil", func(t *testing.T) {
+				assert.NoError(t, tc.scanner.Scan(nil))
+				assert.NoError(t, tc.scanner.Scan(nest(tc.depth-1, nil)))
+			})
 
-		t.Run(tc.GoType+":sample", func(t *testing.T) {
-			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
-			tc.TestScanner(t, tc.Scanner, true)
-			require.NoError(t, tc.Scanner.Scan(nil))
-			tc.TestScanner(t, tc.Scanner, false)
+			t.Run("bogus", func(t *testing.T) {
+				for depth := 0; depth <= tc.depth; depth++ {
+					assert.Error(t, tc.scanner.Scan(nest(depth, struct{}{})), "bogus data at depth %d scanned with no error", depth)
+				}
+			})
+
+			t.Run("sample", func(t *testing.T) {
+				require.NoError(t, tc.scanner.Scan(nest(tc.depth, tc.sample)))
+				assert.True(t, scannerValid(t, tc.scanner), "scanner should be valid after scanning a value")
+				require.NoError(t, tc.scanner.Scan(nil))
+				assert.False(t, scannerValid(t, tc.scanner), "scanner should be invalid after scanning nil")
+			})
 		})
 	}
 }
 
-func TestSlice2TypeConversion(t *testing.T) {
-	testcases := []struct {
-		GoType                          string
-		Scanner                         sql.Scanner
-		TrinoResponseUnmarshalledSample interface{}
-		TestScanner                     func(t *testing.T, s sql.Scanner, isValid bool)
-	}{
-		{
-			GoType:                          "[][]bool",
-			Scanner:                         &NullSlice2Bool{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{true}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Bool)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][]string",
-			Scanner:                         &NullSlice2String{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{"hello"}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2String)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][]int64",
-			Scanner:                         &NullSlice2Int64{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{json.Number("1")}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Int64)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][]float64",
-			Scanner:                         &NullSlice2Float64{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{json.Number("1.0")}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Float64)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][]time.Time",
-			Scanner:                         &NullSlice2Time{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{"2017-07-01"}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Time)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][]map[string]interface{}",
-			Scanner:                         &NullSlice2Map{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{map[string]interface{}{"hello": "world"}}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice2Map)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-	}
-	for _, tc := range testcases {
-		t.Run(tc.GoType+":nil", func(t *testing.T) {
-			assert.NoError(t, tc.Scanner.Scan(nil))
-			assert.NoError(t, tc.Scanner.Scan([]interface{}{nil}))
-		})
-
-		t.Run(tc.GoType+":bogus", func(t *testing.T) {
-			assert.Error(t, tc.Scanner.Scan(struct{}{}), "bogus data scanned with no error")
-			assert.Error(t, tc.Scanner.Scan([]interface{}{struct{}{}}), "bogus data scanned with no error")
-			assert.Error(t, tc.Scanner.Scan([]interface{}{[]interface{}{struct{}{}}}), "bogus data scanned with no error")
-		})
-
-		t.Run(tc.GoType+":sample", func(t *testing.T) {
-			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
-			tc.TestScanner(t, tc.Scanner, true)
-			require.NoError(t, tc.Scanner.Scan(nil))
-			tc.TestScanner(t, tc.Scanner, false)
-		})
-	}
-}
-
-func TestSlice3TypeConversion(t *testing.T) {
-	testcases := []struct {
-		GoType                          string
-		Scanner                         sql.Scanner
-		TrinoResponseUnmarshalledSample interface{}
-		TestScanner                     func(t *testing.T, s sql.Scanner, isValid bool)
-	}{
-		{
-			GoType:                          "[][][]bool",
-			Scanner:                         &NullSlice3Bool{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{true}}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Bool)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][][]string",
-			Scanner:                         &NullSlice3String{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{"hello"}}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3String)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][][]int64",
-			Scanner:                         &NullSlice3Int64{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{json.Number("1")}}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Int64)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][][]float64",
-			Scanner:                         &NullSlice3Float64{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{json.Number("1.0")}}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Float64)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][][]time.Time",
-			Scanner:                         &NullSlice3Time{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{"2017-07-01"}}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Time)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-		{
-			GoType:                          "[][][]map[string]interface{}",
-			Scanner:                         &NullSlice3Map{},
-			TrinoResponseUnmarshalledSample: []interface{}{[]interface{}{[]interface{}{map[string]interface{}{"hello": "world"}}}},
-			TestScanner: func(t *testing.T, s sql.Scanner, isValid bool) {
-				v, _ := s.(*NullSlice3Map)
-				assert.Equal(t, isValid, v.Valid, "scanner failed")
-			},
-		},
-	}
-	for _, tc := range testcases {
-		t.Run(tc.GoType+":nil", func(t *testing.T) {
-			assert.NoError(t, tc.Scanner.Scan(nil))
-			assert.NoError(t, tc.Scanner.Scan([]interface{}{[]interface{}{nil}}))
-		})
-
-		t.Run(tc.GoType+":bogus", func(t *testing.T) {
-			assert.Error(t, tc.Scanner.Scan(struct{}{}), "bogus data scanned with no error")
-			assert.Error(t, tc.Scanner.Scan([]interface{}{[]interface{}{struct{}{}}}), "bogus data scanned with no error")
-			assert.Error(t, tc.Scanner.Scan([]interface{}{[]interface{}{[]interface{}{struct{}{}}}}), "bogus data scanned with no error")
-		})
-
-		t.Run(tc.GoType+":sample", func(t *testing.T) {
-			require.NoError(t, tc.Scanner.Scan(tc.TrinoResponseUnmarshalledSample))
-			tc.TestScanner(t, tc.Scanner, true)
-			require.NoError(t, tc.Scanner.Scan(nil))
-			tc.TestScanner(t, tc.Scanner, false)
-		})
-	}
+// scannerValid reads the Valid field every Null* scanner in this package has.
+func scannerValid(t testing.TB, scanner sql.Scanner) bool {
+	t.Helper()
+	field := reflect.ValueOf(scanner).Elem().FieldByName("Valid")
+	require.True(t, field.IsValid(), "%T has no Valid field", scanner)
+	return field.Bool()
 }

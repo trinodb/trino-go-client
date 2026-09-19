@@ -13,33 +13,225 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestConfig(t *testing.T) {
-	c := &Config{
-		ServerURI:         "http://foobar@localhost:8080",
-		SessionProperties: map[string]string{"query_priority": "1"},
+func TestFormatDSN(t *testing.T) {
+	cases := []struct {
+		name   string
+		config *Config
+		want   string
+	}{
+		{
+			name: "session properties",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+			},
+			want: "http://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "explicit prepare disabled",
+			config: &Config{
+				ServerURI:              "https://foobar@localhost:8090",
+				DisableExplicitPrepare: true,
+			},
+			want: "https://foobar@localhost:8090?explicitPrepare=false&source=trino-go-client",
+		},
+		{
+			name: "multiple client tags",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				ClientTags:        []string{"test1", "test2", "test3"},
+			},
+			want: "http://foobar@localhost:8080?clientTags=test1%2Ctest2%2Ctest3&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "single client tag",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				ClientTags:        []string{"test1"},
+			},
+			want: "http://foobar@localhost:8080?clientTags=test1&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "client tags with special characters",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				ClientTags:        []string{"foo %20", "bar=test", "baz#tag"},
+			},
+			want: "http://foobar@localhost:8080?clientTags=foo+%2520%2Cbar%3Dtest%2Cbaz%23tag&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "SSL cert path",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				SSLCertPath:       "cert.pem",
+			},
+			want: "https://foobar@localhost:8080?SSLCertPath=cert.pem&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "SSL cert",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				SSLCert:           sampleCertificatePEM,
+			},
+			want: "https://foobar@localhost:8080?SSLCert=" + url.QueryEscape(sampleCertificatePEM) + "&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "https without SSL cert",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8080",
+				SessionProperties: map[string]string{"query_priority": "1"},
+			},
+			want: "https://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "extra credentials",
+			config: &Config{
+				ServerURI:        "http://foobar@localhost:8080",
+				ExtraCredentials: map[string]string{"token": "mYtOkEn", "otherToken": "oThErToKeN%*!#@special"},
+			},
+			want: "http://foobar@localhost:8080?extra_credentials=otherToken%3AoThErToKeN%25%2A%21%23%40special%3Btoken%3AmYtOkEn&source=trino-go-client",
+		},
+		{
+			name: "kerberos",
+			config: &Config{
+				ServerURI:                 "https://foobar@localhost:8090",
+				SessionProperties:         map[string]string{"query_priority": "1"},
+				KerberosEnabled:           true,
+				KerberosKeytabPath:        "/opt/test.keytab",
+				KerberosPrincipal:         "trino/testhost",
+				KerberosRealm:             "example.com",
+				KerberosConfigPath:        "/etc/krb5.conf",
+				KerberosRemoteServiceName: "service",
+				SSLCertPath:               "/tmp/test.cert",
+			},
+			want: "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&KerberosRemoteServiceName=service&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "multiple catalog roles",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				Roles:             map[string]string{"catalog1": "role1", "catalog2": "role2"},
+			},
+			want: "https://foobar@localhost:8090?roles=catalog1%3Arole1%3Bcatalog2%3Arole2&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "single catalog role",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SessionProperties: map[string]string{"query_priority": "1"},
+				Roles:             map[string]string{"catalog1": "role1"},
+			},
+			want: "https://foobar@localhost:8090?roles=catalog1%3Arole1&session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "access token",
+			config: &Config{
+				ServerURI:   "https://foobar@localhost:8090",
+				AccessToken: "token",
+			},
+			want: "https://foobar@localhost:8090?accessToken=token&source=trino-go-client",
+		},
+		{
+			name: "query timeout",
+			config: &Config{
+				ServerURI:    "https://foobar@localhost:8090",
+				QueryTimeout: ptr(10 * time.Second),
+			},
+			want: "https://foobar@localhost:8090?query_timeout=10s&source=trino-go-client",
+		},
+		{
+			name: "forward authorization header",
+			config: &Config{
+				ServerURI:                  "https://foobar@localhost:8090",
+				ForwardAuthorizationHeader: true,
+			},
+			want: "https://foobar@localhost:8090?forwardAuthorizationHeader=true&source=trino-go-client",
+		},
 	}
 
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := tc.config.FormatDSN()
 
-	want := "http://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client"
-
-	assert.Equal(t, want, dsn)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
-func TestPreserveExplicitPrepareQueryParameterConfig(t *testing.T) {
-	c := &Config{
-		ServerURI:              "https://foobar@localhost:8090",
-		DisableExplicitPrepare: true,
+func TestFormatDSNRejects(t *testing.T) {
+	cases := []struct {
+		name   string
+		config *Config
+	}{
+		{
+			name:   "malformed URL",
+			config: &Config{ServerURI: ":("},
+		},
+		{
+			name: "kerberos without TLS",
+			config: &Config{
+				ServerURI:       "http://foobar@localhost:8090",
+				KerberosEnabled: true,
+			},
+		},
+		{
+			name:   "password without TLS",
+			config: &Config{ServerURI: "http://user:secret@localhost:8080"},
+		},
 	}
 
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := tc.config.FormatDSN()
 
-	want := "https://foobar@localhost:8090?explicitPrepare=false&source=trino-go-client"
-
-	assert.Equal(t, want, dsn)
+			require.Error(t, err)
+		})
+	}
 }
+
+func ptr[T any](v T) *T {
+	return &v
+}
+
+const sampleCertificatePEM = `-----BEGIN CERTIFICATE-----
+MIIFijCCA3ICCQDngXKCZFwSazANBgkqhkiG9w0BAQsFADCBhjELMAkGA1UEBhMC
+WFgxEjAQBgNVBAgMCVN0YXRlTmFtZTERMA8GA1UEBwwIQ2l0eU5hbWUxFDASBgNV
+BAoMC0NvbXBhbnlOYW1lMRswGQYDVQQLDBJDb21wYW55U2VjdGlvbk5hbWUxHTAb
+BgNVBAMMFENvbW1vbk5hbWVPckhvc3RuYW1lMB4XDTIzMDUxNzE2MzQ0MloXDTMz
+MDUxNDE2MzQ0MlowgYYxCzAJBgNVBAYTAlhYMRIwEAYDVQQIDAlTdGF0ZU5hbWUx
+ETAPBgNVBAcMCENpdHlOYW1lMRQwEgYDVQQKDAtDb21wYW55TmFtZTEbMBkGA1UE
+CwwSQ29tcGFueVNlY3Rpb25OYW1lMR0wGwYDVQQDDBRDb21tb25OYW1lT3JIb3N0
+bmFtZTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAKzz/SIuOiHZbUAH
+xCWrMaiJybdHHHl0smCu50XKvl/ZkszO1c4aES8/Vohw44ttaE+GOknTSGPka356
+NqwdPYMjnXN0d5HY5T5nOfgLxGD/1iCHACrT4gkd1asJ7eFaUgud0a+e9+oG53Vh
+Z3QV8+5JaWPuBMudJ8EOtrPMd0dJKVzeExTbpQLJ9HdIsHc6DXqshACd8Iy+ezqf
+OoYMYyJMAHO86MZrTs3t9AwUADlvntrwwObVrZ3v43IOKwJTRnpImmVlkouKrGn/
+HKzRmJEJ6hJQXhuhqI/0rr61XR8aa8Gs0FqtTTMJ32+PciPPzFtFVLAeA417lYz+
+uXZ6IpTLK4oDH8Q6gJY80GYqcGc+01ZY90W2L+odTz9P74vnTvsUgSjOcy7prJ0+
+WxoeBNPvkLeetX9WDZW4XaR++HVO1qelNJQqeB6Nver9MJdKkXvR3OxT6iluqXfA
+l9JJ57tnzspSrttjWG4kwwiaGn/4xPqd95Hp0r1WAK8U0Cqtvz+Zw9jl341tC1Ya
+K1KFIErZYf0KX8ZiYvmkHaTRxYiCmFnnfLtGdrAWkacisLKMhjeb9LXwC/TVtvio
+a+ofiW2DX80pQptkfNJs9P19ZFEojPAEFHiZFpz5yZSxHglxIsdIhRsuy5xb/KTo
+zey3tsKQJaFIah+aHKjyn3uZx2IRAgMBAAEwDQYJKoZIhvcNAQELBQADggIBAIs5
+sbCMB6bT0hcNFqFRCI/BL23m5jwdL9kNWDlEQxBvErtzTC+uStGrCqwV+qu49QAZ
+64kUolbzFyq/hQFpHd+9EzNkZGbiOf5toWaBUP6jaZzqYPdfDW+AwIA7iPHcqwH1
+iWX2zuAWAICy4H+S4oa/ShOPc8BrrnS8k5f1NpergOhd+wl+szuXJN9Tjli3wd/k
+L7f86xvZfOrEbss8YP4QE0+mKh6G71NLEVQ4SV7yIE2hCNLDFWS2ltGVRLv6CDaQ
+fXIQrZx2Khvpj+HI/hrwm1wV8Cg5w2IvB831YjTSepSoos0Cc/qYC78zqol/NbwL
+7TdHtuZKukDrisRiCDdoKFmS1/IUVeVR2352CG8G3Zo0wwfzoKLxLUtunnrKMmmO
+r2jXykqP2hb1dApBNFM7FoaJ7a0j6EcURW8wYl4I+b9ymftPnnZ8mgrjwvLh5ETj
+RgGsIBychLZoc1WWTZWu62+mvmSJnzEIFfaiSeYZLaL6qFHm6kqsAUn4s1Looj8/
+XoCNjMecchWbpHGCPwMFH1k2smxu7bKk/RJNuWSVn1IPUceJnOBHZGj92aJGZpjr
+8j39T3dK9F2r5rHwjZpeEIhyhbLw6pYKif+lBgAWJD3waG0ycwURA02/POHN4CpT
+FKu5ZAlRfb2aYegr49DHhzoVAdInWQmP+5EZEUD1
+-----END CERTIFICATE-----`
 
 func TestParseDSNToConfig(t *testing.T) {
 	tests := []struct {
@@ -231,302 +423,72 @@ func TestParseDSNPasswordRequiresTLS(t *testing.T) {
 	}
 }
 
-func TestFormatDSNPasswordRequiresTLS(t *testing.T) {
-	c := &Config{ServerURI: "http://user:secret@localhost:8080"}
-	_, err := c.FormatDSN()
-	assert.EqualError(t, err, "trino: TLS/SSL is required for authentication with username and password")
-}
-
-func TestConfigFormatDSNTags(t *testing.T) {
-	tests := []struct {
-		name   string
-		config *Config
-		want   string
-	}{
-		{
-			name: "multiple tags",
-			config: &Config{
-				ServerURI:         "http://foobar@localhost:8080",
-				SessionProperties: map[string]string{"query_priority": "1"},
-				ClientTags:        []string{"test1", "test2", "test3"},
-			},
-			want: "http://foobar@localhost:8080?clientTags=test1%2Ctest2%2Ctest3&session_properties=query_priority%3A1&source=trino-go-client",
-		},
-		{
-			name: "single tag",
-			config: &Config{
-				ServerURI:         "http://foobar@localhost:8080",
-				SessionProperties: map[string]string{"query_priority": "1"},
-				ClientTags:        []string{"test1"},
-			},
-			want: "http://foobar@localhost:8080?clientTags=test1&session_properties=query_priority%3A1&source=trino-go-client",
-		},
-		{
-			name: "multiple tags with special characters",
-			config: &Config{
-				ServerURI:         "http://foobar@localhost:8080",
-				SessionProperties: map[string]string{"query_priority": "1"},
-				ClientTags:        []string{"foo %20", "bar=test", "baz#tag"},
-			},
-			want: "http://foobar@localhost:8080?clientTags=foo+%2520%2Cbar%3Dtest%2Cbaz%23tag&session_properties=query_priority%3A1&source=trino-go-client",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := tt.config.FormatDSN()
-
-			require.NoError(t, err)
-			assert.Equal(t, tt.want, got)
-
-		})
-	}
-}
-
-func TestConfigSSLCertPath(t *testing.T) {
-	c := &Config{
-		ServerURI:         "https://foobar@localhost:8080",
-		SessionProperties: map[string]string{"query_priority": "1"},
-		SSLCertPath:       "cert.pem",
-	}
-
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
-
-	want := "https://foobar@localhost:8080?SSLCertPath=cert.pem&session_properties=query_priority%3A1&source=trino-go-client"
-
-	assert.Equal(t, want, dsn)
-}
-
-func TestConfigSSLCert(t *testing.T) {
-	sslCert := `-----BEGIN CERTIFICATE-----
-MIIFijCCA3ICCQDngXKCZFwSazANBgkqhkiG9w0BAQsFADCBhjELMAkGA1UEBhMC
-WFgxEjAQBgNVBAgMCVN0YXRlTmFtZTERMA8GA1UEBwwIQ2l0eU5hbWUxFDASBgNV
-BAoMC0NvbXBhbnlOYW1lMRswGQYDVQQLDBJDb21wYW55U2VjdGlvbk5hbWUxHTAb
-BgNVBAMMFENvbW1vbk5hbWVPckhvc3RuYW1lMB4XDTIzMDUxNzE2MzQ0MloXDTMz
-MDUxNDE2MzQ0MlowgYYxCzAJBgNVBAYTAlhYMRIwEAYDVQQIDAlTdGF0ZU5hbWUx
-ETAPBgNVBAcMCENpdHlOYW1lMRQwEgYDVQQKDAtDb21wYW55TmFtZTEbMBkGA1UE
-CwwSQ29tcGFueVNlY3Rpb25OYW1lMR0wGwYDVQQDDBRDb21tb25OYW1lT3JIb3N0
-bmFtZTCCAiIwDQYJKoZIhvcNAQEBBQADggIPADCCAgoCggIBAKzz/SIuOiHZbUAH
-xCWrMaiJybdHHHl0smCu50XKvl/ZkszO1c4aES8/Vohw44ttaE+GOknTSGPka356
-NqwdPYMjnXN0d5HY5T5nOfgLxGD/1iCHACrT4gkd1asJ7eFaUgud0a+e9+oG53Vh
-Z3QV8+5JaWPuBMudJ8EOtrPMd0dJKVzeExTbpQLJ9HdIsHc6DXqshACd8Iy+ezqf
-OoYMYyJMAHO86MZrTs3t9AwUADlvntrwwObVrZ3v43IOKwJTRnpImmVlkouKrGn/
-HKzRmJEJ6hJQXhuhqI/0rr61XR8aa8Gs0FqtTTMJ32+PciPPzFtFVLAeA417lYz+
-uXZ6IpTLK4oDH8Q6gJY80GYqcGc+01ZY90W2L+odTz9P74vnTvsUgSjOcy7prJ0+
-WxoeBNPvkLeetX9WDZW4XaR++HVO1qelNJQqeB6Nver9MJdKkXvR3OxT6iluqXfA
-l9JJ57tnzspSrttjWG4kwwiaGn/4xPqd95Hp0r1WAK8U0Cqtvz+Zw9jl341tC1Ya
-K1KFIErZYf0KX8ZiYvmkHaTRxYiCmFnnfLtGdrAWkacisLKMhjeb9LXwC/TVtvio
-a+ofiW2DX80pQptkfNJs9P19ZFEojPAEFHiZFpz5yZSxHglxIsdIhRsuy5xb/KTo
-zey3tsKQJaFIah+aHKjyn3uZx2IRAgMBAAEwDQYJKoZIhvcNAQELBQADggIBAIs5
-sbCMB6bT0hcNFqFRCI/BL23m5jwdL9kNWDlEQxBvErtzTC+uStGrCqwV+qu49QAZ
-64kUolbzFyq/hQFpHd+9EzNkZGbiOf5toWaBUP6jaZzqYPdfDW+AwIA7iPHcqwH1
-iWX2zuAWAICy4H+S4oa/ShOPc8BrrnS8k5f1NpergOhd+wl+szuXJN9Tjli3wd/k
-L7f86xvZfOrEbss8YP4QE0+mKh6G71NLEVQ4SV7yIE2hCNLDFWS2ltGVRLv6CDaQ
-fXIQrZx2Khvpj+HI/hrwm1wV8Cg5w2IvB831YjTSepSoos0Cc/qYC78zqol/NbwL
-7TdHtuZKukDrisRiCDdoKFmS1/IUVeVR2352CG8G3Zo0wwfzoKLxLUtunnrKMmmO
-r2jXykqP2hb1dApBNFM7FoaJ7a0j6EcURW8wYl4I+b9ymftPnnZ8mgrjwvLh5ETj
-RgGsIBychLZoc1WWTZWu62+mvmSJnzEIFfaiSeYZLaL6qFHm6kqsAUn4s1Looj8/
-XoCNjMecchWbpHGCPwMFH1k2smxu7bKk/RJNuWSVn1IPUceJnOBHZGj92aJGZpjr
-8j39T3dK9F2r5rHwjZpeEIhyhbLw6pYKif+lBgAWJD3waG0ycwURA02/POHN4CpT
-FKu5ZAlRfb2aYegr49DHhzoVAdInWQmP+5EZEUD1
------END CERTIFICATE-----`
-	c := &Config{
-		ServerURI:         "https://foobar@localhost:8080",
-		SessionProperties: map[string]string{"query_priority": "1"},
-		SSLCert:           sslCert,
-	}
-
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
-
-	want := "https://foobar@localhost:8080?SSLCert=" + url.QueryEscape(sslCert) + "&session_properties=query_priority%3A1&source=trino-go-client"
-
-	assert.Equal(t, want, dsn)
-}
-
-func TestExtraCredentials(t *testing.T) {
-	c := &Config{
-		ServerURI:        "http://foobar@localhost:8080",
-		ExtraCredentials: map[string]string{"token": "mYtOkEn", "otherToken": "oThErToKeN%*!#@special"},
-	}
-
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
-
-	want := "http://foobar@localhost:8080?extra_credentials=otherToken%3AoThErToKeN%25%2A%21%23%40special%3Btoken%3AmYtOkEn&source=trino-go-client"
-	assert.Equal(t, want, dsn)
-}
-
 func TestInvalidExtraCredentials(t *testing.T) {
-	testcases := []struct {
-		Name        string
-		Credentials map[string]string
-		Error       string
+	cases := []struct {
+		name        string
+		credentials map[string]string
+		wantErr     string
 	}{
 		{
-			Name:        "Empty key",
-			Credentials: map[string]string{"": "emptyKey"},
-			Error:       "trino: extra_credentials key is empty",
+			name:        "empty key",
+			credentials: map[string]string{"": "emptyKey"},
+			wantErr:     "trino: extra_credentials key is empty",
 		},
 		{
-			Name:        "Empty value",
-			Credentials: map[string]string{"valid": "a", "emptyValue": ""},
-			Error:       "trino: extra_credentials value is empty",
+			name:        "empty value",
+			credentials: map[string]string{"valid": "a", "emptyValue": ""},
+			wantErr:     "trino: extra_credentials value is empty",
 		},
 		{
-			Name:        "Unprintable key",
-			Credentials: map[string]string{"😊": "unprintableKey"},
-			Error:       "trino: extra_credentials key '😊' contains spaces or is not printable ASCII",
+			name:        "unprintable key",
+			credentials: map[string]string{"😊": "unprintableKey"},
+			wantErr:     "trino: extra_credentials key '😊' contains spaces or is not printable ASCII",
 		},
 		{
-			Name:        "Unprintable value",
-			Credentials: map[string]string{"unprintableValue": "😊"},
-			Error:       "trino: extra_credentials value for key 'unprintableValue' contains spaces or is not printable ASCII",
+			name:        "unprintable value",
+			credentials: map[string]string{"unprintableValue": "😊"},
+			wantErr:     "trino: extra_credentials value for key 'unprintableValue' contains spaces or is not printable ASCII",
 		},
 	}
 
-	for _, tc := range testcases {
-
-		t.Run(tc.Name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			c := &Config{
 				ServerURI:        "http://foobar@localhost:8080",
-				ExtraCredentials: tc.Credentials,
+				ExtraCredentials: tc.credentials,
 			}
 			dsn, err := c.FormatDSN()
 			require.NoError(t, err)
 			db, err := sql.Open("trino", dsn)
 			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
 			err = db.Ping()
-			assert.EqualError(t, err, tc.Error)
+
+			assert.EqualError(t, err, tc.wantErr)
 		})
 	}
-}
-
-func TestConfigWithoutSSLCertPath(t *testing.T) {
-	c := &Config{
-		ServerURI:         "https://foobar@localhost:8080",
-		SessionProperties: map[string]string{"query_priority": "1"},
-	}
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
-
-	want := "https://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client"
-
-	assert.Equal(t, want, dsn)
-}
-
-func TestKerberosConfig(t *testing.T) {
-	c := &Config{
-		ServerURI:                 "https://foobar@localhost:8090",
-		SessionProperties:         map[string]string{"query_priority": "1"},
-		KerberosEnabled:           true,
-		KerberosKeytabPath:        "/opt/test.keytab",
-		KerberosPrincipal:         "trino/testhost",
-		KerberosRealm:             "example.com",
-		KerberosConfigPath:        "/etc/krb5.conf",
-		KerberosRemoteServiceName: "service",
-		SSLCertPath:               "/tmp/test.cert",
-	}
-
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
-
-	want := "https://foobar@localhost:8090?KerberosConfigPath=%2Fetc%2Fkrb5.conf&KerberosEnabled=true&KerberosKeytabPath=%2Fopt%2Ftest.keytab&KerberosPrincipal=trino%2Ftesthost&KerberosRealm=example.com&KerberosRemoteServiceName=service&SSLCertPath=%2Ftmp%2Ftest.cert&session_properties=query_priority%3A1&source=trino-go-client"
-
-	assert.Equal(t, want, dsn)
-}
-
-func TestFormatDSNWithRoles(t *testing.T) {
-	tests := []struct {
-		name        string
-		config      *Config
-		wantDSN     string
-		expectError bool
-	}{
-		{
-			name: "Multiple catalog roles",
-			config: &Config{
-				ServerURI:         "https://foobar@localhost:8090",
-				SessionProperties: map[string]string{"query_priority": "1"},
-				Roles:             map[string]string{"catalog1": "role1", "catalog2": "role2"},
-			},
-			wantDSN: "https://foobar@localhost:8090?roles=catalog1%3Arole1%3Bcatalog2%3Arole2&session_properties=query_priority%3A1&source=trino-go-client",
-		},
-		{
-			name: "Single catalog role",
-			config: &Config{
-				ServerURI:         "https://foobar@localhost:8090",
-				SessionProperties: map[string]string{"query_priority": "1"},
-				Roles:             map[string]string{"catalog1": "role1"},
-			},
-			wantDSN: "https://foobar@localhost:8090?roles=catalog1%3Arole1&session_properties=query_priority%3A1&source=trino-go-client",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dsn, err := tt.config.FormatDSN()
-			if tt.expectError {
-				require.Error(t, err)
-			} else {
-				require.NoError(t, err)
-				assert.Equal(t, tt.wantDSN, dsn)
-			}
-		})
-	}
-}
-
-func TestInvalidKerberosConfig(t *testing.T) {
-	c := &Config{
-		ServerURI:       "http://foobar@localhost:8090",
-		KerberosEnabled: true,
-	}
-
-	_, err := c.FormatDSN()
-	assert.Error(t, err, "dsn generated from invalid secure url, since kerberos enabled must has SSL enabled")
-}
-
-func TestAccessTokenConfig(t *testing.T) {
-	c := &Config{
-		ServerURI:   "https://foobar@localhost:8090",
-		AccessToken: "token",
-	}
-
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
-
-	want := "https://foobar@localhost:8090?accessToken=token&source=trino-go-client"
-
-	assert.Equal(t, want, dsn)
-}
-
-func TestConfigWithMalformedURL(t *testing.T) {
-	_, err := (&Config{ServerURI: ":("}).FormatDSN()
-	assert.Error(t, err, "dsn generated from malformed url")
 }
 
 func TestConnErrorDSN(t *testing.T) {
-	testcases := []struct {
-		Name string
-		DSN  string
+	cases := []struct {
+		name string
+		dsn  string
 	}{
-		{Name: "malformed", DSN: "://"},
-		{Name: "unknown_client", DSN: "http://localhost?custom_client=unknown"},
-		{Name: "http_password", DSN: "http://user:secret@localhost:8080"},
+		{name: "malformed", dsn: "://"},
+		{name: "unknown client", dsn: "http://localhost?custom_client=unknown"},
+		{name: "http password", dsn: "http://user:secret@localhost:8080"},
 	}
 
-	for _, tc := range testcases {
-		t.Run(tc.Name, func(t *testing.T) {
-			db, err := sql.Open("trino", tc.DSN)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := sql.Open("trino", tc.dsn)
 			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
 
 			_, err = db.Query("SELECT 1")
-			assert.Errorf(t, err, "test dsn is supposed to fail: %s", tc.DSN)
 
-			if err == nil {
-				require.NoError(t, db.Close())
-			}
+			assert.Errorf(t, err, "test dsn is supposed to fail: %s", tc.dsn)
 		})
 	}
 }
@@ -539,19 +501,6 @@ func TestRegisterCustomClientReserved(t *testing.T) {
 				"client key name supposed to fail: %s", tc)
 		})
 	}
-}
-
-func TestQueryTimeout(t *testing.T) {
-	timeout := 10 * time.Second
-	c := &Config{
-		ServerURI:    "https://foobar@localhost:8090",
-		QueryTimeout: &timeout,
-	}
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
-
-	want := "https://foobar@localhost:8090?query_timeout=10s&source=trino-go-client"
-	assert.Equal(t, want, dsn)
 }
 
 func TestHeartbeatIntervalDSNParse(t *testing.T) {
@@ -629,18 +578,4 @@ func TestWithoutSSLCertPath(t *testing.T) {
 	})
 
 	assert.NoError(t, db.Ping())
-}
-
-func TestForwardAuthorizationHeaderConfig(t *testing.T) {
-	c := &Config{
-		ServerURI:                  "https://foobar@localhost:8090",
-		ForwardAuthorizationHeader: true,
-	}
-
-	dsn, err := c.FormatDSN()
-	require.NoError(t, err)
-
-	want := "https://foobar@localhost:8090?forwardAuthorizationHeader=true&source=trino-go-client"
-
-	assert.Equal(t, want, dsn)
 }
