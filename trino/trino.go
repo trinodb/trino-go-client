@@ -525,6 +525,26 @@ var (
 )
 
 // formatRolesFromMap formats roles from a map into the Trino header format
+func namedStringArg(arg driver.NamedValue) (string, error) {
+	value, ok := arg.Value.(string)
+	if !ok {
+		return "", fmt.Errorf("trino: %s must be a string, got %T", arg.Name, arg.Value)
+	}
+	return value, nil
+}
+
+func namedIntArg(arg driver.NamedValue) (int, error) {
+	value, err := namedStringArg(arg)
+	if err != nil {
+		return 0, err
+	}
+	number, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("trino: %s must be an integer, got %q", arg.Name, value)
+	}
+	return number, nil
+}
+
 func formatRolesFromMap(rolesMap map[string]string) string {
 	var formattedRoles []string
 	for catalog, role := range rolesMap {
@@ -1329,12 +1349,16 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			}
 
 			if arg.Name == trinoEncoding {
-				hs.Add(trinoQueryDataEncodingHeader, arg.Value.(string))
+				encoding, err := namedStringArg(arg)
+				if err != nil {
+					return nil, err
+				}
+				hs.Add(trinoQueryDataEncodingHeader, encoding)
 				continue
 			}
 
 			if arg.Name == trinoSpoolingWorkerCount {
-				numberOfWorkers, err := strconv.Atoi(arg.Value.(string))
+				numberOfWorkers, err := namedIntArg(arg)
 				if err != nil {
 					return nil, err
 				}
@@ -1343,7 +1367,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			}
 
 			if arg.Name == trinoMaxOutOfOrdersSegments {
-				maxSegmentsOutOfOrder, err := strconv.Atoi(arg.Value.(string))
+				maxSegmentsOutOfOrder, err := namedIntArg(arg)
 				if err != nil {
 					return nil, err
 				}
