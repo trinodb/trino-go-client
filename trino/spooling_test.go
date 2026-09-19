@@ -162,14 +162,15 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
 	shortenSegmentDownloadRetries(t)
 	var failCounter atomic.Int32
-	maxRetries := int32(6)
+	// one attempt plus five retries
+	attempts := int32(6)
 
 	fc := newFakeCoordinator(t)
 	fc.respond(statementPage(), spooledPage("json",
 		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
 	))
 	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
-		if failCounter.Load() <= maxRetries {
+		if failCounter.Load() <= attempts {
 			failCounter.Add(1)
 			w.WriteHeader(http.StatusBadGateway)
 			return
@@ -185,7 +186,7 @@ func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
 	require.Error(t, rows.Err())
 
 	require.ErrorContains(t, rows.Err(), "max retries reached for status code 502")
-	assert.Equal(t, maxRetries, failCounter.Load(), "Expected segment download to fail exactly 5 times before succeeding")
+	assert.Equal(t, attempts, failCounter.Load(), "Expected the download to be attempted once and retried five times")
 }
 
 // shortenSegmentDownloadRetries keeps the retry tests from waiting for the

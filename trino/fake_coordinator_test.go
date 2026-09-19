@@ -3,6 +3,7 @@ package trino
 import (
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -48,17 +49,34 @@ type page struct {
 
 func newFakeCoordinator(t testing.TB) *fakeCoordinator {
 	t.Helper()
+	return startFakeCoordinator(t, httptest.NewServer)
+}
+
+// newFakeTLSCoordinator serves over HTTPS with a certificate the driver
+// trusts only when told to through SSLCert or SSLCertPath.
+func newFakeTLSCoordinator(t testing.TB) *fakeCoordinator {
+	t.Helper()
+	return startFakeCoordinator(t, httptest.NewTLSServer)
+}
+
+func startFakeCoordinator(t testing.TB, start func(http.Handler) *httptest.Server) *fakeCoordinator {
+	t.Helper()
 	fc := &fakeCoordinator{
 		t:         t,
 		downloads: map[string]http.HandlerFunc{},
 	}
-	fc.server = httptest.NewServer(fc)
+	fc.server = start(fc)
 	t.Cleanup(fc.server.Close)
 	return fc
 }
 
 func (fc *fakeCoordinator) url() string {
 	return fc.server.URL
+}
+
+// certificatePEM returns the server certificate of a TLS fake.
+func (fc *fakeCoordinator) certificatePEM() string {
+	return string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: fc.server.Certificate().Raw}))
 }
 
 // open returns a database handle pointed at the fake; params is appended to

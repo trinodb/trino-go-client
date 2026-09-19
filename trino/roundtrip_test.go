@@ -59,7 +59,7 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 			})
 
 			_, err = db.Query("SELECT 1")
-			assert.ErrorContains(t, err, tc.wantErr, "unexpected error: %w", err)
+			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
@@ -111,28 +111,22 @@ func TestRoundTripCancellation(t *testing.T) {
 	t.Cleanup(cancel)
 
 	_, err = db.QueryContext(ctx, "SELECT 1")
-	assert.Error(t, err, "unexpected query with cancelled context succeeded")
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
 func TestTokenAuth(t *testing.T) {
 	t.Parallel()
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer token" {
-			w.WriteHeader(http.StatusUnauthorized)
-		} else {
-			w.WriteHeader(http.StatusOK)
-		}
-	}))
+	fc := newFakeCoordinator(t)
+	fc.respond(resultPage([][]any{{1}}))
+	db := fc.open(t, "?accessToken=token")
 
-	t.Cleanup(ts.Close)
-
-	db, err := sql.Open("trino", ts.URL+"?accessToken=token")
+	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
+	require.NoError(t, rows.Close())
 
-	_, err = db.Query("SELECT 1")
-	require.Error(t, err, "trino: EOF")
-
-	assert.NoError(t, db.Close())
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 1)
+	assert.Equal(t, "Bearer token", requests[0].header.Get("Authorization"), "Authorization header")
 }
 
 func TestRoleHeader(t *testing.T) {
@@ -199,7 +193,9 @@ func TestQueryFailure(t *testing.T) {
 	})
 
 	_, err = db.Query("SELECT 1")
-	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
+	var queryFailed *ErrQueryFailed
+	require.ErrorAs(t, err, &queryFailed)
+	assert.Equal(t, http.StatusInternalServerError, queryFailed.StatusCode)
 }
 
 func TestForwardAuthorizationHeader(t *testing.T) {
@@ -272,7 +268,6 @@ func TestQueryTimeoutDeadline(t *testing.T) {
 			// registered after the server's cleanup, so it runs first and
 			// the parked handler cannot block the server from closing
 			t.Cleanup(func() { close(testDone) })
-			println(ts.URL + "?query_timeout=" + tc.queryTimeout)
 			db, err := sql.Open("trino", ts.URL+"?query_timeout="+tc.queryTimeout)
 			require.NoError(t, err)
 			t.Cleanup(func() { require.NoError(t, db.Close()) })

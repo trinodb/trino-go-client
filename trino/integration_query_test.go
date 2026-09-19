@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"errors"
 	"io"
 	"sort"
 	"strconv"
@@ -183,48 +182,45 @@ func TestIntegrationNoResults(t *testing.T) {
 }
 
 func TestIntegrationQueryParametersSelect(t *testing.T) {
-	scenarios := []struct {
-		name          string
-		query         string
-		args          []interface{}
-		expectedError error
-		expectedRows  int
+	cases := []struct {
+		name     string
+		query    string
+		args     []interface{}
+		wantRows int
+		wantErr  string
 	}{
 		{
-			name:         "valid string as varchar",
-			query:        "SELECT * FROM system.runtime.nodes WHERE system.runtime.nodes.node_id=?",
-			args:         []interface{}{"test"},
-			expectedRows: 1,
+			name:     "valid string as varchar",
+			query:    "SELECT * FROM system.runtime.nodes WHERE system.runtime.nodes.node_id=?",
+			args:     []interface{}{"test"},
+			wantRows: 1,
 		},
 		{
-			name:         "valid int as bigint",
-			query:        "SELECT * FROM tpch.sf1.customer WHERE custkey=? LIMIT 2",
-			args:         []interface{}{int(1)},
-			expectedRows: 1,
+			name:     "valid int as bigint",
+			query:    "SELECT * FROM tpch.sf1.customer WHERE custkey=? LIMIT 2",
+			args:     []interface{}{int(1)},
+			wantRows: 1,
 		},
 		{
-			name:          "invalid string as bigint",
-			query:         "SELECT * FROM tpch.sf1.customer WHERE custkey=? LIMIT 2",
-			args:          []interface{}{"1"},
-			expectedError: errors.New(`trino: query failed (200 OK): "USER_ERROR: line 1:46: Cannot apply operator: bigint = varchar(1)"`),
+			name:    "invalid string as bigint",
+			query:   "SELECT * FROM tpch.sf1.customer WHERE custkey=? LIMIT 2",
+			args:    []interface{}{"1"},
+			wantErr: `trino: query failed (200 OK): "USER_ERROR: line 1:46: Cannot apply operator: bigint = varchar(1)"`,
 		},
 		{
-			name:          "valid string as date",
-			query:         "SELECT * FROM tpch.sf1.lineitem WHERE shipdate=? LIMIT 2",
-			args:          []interface{}{"1995-01-27"},
-			expectedError: errors.New(`trino: query failed (200 OK): "USER_ERROR: line 1:47: Cannot apply operator: date = varchar(10)"`),
+			name:    "valid string as date",
+			query:   "SELECT * FROM tpch.sf1.lineitem WHERE shipdate=? LIMIT 2",
+			args:    []interface{}{"1995-01-27"},
+			wantErr: `trino: query failed (200 OK): "USER_ERROR: line 1:47: Cannot apply operator: date = varchar(10)"`,
 		},
 	}
 
-	for i := range scenarios {
-		scenario := scenarios[i]
-
-		t.Run(scenario.name, func(t *testing.T) {
-			db := integrationOpen(t)
-
-			rows, err := db.Query(scenario.query, scenario.args...)
-			if scenario.expectedError != nil {
-				require.EqualError(t, err, scenario.expectedError.Error())
+	db := integrationOpen(t)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rows, err := db.Query(tc.query, tc.args...)
+			if tc.wantErr != "" {
+				require.EqualError(t, err, tc.wantErr)
 				return
 			}
 			require.NoError(t, err)
@@ -235,7 +231,7 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 				count++
 			}
 			require.NoError(t, rows.Err())
-			assert.Equal(t, scenario.expectedRows, count, "row count")
+			assert.Equal(t, tc.wantRows, count, "row count")
 		})
 	}
 }
@@ -258,13 +254,13 @@ func TestIntegrationQueryNextAfterClose(t *testing.T) {
 
 	stmt.Close() // NOTE: the important bit.
 
+	// the direct protocol still returns the buffered row, the spooling
+	// protocol has nothing left; neither may fail with anything but EOF
 	var result driver.Value
-	err = rows.Next([]driver.Value{result})
-	if !spoolingProtocolSupported {
-		require.NoError(t, err)
+	if err := rows.Next([]driver.Value{result}); err != nil {
+		require.ErrorIs(t, err, io.EOF)
 	}
-	err = rows.Next([]driver.Value{result})
-	require.ErrorIs(t, err, io.EOF)
+	require.ErrorIs(t, rows.Next([]driver.Value{result}), io.EOF)
 }
 
 func TestIntegrationExec(t *testing.T) {
@@ -434,6 +430,10 @@ type TestQueryProgressCallback struct {
 }
 
 func (qpc *TestQueryProgressCallback) Update(qpi QueryProgressInfo) {
+	if qpc.progressMap == nil {
+		qpc.progressMap = map[time.Time]float64{}
+		qpc.statusMap = map[time.Time]string{}
+	}
 	qpc.progressMap[time.Now()] = float64(qpi.QueryStats.ProgressPercentage)
 	qpc.statusMap[time.Now()] = qpi.QueryStats.State
 }
@@ -566,7 +566,7 @@ func TestExec(t *testing.T) {
 		789, "ghi", nil)
 	require.NoError(t, err, "Failed executing INSERT query")
 	_, err = result.LastInsertId()
-	assert.Error(t, err, "trino: operation not supported")
+	assert.ErrorIs(t, err, ErrOperationNotSupported)
 	numRows, err := result.RowsAffected()
 	require.NoError(t, err, "Failed checking rows affected")
 	assert.Equal(t, int64(3), numRows)

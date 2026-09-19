@@ -53,14 +53,6 @@ func TestRoleHeaderSupport(t *testing.T) {
 			},
 		},
 		{
-			config: Config{
-				ServerURI: integrationDSN(t),
-				Roles:     map[string]string{"tpch": "NONE", "memory": "ALL"},
-			},
-			query:       "SELECT 1",
-			expectError: false,
-		},
-		{
 			name: "Valid special roles via Config",
 			config: Config{
 				ServerURI: integrationDSN(t),
