@@ -498,6 +498,17 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 	}
 }
 
+func TestSetPath(t *testing.T) {
+	db := integrationOpen(t)
+
+	_, err := db.Exec("SET PATH memory.default, tpch.tiny")
+	require.NoError(t, err)
+
+	var path string
+	require.NoError(t, db.QueryRow("SELECT current_path").Scan(&path))
+	assert.Equal(t, "memory.default, tpch.tiny", path)
+}
+
 func TestSession(t *testing.T) {
 	c := &Config{
 		ServerURI:         integrationDSN(t) + "?custom_client=" + uncompressedClient,
