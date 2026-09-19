@@ -76,8 +76,8 @@ func TestFetchNoStackOverflow(t *testing.T) {
 	})
 
 	_, err = db.Query("SELECT 1")
-	assert.IsTypef(t, new(ErrQueryFailed), err, "unexpected error: %w", err)
-
+	var queryFailed *ErrQueryFailed
+	assert.ErrorAs(t, err, &queryFailed)
 }
 
 func TestProtocolErrorHandling(t *testing.T) {
@@ -143,7 +143,6 @@ func TestSetRoleHeader(t *testing.T) {
 
 	assert.Equal(t, `catalog=ROLE{user}`, firstRoleHeader, "initial role from DSN should be sent in first request")
 	assert.Equal(t, "ROLE%7Badmin%7D", secondRoleHeader, "server-set role should be sent in subsequent requests")
-	assert.NotEqual(t, firstRoleHeader, secondRoleHeader, "role should have changed from DSN value to server-set value")
 }
 
 func TestUnsupportedHeader(t *testing.T) {
@@ -176,8 +175,5 @@ func TestUnsupportedTransaction(t *testing.T) {
 	})
 
 	_, err = db.Begin()
-	require.Error(t, err, "unsupported transaction succeeded with no error")
-
-	expected := "operation not supported"
-	assert.Contains(t, err.Error(), expected)
+	require.ErrorIs(t, err, ErrOperationNotSupported)
 }

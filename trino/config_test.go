@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -581,14 +583,41 @@ func TestSSLCertPath(t *testing.T) {
 	require.Contains(t, err.Error(), want)
 }
 
-func TestWithoutSSLCertPath(t *testing.T) {
+func TestSSLCertTrustsServer(t *testing.T) {
 	t.Parallel()
-	db, err := sql.Open("trino", "https://localhost:9")
-	require.NoError(t, err)
+	fc := newFakeTLSCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	certPath := filepath.Join(t.TempDir(), "certificate.pem")
+	require.NoError(t, os.WriteFile(certPath, []byte(fc.certificatePEM()), 0o600))
 
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
+	cases := []struct {
+		name    string
+		config  Config
+		wantErr string
+	}{
+		{name: "inline certificate", config: Config{SSLCert: fc.certificatePEM()}},
+		{name: "certificate path", config: Config{SSLCertPath: certPath}},
+		{name: "no certificate", wantErr: "certificate"},
+	}
 
-	assert.NoError(t, db.Ping())
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := tc.config
+			config.ServerURI = fc.url()
+			dsn, err := config.FormatDSN()
+			require.NoError(t, err)
+			db, err := sql.Open("trino", dsn)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			rows, err := db.Query("SELECT 1")
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, []int{1}, collectInts(t, rows))
+		})
+	}
 }
