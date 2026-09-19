@@ -662,3 +662,30 @@ func TestSpoolingProtocolRejectsUnsupportedEncoding(t *testing.T) {
 
 	require.ErrorContains(t, rows.Err(), "unsupported segment encoder: json+brotli")
 }
+
+func TestSpoolingNamedArgumentsAreValidated(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		arg     sql.NamedArg
+		wantErr string
+	}{
+		{name: "encoding not a string", arg: sql.Named(trinoEncoding, 42), wantErr: "trino: encoding must be a string, got int64"},
+		{name: "worker count not a string", arg: sql.Named(trinoSpoolingWorkerCount, 2), wantErr: "trino: spooling_worker_count must be a string, got int64"},
+		{name: "worker count not a number", arg: sql.Named(trinoSpoolingWorkerCount, "two"), wantErr: `trino: spooling_worker_count must be an integer, got "two"`},
+		{name: "out-of-order segments not a string", arg: sql.Named(trinoMaxOutOfOrdersSegments, 2.5), wantErr: "trino: max_out_of_order_segments must be a string, got float64"},
+		{name: "out-of-order segments not a number", arg: sql.Named(trinoMaxOutOfOrdersSegments, "many"), wantErr: `trino: max_out_of_order_segments must be an integer, got "many"`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := newFakeCoordinator(t)
+			db := fc.open(t, "")
+
+			_, err := db.Query("SELECT 1", tc.arg)
+
+			require.EqualError(t, err, tc.wantErr)
+			assert.Empty(t, fc.capturedRequests(), "the query must be rejected before anything is sent")
+		})
+	}
+}
