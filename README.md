@@ -359,6 +359,7 @@ http://user@localhost:8080?source=hello&catalog=default&schema=foobar&roles=cata
 When passing arguments to queries, the driver supports the following Go data
 types:
 * integers
+* `float32` and `float64` - passed to Trino as `REAL` and `DOUBLE` literals
 * `bool`
 * `string`
 * `[]byte`
@@ -375,7 +376,6 @@ types:
 * `time.Duration` - passed to Trino as an interval day to second. Because Trino does not support nanosecond precision for intervals, if the nanosecond part of the value is not zero, an error will be returned.
 
 It's not yet possible to pass:
-* `float32` or `float64`
 * `byte`
 * `json.RawMessage`
 * maps
@@ -383,7 +383,7 @@ It's not yet possible to pass:
 To use the unsupported types, pass them as strings and use casts in the query,
 like so:
 ```sql
-SELECT * FROM table WHERE col_double = cast(? AS DOUBLE) OR col_timestamp = CAST(? AS TIMESTAMP)
+SELECT * FROM table WHERE col_json = CAST(? AS JSON) OR col_timestamp = CAST(? AS TIMESTAMP)
 ```
 
 ### Response rows
