@@ -102,6 +102,8 @@ var (
 	ErrQueryCancelled = errors.New("trino: query cancelled")
 
 	// ErrUnsupportedHeader indicates that the server response contains an unsupported header.
+	//
+	// Deprecated: every response header the server sends is handled, so this error is never returned.
 	ErrUnsupportedHeader = errors.New("trino: server response contains an unsupported header")
 
 	// ErrInvalidResponseType indicates that the server returned an invalid type definition.
@@ -128,6 +130,7 @@ const (
 	trinoSessionHeader         = trinoHeaderPrefix + `Session`
 	trinoSetCatalogHeader      = trinoHeaderPrefix + `Set-Catalog`
 	trinoSetSchemaHeader       = trinoHeaderPrefix + `Set-Schema`
+	trinoPathHeader            = trinoHeaderPrefix + `Path`
 	trinoSetPathHeader         = trinoHeaderPrefix + `Set-Path`
 	trinoSetSessionHeader      = trinoHeaderPrefix + `Set-Session`
 	trinoClearSessionHeader    = trinoHeaderPrefix + `Clear-Session`
@@ -145,8 +148,12 @@ const (
 	trinoClientInfoHeader         = trinoHeaderPrefix + `Client-Info`
 	trinoLanguageHeader           = trinoHeaderPrefix + `Language`
 
-	trinoQueryDataEncodingHeader = trinoHeaderPrefix + `Query-Data-Encoding`
-	trinoEncoding                = "encoding"
+	trinoQueryDataEncodingHeader  = trinoHeaderPrefix + `Query-Data-Encoding`
+	trinoClientCapabilitiesHeader = trinoHeaderPrefix + `Client-Capabilities`
+	// clientCapabilities lists what the driver can decode; the server falls
+	// back to a plainer representation for every capability left out.
+	clientCapabilities = "PARAMETRIC_DATETIME,NUMBER,PATH"
+	trinoEncoding      = "encoding"
 
 	trinoSpoolingWorkerCount    = `spooling_worker_count`
 	trinoMaxOutOfOrdersSegments = `max_out_of_order_segments`
@@ -183,15 +190,11 @@ const (
 // segment download; each further retry waits phi times longer.
 var segmentDownloadInitialDelay = 200 * time.Millisecond
 
-var (
-	responseToRequestHeaderMap = map[string]string{
-		trinoSetSchemaHeader:  trinoSchemaHeader,
-		trinoSetCatalogHeader: trinoCatalogHeader,
-	}
-	unsupportedResponseHeaders = []string{
-		trinoSetPathHeader,
-	}
-)
+var responseToRequestHeaderMap = map[string]string{
+	trinoSetSchemaHeader:  trinoSchemaHeader,
+	trinoSetCatalogHeader: trinoCatalogHeader,
+	trinoSetPathHeader:    trinoPathHeader,
+}
 
 type Driver struct{}
 
@@ -910,11 +913,6 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 			switch resp.StatusCode {
 			case http.StatusOK:
 				c.applyResponseHeaders(resp.Header)
-				for _, name := range unsupportedResponseHeaders {
-					if v := resp.Header.Get(name); v != "" {
-						return nil, ErrUnsupportedHeader
-					}
-				}
 				return resp, nil
 			case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
 				resp.Body.Close()
@@ -1384,8 +1382,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
 	query := st.query
 	hs := make(http.Header)
-	// Ensure the server returns timestamps preserving their precision, without truncating them to timestamp(3).
-	hs.Add("X-Trino-Client-Capabilities", "PARAMETRIC_DATETIME,NUMBER")
+	hs.Add(trinoClientCapabilitiesHeader, clientCapabilities)
 	// The server reads extra credentials only when the statement is submitted.
 	if len(st.conn.extraCredentials) > 0 {
 		hs[trinoExtraCredentialHeader] = slices.Clone(st.conn.extraCredentials)

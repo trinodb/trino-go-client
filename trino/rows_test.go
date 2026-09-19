@@ -186,24 +186,24 @@ func TestExtraCredentialsSentOnlyWithTheStatement(t *testing.T) {
 	}
 }
 
-func TestUnsupportedHeader(t *testing.T) {
+func TestSetPathHeader(t *testing.T) {
 	t.Parallel()
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set(trinoSetPathHeader, "foo.bar")
-		w.WriteHeader(http.StatusOK)
-	}))
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage().withHeader(trinoSetPathHeader, "memory.default,tpch.tiny"),
+		resultPage([][]any{{1}}),
+	)
+	db := fc.open(t, "")
 
-	t.Cleanup(ts.Close)
-
-	db, err := sql.Open("trino", ts.URL)
+	rows, err := db.Query("SET PATH memory.default, tpch.tiny")
 	require.NoError(t, err)
+	require.NoError(t, rows.Close())
 
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
-
-	_, err = db.Query("SELECT 1")
-	assert.EqualError(t, err, ErrUnsupportedHeader.Error(), "unexpected error")
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 2)
+	assert.Equal(t, clientCapabilities, requests[0].header.Get(trinoClientCapabilitiesHeader), "the statement should announce the PATH capability")
+	assert.Empty(t, requests[0].header.Get(trinoPathHeader), "no path before the server sets one")
+	assert.Equal(t, "memory.default,tpch.tiny", requests[1].header.Get(trinoPathHeader), "server-set path should be sent in subsequent requests")
 }
 
 func TestUnsupportedTransaction(t *testing.T) {
