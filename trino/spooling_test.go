@@ -14,48 +14,48 @@ import (
 )
 
 func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
-	testcases := []struct {
-		Name           string
-		Segment        map[string]any
-		ExpectedResult []int
-		Encoding       string
-		DownloadedData []byte
+	cases := []struct {
+		name           string
+		segment        map[string]any
+		encoding       string
+		downloadedData []byte
+		want           []int
 	}{
 		{
-			Name:           "noCompression",
-			Segment:        spooledSegment("seg", map[string]any{"segmentSize": 16, "rowOffset": 0, "rowsCount": 2}),
-			Encoding:       "json",
-			ExpectedResult: []int{1000, 10001},
-			DownloadedData: []byte("[[1000],[10001]]"),
+			name:           "noCompression",
+			segment:        spooledSegment("seg", map[string]any{"segmentSize": 16, "rowOffset": 0, "rowsCount": 2}),
+			encoding:       "json",
+			want:           []int{1000, 10001},
+			downloadedData: []byte("[[1000],[10001]]"),
 		},
 		{
-			Name:           "zstdCompression",
-			Segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}),
-			Encoding:       "json+zstd",
-			ExpectedResult: []int{1000, 10001},
-			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
+			name:           "zstdCompression",
+			segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}),
+			encoding:       "json+zstd",
+			want:           []int{1000, 10001},
+			downloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
-			Name:           "spooledSegmentWithoutHeadersOnReponse", // headers are optional
-			Segment:        withoutField(spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}), "headers"),
-			Encoding:       "json+zstd",
-			ExpectedResult: []int{1000, 10001},
-			DownloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
+			name:           "spooledSegmentWithoutHeadersOnReponse", // headers are optional
+			segment:        withoutField(spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}), "headers"),
+			encoding:       "json+zstd",
+			want:           []int{1000, 10001},
+			downloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
-			Name:           "zlibCompression",
-			Segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 18}),
-			Encoding:       "json+lz4",
-			ExpectedResult: []int{1000, 10001},
-			DownloadedData: mustDecodeBase64("8AFbWzEwMDBdLFsxMDAwMV1d"),
+			name:           "zlibCompression",
+			segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 18}),
+			encoding:       "json+lz4",
+			want:           []int{1000, 10001},
+			downloadedData: mustDecodeBase64("8AFbWzEwMDBdLFsxMDAwMV1d"),
 		},
 	}
 
-	for _, tc := range testcases {
-		t.Run(tc.Name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			fc := newFakeCoordinator(t)
-			fc.respond(statementPage(), spooledPage(tc.Encoding, tc.Segment))
-			fc.serveSegment("seg", tc.DownloadedData)
+			fc.respond(statementPage(), spooledPage(tc.encoding, tc.segment))
+			fc.serveSegment("seg", tc.downloadedData)
 			db := fc.open(t, "")
 
 			rows, err := db.Query("SELECT 1")
@@ -64,7 +64,7 @@ func TestSpoolingProtocolSpooledSegmentDecoders(t *testing.T) {
 			results := collectInts(t, rows)
 			require.NoError(t, rows.Err())
 
-			assert.Equal(t, tc.ExpectedResult, results, "Expected query results to match")
+			assert.Equal(t, tc.want, results, "Expected query results to match")
 		})
 	}
 }
@@ -115,26 +115,17 @@ func TestSpoolingProtocolOutOfOrderSegment(t *testing.T) {
 }
 
 func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
-	testcases := []struct {
-		Name              string
-		HttpStatusReponse int
+	cases := []struct {
+		name   string
+		status int
 	}{
-		{
-			Name:              "Test retry 502 Bad Gateway",
-			HttpStatusReponse: http.StatusBadGateway,
-		},
-		{
-			Name:              "Test retry 503 Service Unavailable",
-			HttpStatusReponse: http.StatusServiceUnavailable,
-		},
-		{
-			Name:              "Test retry 504 Gateway Timeout",
-			HttpStatusReponse: http.StatusGatewayTimeout,
-		},
+		{name: "retry 502 Bad Gateway", status: http.StatusBadGateway},
+		{name: "retry 503 Service Unavailable", status: http.StatusServiceUnavailable},
+		{name: "retry 504 Gateway Timeout", status: http.StatusGatewayTimeout},
 	}
 
-	for _, tc := range testcases {
-		t.Run(tc.Name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			var failCounter atomic.Int32
 			fc := newFakeCoordinator(t)
 			fc.respond(statementPage(), spooledPage("json",
@@ -143,7 +134,7 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 			fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
 				if failCounter.Load() < 2 {
 					failCounter.Add(1)
-					w.WriteHeader(tc.HttpStatusReponse)
+					w.WriteHeader(tc.status)
 					return
 				}
 				w.WriteHeader(http.StatusOK)
@@ -219,36 +210,36 @@ func TestSpoolingProtocolOnlyWithInlineSegments(t *testing.T) {
 }
 
 func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
-	testcases := []struct {
-		Name           string
-		Segment        map[string]any
-		ExpectedResult []int
-		Encoding       string
+	cases := []struct {
+		name     string
+		segment  map[string]any
+		encoding string
+		want     []int
 	}{
 		{
-			Name:           "noCompression",
-			Segment:        inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 0}),
-			Encoding:       "json",
-			ExpectedResult: []int{1000, 10001},
+			name:     "noCompression",
+			segment:  inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 0}),
+			encoding: "json",
+			want:     []int{1000, 10001},
 		},
 		{
-			Name:           "zstdCompression",
-			Segment:        inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}),
-			Encoding:       "json+zstd",
-			ExpectedResult: []int{1000, 10001},
+			name:     "zstdCompression",
+			segment:  inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 29}),
+			encoding: "json+zstd",
+			want:     []int{1000, 10001},
 		},
 		{
-			Name:           "zlibCompression",
-			Segment:        inlineSegment("8AFbWzEwMDBdLFsxMDAwMV1d", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 18}),
-			Encoding:       "json+lz4",
-			ExpectedResult: []int{1000, 10001},
+			name:     "zlibCompression",
+			segment:  inlineSegment("8AFbWzEwMDBdLFsxMDAwMV1d", map[string]any{"uncompressedSize": 16, "rowOffset": 0, "segmentSize": 18}),
+			encoding: "json+lz4",
+			want:     []int{1000, 10001},
 		},
 	}
 
-	for _, tc := range testcases {
-		t.Run(tc.Name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			fc := newFakeCoordinator(t)
-			fc.respond(statementPage(), spooledPage(tc.Encoding, tc.Segment))
+			fc.respond(statementPage(), spooledPage(tc.encoding, tc.segment))
 			db := fc.open(t, "")
 
 			rows, err := db.Query("SELECT 1")
@@ -257,71 +248,71 @@ func TestSpoolingProtocolInlineSegmentDecoders(t *testing.T) {
 			results := collectInts(t, rows)
 			require.NoError(t, rows.Err())
 
-			assert.Equal(t, tc.ExpectedResult, results, "Expected query results to match")
+			assert.Equal(t, tc.want, results, "Expected query results to match")
 		})
 	}
 }
 
 func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 	validMetadata := map[string]any{"segmentSize": 3679, "uncompressedSize": 2, "rowOffset": 0}
-	testcases := []struct {
+	cases := []struct {
 		name                          string
 		segment                       map[string]any
-		expectedError                 string
 		downloadedData                []byte
 		downloadedDataStatusCodeError bool
+		wantErr                       string
 	}{
 		{
-			name:          "MissingRowOffsetMetadata",
-			segment:       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "segmentSize": 11}),
-			expectedError: "rowOffset is missing in segment metadata",
+			name:    "MissingRowOffsetMetadata",
+			segment: spooledSegment("seg", map[string]any{"uncompressedSize": 2, "segmentSize": 11}),
+			wantErr: "rowOffset is missing in segment metadata",
 		},
 		{
-			name:          "WrongRowOffsetMetadataType",
-			segment:       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": "2", "segmentSize": 11}),
-			expectedError: "invalid type for rowOffset in segment metadata, expected json.Number",
+			name:    "WrongRowOffsetMetadataType",
+			segment: spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": "2", "segmentSize": 11}),
+			wantErr: "invalid type for rowOffset in segment metadata, expected json.Number",
 		},
 		{
-			name:          "MissingSegmentSizeMetadata",
-			segment:       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2}),
-			expectedError: "segmentSize is missing in segment metadata",
+			name:    "MissingSegmentSizeMetadata",
+			segment: spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2}),
+			wantErr: "segmentSize is missing in segment metadata",
 		},
 		{
-			name:          "WrongSegmentSizeMetadataType",
-			segment:       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": "11"}),
-			expectedError: "invalid type for segmentSize in segment metadata, expected json.Number",
+			name:    "WrongSegmentSizeMetadataType",
+			segment: spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": "11"}),
+			wantErr: "invalid type for segmentSize in segment metadata, expected json.Number",
 		},
 		{
-			name:          "MissingMetadata",
-			segment:       withoutField(spooledSegment("seg", nil), "metadata"),
-			expectedError: "metadata is missing in segment at index 0",
+			name:    "MissingMetadata",
+			segment: withoutField(spooledSegment("seg", nil), "metadata"),
+			wantErr: "metadata is missing in segment at index 0",
 		},
 		{
-			name:          "WrongMetadataType",
-			segment:       spooledSegment("seg", "fake-metadata"),
-			expectedError: "metadata is invalid or cannot be parsed as map[string]interface{} in segment at index 0",
+			name:    "WrongMetadataType",
+			segment: spooledSegment("seg", "fake-metadata"),
+			wantErr: "metadata is invalid or cannot be parsed as map[string]interface{} in segment at index 0",
 		},
 		{
 			name:           "WrongUncompressSize",
 			segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 11}),
-			expectedError:  "failed to decode spooled segment at index 0: segment size mismatch: expected 11 bytes, got 29 byte",
+			wantErr:        "failed to decode spooled segment at index 0: segment size mismatch: expected 11 bytes, got 29 byte",
 			downloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
 			name:           "WrongCompresSize",
 			segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 29}),
-			expectedError:  "decompressed size mismatch: expected 2 bytes, got 16 bytes",
+			wantErr:        "decompressed size mismatch: expected 2 bytes, got 16 bytes",
 			downloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
-			name:          "MissingUri",
-			segment:       withoutField(spooledSegment("seg", validMetadata), "uri"),
-			expectedError: "missing or invalid 'uri' field in spooled segment at index 0",
+			name:    "MissingUri",
+			segment: withoutField(spooledSegment("seg", validMetadata), "uri"),
+			wantErr: "missing or invalid 'uri' field in spooled segment at index 0",
 		},
 		{
-			name:          "MissingUriAck",
-			segment:       withoutField(spooledSegment("seg", validMetadata), "ackUri"),
-			expectedError: "missing or invalid 'ackUri' field in spooled segment at index 0",
+			name:    "MissingUriAck",
+			segment: withoutField(spooledSegment("seg", validMetadata), "ackUri"),
+			wantErr: "missing or invalid 'ackUri' field in spooled segment at index 0",
 		},
 		{
 			name: "wrongHeadersFormat",
@@ -329,7 +320,7 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 				{"x-amz-server-side-encryption-customer-algorithm", "AES256"},
 				{"x-amz-server-side-encryption-customer-key", "key"},
 			}),
-			expectedError: "invalid 'headers' field in spooled segment at index 0: expected map[string]interface{}",
+			wantErr: "invalid 'headers' field in spooled segment at index 0: expected map[string]interface{}",
 		},
 		{
 			name: "HeadersWithMultipleValues",
@@ -338,7 +329,7 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 				"x-amz-server-side-encryption-customer-key":       []any{"key"},
 				"x-amz-server-side-encryption-customer-key-md5":   []any{"md5", "md5"}, // wrong, more then one
 			}),
-			expectedError: "multiple values for header x-amz-server-side-encryption-customer-key-md5",
+			wantErr: "multiple values for header x-amz-server-side-encryption-customer-key-md5",
 		},
 		{
 			name: "HeaderValueWrongType",
@@ -347,25 +338,25 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 				"x-amz-server-side-encryption-customer-key":       []any{"key"},
 				"x-amz-server-side-encryption-customer-key-md5":   []any{123}, // Wrong type: integer instead of string
 			}),
-			expectedError: "unsupported header value type json.Number",
+			wantErr: "unsupported header value type json.Number",
 		},
 		{
 			name: "HeaderTypeInvalid",
 			segment: withField(spooledSegment("seg", validMetadata), "headers", map[string]any{
 				"x-amz-server-side-encryption-customer-algorithm": "AES256", // Invalid type: string instead of []interface{}
 			}),
-			expectedError: "unsupported header type string",
+			wantErr: "unsupported header type string",
 		},
 		{
 			name:                          "ErrorDownloadingSegment",
 			segment:                       spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 11}),
-			expectedError:                 "trino: query failed (500 Internal Server Error):",
+			wantErr:                       "trino: query failed (500 Internal Server Error):",
 			downloadedData:                mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 			downloadedDataStatusCodeError: true,
 		},
 	}
 
-	for _, tc := range testcases {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fc := newFakeCoordinator(t)
 			fc.respond(statementPage(), spooledPage("json+zstd", tc.segment))
@@ -379,7 +370,7 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
-			defer rows.Close()
+			t.Cleanup(func() { require.NoError(t, rows.Close()) })
 
 			for rows.Next() {
 				// force segment processing
@@ -387,30 +378,30 @@ func TestSpoolingProtocolSpooledSegmentErrorHandling(t *testing.T) {
 
 			err = rows.Err()
 			require.Error(t, err)
-			require.Contains(t, err.Error(), tc.expectedError)
+			require.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
 }
 
 func TestSpoolingProtocolInlineSegmentErrorHandling(t *testing.T) {
-	testcases := []struct {
-		name          string
-		segment       map[string]any
-		expectedError string
+	cases := []struct {
+		name    string
+		segment map[string]any
+		wantErr string
 	}{
 		{
-			name:          "WrongUncompressSize",
-			segment:       inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 1, "rowOffset": 2, "segmentSize": 29}),
-			expectedError: "failed to decode spooled segment at index 0: decompressed size mismatch: expected 1 bytes, got 16 bytes",
+			name:    "WrongUncompressSize",
+			segment: inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 1, "rowOffset": 2, "segmentSize": 29}),
+			wantErr: "failed to decode spooled segment at index 0: decompressed size mismatch: expected 1 bytes, got 16 bytes",
 		},
 		{
-			name:          "WrongCompresSize",
-			segment:       inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 1}),
-			expectedError: "failed to decode spooled segment at index 0: segment size mismatch: expected 1 bytes, got 29 bytes",
+			name:    "WrongCompresSize",
+			segment: inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 16, "rowOffset": 2, "segmentSize": 1}),
+			wantErr: "failed to decode spooled segment at index 0: segment size mismatch: expected 1 bytes, got 29 bytes",
 		},
 	}
 
-	for _, tc := range testcases {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fc := newFakeCoordinator(t)
 			fc.respond(statementPage(), spooledPage("json+zstd", tc.segment))
@@ -425,7 +416,7 @@ func TestSpoolingProtocolInlineSegmentErrorHandling(t *testing.T) {
 
 			err = rows.Err()
 			require.Error(t, err)
-			require.Contains(t, err.Error(), tc.expectedError)
+			require.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
 }
@@ -515,7 +506,7 @@ func TestHeartbeat(t *testing.T) {
 
 			rows, err := db.Query("SELECT 1")
 			require.NoError(t, err)
-			defer rows.Close()
+			t.Cleanup(func() { require.NoError(t, rows.Close()) })
 
 			results := collectInts(t, rows)
 			require.NoError(t, rows.Err())

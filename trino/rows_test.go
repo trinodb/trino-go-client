@@ -82,36 +82,29 @@ func TestFetchNoStackOverflow(t *testing.T) {
 }
 
 func TestProtocolErrorHandling(t *testing.T) {
-	testcases := []struct {
-		name          string
-		data          interface{}
-		expectedError string
+	cases := []struct {
+		name    string
+		data    interface{}
+		wantErr string
 	}{
 		{
-			name: "DirectProtocolInvalidRowType",
-			data: []interface{}{
-				123,
-			},
-			expectedError: "unexpected data type for row at index 0: expected []interface{}, got json.Number",
+			name:    "direct protocol invalid row type",
+			data:    []interface{}{123},
+			wantErr: "unexpected data type for row at index 0: expected []interface{}, got json.Number",
 		},
 		{
-			name: "SpoolingProtocolMissingEncoding",
-			data: map[string]interface{}{
-				"segments": []interface{}{}, // Missing "encoding" field
-			},
-			expectedError: "invalid or missing 'encoding' field on spooling protocol, expected string",
+			name:    "spooling protocol missing encoding",
+			data:    map[string]interface{}{"segments": []interface{}{}},
+			wantErr: "invalid or missing 'encoding' field on spooling protocol, expected string",
 		},
 		{
-			name: "SpoolingProtocolInvalidSegmentsType",
-			data: map[string]interface{}{
-				"encoding": "json",
-				"segments": "invalid", // Invalid type for "segments"
-			},
-			expectedError: "nvalid or missing 'segments' field on spooling protocol, expected []interface{}",
+			name:    "spooling protocol invalid segments type",
+			data:    map[string]interface{}{"encoding": "json", "segments": "invalid"},
+			wantErr: "nvalid or missing 'segments' field on spooling protocol, expected []interface{}",
 		},
 	}
 
-	for _, tc := range testcases {
+	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			fc := newFakeCoordinator(t)
 			fc.respond(statementPage(), resultPage(tc.data))
@@ -119,7 +112,7 @@ func TestProtocolErrorHandling(t *testing.T) {
 
 			_, err := db.Query("SELECT 1")
 			require.Error(t, err)
-			require.Contains(t, err.Error(), tc.expectedError)
+			require.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
 }
