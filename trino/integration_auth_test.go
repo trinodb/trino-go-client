@@ -34,7 +34,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		{
 			name: "Valid hive admin role via Config",
 			config: Config{
-				ServerURI: *integrationServerFlag,
+				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"hive": "admin"},
 			},
 			query:       "SHOW ROLES FROM hive",
@@ -54,7 +54,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		},
 		{
 			config: Config{
-				ServerURI: *integrationServerFlag,
+				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"tpch": "NONE", "memory": "ALL"},
 			},
 			query:       "SELECT 1",
@@ -63,7 +63,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		{
 			name: "Valid special roles via Config",
 			config: Config{
-				ServerURI: *integrationServerFlag,
+				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"tpch": "NONE", "memory": "ALL"},
 			},
 			query:       "SELECT 1",
@@ -71,7 +71,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		},
 		{
 			name:        "Valid hive admin role via DSN, not encoded url",
-			rawDSN:      *integrationServerFlag + "?roles=hive:admin",
+			rawDSN:      integrationDSN(t) + "?roles=hive:admin",
 			query:       "SHOW ROLES FROM hive",
 			expectError: false,
 			validateRows: func(t *testing.T, rows *sql.Rows) {
@@ -89,7 +89,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		},
 		{
 			name:        "Valid roles via DSN, url encoded",
-			rawDSN:      *integrationServerFlag + "?roles=hive:admin",
+			rawDSN:      integrationDSN(t) + "?roles=hive:admin",
 			query:       "SHOW ROLES FROM hive",
 			expectError: false,
 			validateRows: func(t *testing.T, rows *sql.Rows) {
@@ -108,7 +108,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		{
 			name: "No role - should fail to show roles",
 			config: Config{
-				ServerURI: *integrationServerFlag,
+				ServerURI: integrationDSN(t),
 			},
 			query:       "SHOW ROLES FROM hive",
 			expectError: true,
@@ -117,7 +117,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		{
 			name: "Wrong role - should fail to show roles",
 			config: Config{
-				ServerURI: *integrationServerFlag,
+				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"hive": "ALL"},
 			},
 			query:       "SHOW ROLES FROM hive",
@@ -127,7 +127,7 @@ func TestRoleHeaderSupport(t *testing.T) {
 		{
 			name: "Non-existent catalog role",
 			config: Config{
-				ServerURI: *integrationServerFlag,
+				ServerURI: integrationDSN(t),
 				Roles:     map[string]string{"not-exist-catalog": "role1"},
 			},
 			query:       "SELECT 1",
@@ -149,7 +149,6 @@ func TestRoleHeaderSupport(t *testing.T) {
 			}
 
 			db := integrationOpen(t, dns)
-			defer db.Close()
 
 			rows, err := db.Query(tt.query)
 
@@ -181,7 +180,6 @@ func TestIntegrationAccessToken(t *testing.T) {
 
 	db := integrationOpen(t, dsn)
 
-	defer db.Close()
 	rows, err := db.Query("SHOW CATALOGS")
 	require.NoError(t, err)
 	defer rows.Close()
@@ -228,8 +226,6 @@ func TestIntegrationTLS(t *testing.T) {
 
 	dsn := tlsServer
 	db := integrationOpen(t, dsn)
-
-	defer db.Close()
 	row := db.QueryRow("SELECT 1")
 	var count int
 	require.NoError(t, row.Scan(&count))
@@ -259,9 +255,8 @@ func TestDsnClientTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dsn := *integrationServerFlag + tt.dsnSuffix
+			dsn := integrationDSN(t) + tt.dsnSuffix
 			db := integrationOpen(t, dsn)
-			defer db.Close()
 
 			query := "SELECT 1"
 			rows, err := db.Query(query)
@@ -318,9 +313,8 @@ func TestParametersClientTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dsn := *integrationServerFlag + tt.dsnSuffix
+			dsn := integrationDSN(t) + tt.dsnSuffix
 			db := integrationOpen(t, dsn)
-			defer db.Close()
 
 			query := "SELECT 1"
 			rows, err := db.Query(query, sql.Named(trinoTagsHeader, tt.Tags))

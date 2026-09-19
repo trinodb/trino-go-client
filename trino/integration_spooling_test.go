@@ -15,7 +15,6 @@ func TestSpoolingWorkersHigherThenAllowedOutOfOrderSegments(t *testing.T) {
 		t.Skip("Skipping test when spooling protocol is not supported.")
 	}
 	db := integrationOpen(t)
-	defer db.Close()
 
 	expectedError := "spooling worker cannot be greater than max out of order segments allowed. spooling workers: 2, allowed out of order segments: 1"
 	_, err := db.Query("SELECT 1",
@@ -29,7 +28,7 @@ func TestSpoolingWorkersHigherThenAllowedOutOfOrderSegments(t *testing.T) {
 func TestIntegrationTypeConversionSpoolingProtocolInlineJsonEncoder(t *testing.T) {
 	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
 	require.NoError(t, err)
-	dsn := *integrationServerFlag
+	dsn := integrationDSN(t)
 	dsn += "?custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
 	var (
@@ -136,7 +135,6 @@ func TestIntegrationSelectTpchSpoolingSegments(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			db := integrationOpen(t)
-			defer db.Close()
 
 			rows, err := db.Query(tt.query, sql.Named(trinoEncoding, tt.encoding))
 			require.NoError(t, err, "Query failed")
@@ -170,7 +168,6 @@ func TestSpoolingIntegrationOrderedResults(t *testing.T) {
 		t.Skip("Skipping test when spooling protocol is not supported.")
 	}
 	db := integrationOpen(t)
-	defer db.Close()
 
 	query := `
 		SELECT *

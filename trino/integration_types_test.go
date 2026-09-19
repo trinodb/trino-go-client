@@ -17,7 +17,7 @@ import (
 func TestIntegrationTypeConversion(t *testing.T) {
 	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
 	require.NoError(t, err)
-	dsn := *integrationServerFlag
+	dsn := integrationDSN(t)
 	dsn += "?custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
 	var (
@@ -127,7 +127,7 @@ func TestComplexTypes(t *testing.T) {
 	// a list of a `json.Number(1)` and a base64-encoded string.
 	t.Skip("skipping failing test")
 
-	dsn := *integrationServerFlag
+	dsn := integrationDSN(t)
 	db := integrationOpen(t, dsn)
 
 	for _, tt := range []struct {
@@ -167,7 +167,7 @@ func TestComplexTypes(t *testing.T) {
 }
 
 func TestIntegrationArgsConversion(t *testing.T) {
-	dsn := *integrationServerFlag
+	dsn := integrationDSN(t)
 	db := integrationOpen(t, dsn)
 	value := 0
 	err := db.QueryRow(`
@@ -210,7 +210,6 @@ func TestIntegrationArgsConversion(t *testing.T) {
 
 func TestIntegrationIntervalArgs(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 	for _, tc := range []struct {
 		arg     time.Duration
 		literal string
@@ -229,7 +228,6 @@ func TestIntegrationIntervalArgs(t *testing.T) {
 
 func TestIntegrationTimeTzArgs(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 	for _, tc := range []struct {
 		arg     trinoTimeTz
 		literal string
@@ -246,15 +244,14 @@ func TestIntegrationTimeTzArgs(t *testing.T) {
 }
 
 func TestIntegrationNumericArgs(t *testing.T) {
-	dsns := []string{*integrationServerFlag}
+	dsns := []string{integrationDSN(t)}
 	// EXECUTE IMMEDIATE, used when explicit prepare is disabled, needs Trino 418 or later.
 	version, err := strconv.Atoi(*trinoImageTagFlag)
 	if (err != nil && *trinoImageTagFlag == "latest") || (err == nil && version >= 418) {
-		dsns = append(dsns, *integrationServerFlag+"?explicitPrepare=false")
+		dsns = append(dsns, integrationDSN(t)+"?explicitPrepare=false")
 	}
 	for _, dsn := range dsns {
 		db := integrationOpen(t, dsn)
-		defer db.Close()
 
 		for _, tc := range []struct {
 			arg     Numeric
@@ -284,7 +281,6 @@ func TestIntgrationNumberType(t *testing.T) {
 	}
 
 	db := integrationOpen(t)
-	defer db.Close()
 
 	rows, err := db.Query("SELECT NUMBER '3.14159' AS num, NUMBER 'NaN' as nan_val, CAST(NULL AS NUMBER) as null_num")
 	require.NoError(t, err)
@@ -310,7 +306,6 @@ func TestIntgrationNumberType(t *testing.T) {
 
 func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
 	db := integrationOpen(t)
-	defer db.Close()
 	tests := []struct {
 		name    string
 		arg     time.Duration
@@ -435,19 +430,14 @@ func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
 
 func TestQueryColumns(t *testing.T) {
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
+	db := integrationOpen(t, dsn)
 
 	rows, err := db.Query(`SELECT
   true AS bool,
@@ -853,19 +843,14 @@ func TestQueryColumns(t *testing.T) {
 
 func TestMaxGoPrecisionDateTime(t *testing.T) {
 	c := &Config{
-		ServerURI:         *integrationServerFlag,
+		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
 	}
 
 	dsn, err := c.FormatDSN()
 	require.NoError(t, err)
 
-	db, err := sql.Open("trino", dsn)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
+	db := integrationOpen(t, dsn)
 
 	rows, err := db.Query(`SELECT
   cast(current_time as time(9)) AS timep,
