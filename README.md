@@ -500,11 +500,15 @@ Apache License V2.0, as described in the [LICENSE](./LICENSE) file.
 
 ## Build
 
-You can build the client code locally and run tests with the following command:
+You can build the client code locally and run the unit tests, which need no
+server, with the following command:
 
 ```
-go test -v -race -timeout 2m ./...
+go test -short -v -race ./...
 ```
+
+Without `-short` the integration tests also run, starting Trino in Docker.
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for the available flags.
 
 ## Contributing
 
