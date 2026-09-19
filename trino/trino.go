@@ -1643,7 +1643,12 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 	//acknowledge the segment read
 	go func() {
 		// TODO: handle ack erros
-		ackReq, err := http.NewRequestWithContext(sf.ctx, "GET", sf.spooledMetadata.ackUri, nil)
+		// The download workers are stopped as soon as the last row is
+		// consumed, which can be before this goroutine runs; the
+		// acknowledgement must outlive them.
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(sf.ctx), DefaultCancelQueryTimeout)
+		defer cancel()
+		ackReq, err := http.NewRequestWithContext(ctx, "GET", sf.spooledMetadata.ackUri, nil)
 		if err != nil {
 			return
 		}
