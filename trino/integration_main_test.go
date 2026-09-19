@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"strconv"
 	"testing"
@@ -65,13 +66,21 @@ var (
 		false,
 		"do not delete containers on exit",
 	)
+	// tlsServer is the DSN of the HTTPS endpoint, using a client that trusts
+	// the certificate generated for the container; empty without Docker.
 	tlsServer = ""
+)
+
+const (
+	uncompressedClient = "uncompressed"
+	tlsClient          = "integration-tls"
 )
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-	DefaultQueryTimeout = *integrationServerQueryTimeout
-	DefaultCancelQueryTimeout = *integrationServerQueryTimeout
+	if err := RegisterCustomClient(uncompressedClient, &http.Client{Transport: &http.Transport{DisableCompression: true}}); err != nil {
+		log.Fatalf("Could not register the %s client: %s", uncompressedClient, err)
+	}
 	if *trinoImageTagFlag == "" {
 		*trinoImageTagFlag = "latest"
 	}
@@ -172,12 +181,15 @@ func TestMain(m *testing.M) {
 		}
 
 		*integrationServerFlag = "http://test@localhost:" + trinoContainer.GetPort("8080/tcp")
-		tlsServer = "https://admin:admin@localhost:" + trinoContainer.GetPort("8443/tcp")
 
-		http.DefaultTransport.(*http.Transport).TLSClientConfig, err = getTLSConfig(wd + "/etc/secrets")
+		tlsConfig, err := getTLSConfig(wd + "/etc/secrets")
 		if err != nil {
-			setupFatal(ctx, "Failed to set the default TLS config: %s", err)
+			setupFatal(ctx, "Failed to load the TLS config: %s", err)
 		}
+		if err := RegisterCustomClient(tlsClient, &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}); err != nil {
+			setupFatal(ctx, "Could not register the %s client: %s", tlsClient, err)
+		}
+		tlsServer = "https://admin:admin@localhost:" + trinoContainer.GetPort("8443/tcp") + "?custom_client=" + tlsClient
 	}
 
 	code := m.Run()
@@ -498,17 +510,31 @@ func integrationDSN(t testing.TB) string {
 }
 
 // integrationOpen opens a connection to the integration test server, or to
-// dsn when given, and closes it when the test ends.
+// dsn when given, and closes it when the test ends. Queries time out after
+// -trino_query_timeout unless the DSN sets its own query_timeout.
 func integrationOpen(t testing.TB, dsn ...string) *sql.DB {
 	t.Helper()
 	target := integrationDSN(t)
 	if len(dsn) > 0 {
 		target = dsn[0]
 	}
-	db, err := sql.Open("trino", target)
+	db, err := sql.Open("trino", withQueryTimeout(t, target))
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	return db
+}
+
+func withQueryTimeout(t testing.TB, dsn string) string {
+	t.Helper()
+	parsed, err := url.Parse(dsn)
+	require.NoError(t, err, "invalid DSN %q", dsn)
+	query := parsed.Query()
+	if query.Get("query_timeout") != "" {
+		return dsn
+	}
+	query.Set("query_timeout", integrationServerQueryTimeout.String())
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func contextSleep(ctx context.Context, d time.Duration) error {

@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"math"
-	"net/http"
 	"reflect"
 	"strconv"
 	"testing"
@@ -15,11 +14,7 @@ import (
 )
 
 func TestIntegrationTypeConversion(t *testing.T) {
-	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
-	require.NoError(t, err)
-	dsn := integrationDSN(t)
-	dsn += "?custom_client=uncompressed"
-	db := integrationOpen(t, dsn)
+	db := integrationOpen(t, integrationDSN(t)+"?custom_client="+uncompressedClient)
 	for _, protocol := range queryProtocols() {
 		t.Run(protocol.name, func(t *testing.T) {
 			testIntegrationTypeConversion(t, db, protocol.args...)

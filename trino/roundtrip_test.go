@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -16,6 +15,7 @@ import (
 )
 
 func TestRoundTripRetryQueryError(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		status int
@@ -65,10 +65,10 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 }
 
 func TestRoundTripBogusData(t *testing.T) {
-	count := 0
+	t.Parallel()
+	var requests atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if count == 0 {
-			count++
+		if requests.Add(1) == 1 {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
@@ -93,6 +93,7 @@ func TestRoundTripBogusData(t *testing.T) {
 }
 
 func TestRoundTripCancellation(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}))
@@ -114,6 +115,7 @@ func TestRoundTripCancellation(t *testing.T) {
 }
 
 func TestTokenAuth(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer token" {
 			w.WriteHeader(http.StatusUnauthorized)
@@ -134,6 +136,7 @@ func TestTokenAuth(t *testing.T) {
 }
 
 func TestRoleHeader(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name          string
 		roles         map[string]string
@@ -181,6 +184,7 @@ func TestRoleHeader(t *testing.T) {
 }
 
 func TestQueryFailure(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -199,46 +203,33 @@ func TestQueryFailure(t *testing.T) {
 }
 
 func TestForwardAuthorizationHeader(t *testing.T) {
-	var captureAuthHeader string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Capture the Authorization header for later inspection
-		captureAuthHeader = r.Header.Get("Authorization")
-	}))
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(resultPage([][]any{{1}}))
+	db := fc.open(t, "?forwardAuthorizationHeader=true")
 
-	t.Cleanup(ts.Close)
-
-	db, err := sql.Open("trino", ts.URL+"?forwardAuthorizationHeader=true")
+	rows, err := db.Query("SELECT 1", sql.Named("accessToken", "token"))
 	require.NoError(t, err)
+	require.NoError(t, rows.Close())
 
-	_, _ = db.Query("SELECT 1", sql.Named("accessToken", string("token"))) // Ingore response to focus on header capture
-	require.Equal(t, "Bearer token", captureAuthHeader, "Authorization header is incorrect")
-
-	assert.NoError(t, db.Close())
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 1)
+	assert.Equal(t, "Bearer token", requests[0].header.Get("Authorization"), "Authorization header")
 }
 
 func TestForwardAuthorizationHeaderDisabled(t *testing.T) {
-	var capturedQuery string
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		require.NoError(t, err)
-		capturedQuery = string(body)
-	}))
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "")
 
-	t.Cleanup(ts.Close)
+	_, err := db.Query("SELECT ?", sql.Named("accessToken", "token"))
 
-	db, err := sql.Open("trino", ts.URL)
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
-
-	_, err = db.Query("SELECT ?", sql.Named("accessToken", "token"))
 	assert.ErrorIs(t, err, ErrForwardAuthorizationHeaderNotEnabled)
-	assert.NotContains(t, capturedQuery, "token", "the access token must never reach the query text")
+	assert.Empty(t, fc.capturedRequests(), "the access token must never reach the server")
 }
 
 func TestForwardAuthorizationHeaderNonStringToken(t *testing.T) {
+	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	t.Cleanup(ts.Close)
 
@@ -254,6 +245,7 @@ func TestForwardAuthorizationHeaderNonStringToken(t *testing.T) {
 }
 
 func TestQueryTimeoutDeadline(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		queryTimeout string
