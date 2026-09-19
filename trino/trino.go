@@ -176,6 +176,10 @@ const (
 	defaultHeartbeatInterval       = 30 * time.Second
 )
 
+// segmentDownloadInitialDelay is the wait before the first retry of a spooled
+// segment download; each further retry waits phi times longer.
+var segmentDownloadInitialDelay = 200 * time.Millisecond
+
 var (
 	responseToRequestHeaderMap = map[string]string{
 		trinoSetSchemaHeader:  trinoSchemaHeader,
@@ -1529,7 +1533,7 @@ type SegmentFetcher struct {
 }
 
 func (sf *SegmentFetcher) roundTrip(req *http.Request) (*http.Response, error) {
-	delay := 200 * time.Millisecond
+	delay := segmentDownloadInitialDelay
 	const maxRetries = 5
 
 	retries := 0
