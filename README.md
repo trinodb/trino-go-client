@@ -338,6 +338,41 @@ dsn, err := config.FormatDSN()
 ```go
 rows, err := db.Query(query, sql.Named("X-Trino-Client-Tags", "tag1,tag2,tag3"))
 ```
+
+##### `trace_token`
+
+```
+Type:           string
+Valid values:   any string
+Default:        empty
+```
+
+The `trace_token` parameter is sent as the `X-Trino-Trace-Token` header and is
+recorded by the coordinator, so queries made through the connection can be
+correlated with the server logs and event listeners.
+
+##### `client_info`
+
+```
+Type:           string
+Valid values:   any string
+Default:        empty
+```
+
+The `client_info` parameter is sent as the `X-Trino-Client-Info` header. It is
+free-form metadata about the client, shown in the Trino web UI and passed to
+event listeners.
+
+##### `language`
+
+```
+Type:           string
+Valid values:   a language tag, e.g. en-US
+Default:        empty (the server default)
+```
+
+The `language` parameter is sent as the `X-Trino-Language` header and selects
+the locale used by locale-sensitive functions.
 =======
 
 #### `roles`

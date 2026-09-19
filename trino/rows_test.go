@@ -149,6 +149,24 @@ func TestSetRoleHeader(t *testing.T) {
 	assert.Equal(t, "catalog=NONE,hive=ROLE%7Badmin%7D,iceberg=ROLE%7Bwriter%7D", requests[3].header.Get(trinoRoleHeader), "every Set-Role value should be applied and roles of other catalogs kept")
 }
 
+func TestClientMetadataHeaders(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	db := fc.open(t, "?trace_token=trace-123&client_info=batch+job&language=en-US")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+	require.NoError(t, rows.Err())
+
+	for _, request := range fc.capturedRequests() {
+		assert.Equal(t, "trace-123", request.header.Get(trinoTraceTokenHeader), "%s %s", request.method, request.path)
+		assert.Equal(t, "batch job", request.header.Get(trinoClientInfoHeader), "%s %s", request.method, request.path)
+		assert.Equal(t, "en-US", request.header.Get(trinoLanguageHeader), "%s %s", request.method, request.path)
+	}
+}
+
 func TestExtraCredentialsSentOnlyWithTheStatement(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
