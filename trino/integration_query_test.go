@@ -598,3 +598,46 @@ func uniqueTable(t testing.TB, db *sql.DB, schema string) string {
 	})
 	return table
 }
+
+// The memory connector cannot update or delete rows, so this runs against an
+// Iceberg catalog backed by the container's local file system.
+func TestIntegrationUpdateDelete(t *testing.T) {
+	requireServerVersion(t, 458)
+	db := integrationOpen(t)
+	_, err := db.Exec("CREATE SCHEMA IF NOT EXISTS iceberg.tests")
+	require.NoError(t, err, "Failed creating the schema")
+	table := uniqueTable(t, db, "iceberg.tests")
+	_, err = db.Exec("CREATE TABLE " + table + " (id INTEGER, name VARCHAR)")
+	require.NoError(t, err, "Failed creating the table")
+
+	result, err := db.Exec("INSERT INTO "+table+" VALUES (?, ?), (?, ?), (?, ?)", 1, "one", 2, "two", 3, "three")
+	require.NoError(t, err, "Failed inserting")
+	inserted, err := result.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(3), inserted, "rows inserted")
+
+	result, err = db.Exec("UPDATE "+table+" SET name = ? WHERE id = ?", "updated", 2)
+	require.NoError(t, err, "Failed updating")
+	updated, err := result.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), updated, "rows updated")
+
+	result, err = db.Exec("DELETE FROM "+table+" WHERE id = ?", 3)
+	require.NoError(t, err, "Failed deleting")
+	deleted, err := result.RowsAffected()
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), deleted, "rows deleted")
+
+	rows, err := db.Query("SELECT id, name FROM " + table + " ORDER BY id")
+	require.NoError(t, err)
+	defer rows.Close()
+	var remaining []string
+	for rows.Next() {
+		var id int
+		var name string
+		require.NoError(t, rows.Scan(&id, &name))
+		remaining = append(remaining, fmt.Sprintf("%d=%s", id, name))
+	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, []string{"1=one", "2=updated"}, remaining)
+}
