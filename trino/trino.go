@@ -2729,7 +2729,7 @@ func (qr *driverRows) initColumns(qresp *queryResponse) error {
 			return fmt.Errorf("error decoding column type signature: %w", err)
 		}
 		qr.columns[i] = col.Name
-		qr.coltype[i], err = newTypeConverter(col.Type, col.TypeSignature)
+		qr.coltype[i], err = newTypeConverter(col.Type, col.TypeSignature, time.Local)
 		if err != nil {
 			return err
 		}
@@ -2771,6 +2771,7 @@ type typeConverter struct {
 	precision  optionalInt64
 	scale      optionalInt64
 	size       optionalInt64
+	location   *time.Location
 }
 
 type optionalInt64 struct {
@@ -2782,10 +2783,13 @@ func newOptionalInt64(value int64) optionalInt64 {
 	return optionalInt64{value: value, hasValue: true}
 }
 
-func newTypeConverter(typeName string, signature typeSignature) (*typeConverter, error) {
+// newTypeConverter builds a converter for one result column. Values without
+// a time zone are interpreted in location.
+func newTypeConverter(typeName string, signature typeSignature, location *time.Location) (*typeConverter, error) {
 	result := &typeConverter{
 		typeName:   typeName,
 		parsedType: getNestedTypes([]string{}, signature),
+		location:   location,
 	}
 	var err error
 	result.scanType, err = getScanType(result.parsedType)
@@ -2955,7 +2959,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 		}
 		return vv.Float64, err
 	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
-		vv, err := scanNullTime(v)
+		vv, err := scanNullTime(v, c.location)
 		if !vv.Valid {
 			return nil, err
 		}
@@ -3465,7 +3469,9 @@ var timeLayoutsTZ = []string{
 	"2006-01-02 15:04:05.999999999 -07:00",
 }
 
-func scanNullTime(v interface{}) (NullTime, error) {
+// scanNullTime parses a Trino date, time or timestamp string. Values that
+// carry their own zone keep it; the others are interpreted in location.
+func scanNullTime(v interface{}, location *time.Location) (NullTime, error) {
 	if v == nil {
 		return NullTime{}, nil
 	}
@@ -3490,14 +3496,14 @@ func scanNullTime(v interface{}) (NullTime, error) {
 		timestamp := vv[:i] + strings.Replace(vv[i:], "-", " -", 1)
 		return parseNullTimeWithLocation(timestamp)
 	}
-	return parseNullTime(vv)
+	return parseNullTime(vv, location)
 }
 
-func parseNullTime(v string) (NullTime, error) {
+func parseNullTime(v string, location *time.Location) (NullTime, error) {
 	var t time.Time
 	var err error
 	for _, layout := range timeLayouts {
-		t, err = time.ParseInLocation(layout, v, time.Local)
+		t, err = time.ParseInLocation(layout, v, location)
 		if err == nil {
 			return NullTime{Valid: true, Time: t}, nil
 		}
@@ -3562,9 +3568,12 @@ func (s *NullTime) Scan(value interface{}) error {
 }
 
 // NullSliceTime represents a slice of time.Time that may be null.
+// Elements without a time zone are interpreted in Location, or in time.Local
+// when Location is nil.
 type NullSliceTime struct {
 	SliceTime []NullTime
 	Valid     bool
+	Location  *time.Location
 }
 
 // Scan implements the sql.Scanner interface.
@@ -3579,7 +3588,7 @@ func (s *NullSliceTime) Scan(value interface{}) error {
 	}
 	slice := make([]NullTime, len(vs))
 	for i := range vs {
-		v, err := scanNullTime(vs[i])
+		v, err := scanNullTime(vs[i], s.location())
 		if err != nil {
 			return err
 		}
@@ -3590,10 +3599,20 @@ func (s *NullSliceTime) Scan(value interface{}) error {
 	return nil
 }
 
+func (s *NullSliceTime) location() *time.Location {
+	if s.Location == nil {
+		return time.Local
+	}
+	return s.Location
+}
+
 // NullSlice2Time represents a two-dimensional slice of time.Time that may be null.
+// Elements without a time zone are interpreted in Location, or in time.Local
+// when Location is nil.
 type NullSlice2Time struct {
 	Slice2Time [][]NullTime
 	Valid      bool
+	Location   *time.Location
 }
 
 // Scan implements the sql.Scanner interface.
@@ -3608,7 +3627,7 @@ func (s *NullSlice2Time) Scan(value interface{}) error {
 	}
 	slice := make([][]NullTime, len(vs))
 	for i := range vs {
-		var ss NullSliceTime
+		ss := NullSliceTime{Location: s.Location}
 		if err := ss.Scan(vs[i]); err != nil {
 			return err
 		}
@@ -3620,9 +3639,12 @@ func (s *NullSlice2Time) Scan(value interface{}) error {
 }
 
 // NullSlice3Time represents a three-dimensional slice of time.Time that may be null.
+// Elements without a time zone are interpreted in Location, or in time.Local
+// when Location is nil.
 type NullSlice3Time struct {
 	Slice3Time [][][]NullTime
 	Valid      bool
+	Location   *time.Location
 }
 
 // Scan implements the sql.Scanner interface.
@@ -3637,7 +3659,7 @@ func (s *NullSlice3Time) Scan(value interface{}) error {
 	}
 	slice := make([][][]NullTime, len(vs))
 	for i := range vs {
-		var ss NullSlice2Time
+		ss := NullSlice2Time{Location: s.Location}
 		if err := ss.Scan(vs[i]); err != nil {
 			return err
 		}
