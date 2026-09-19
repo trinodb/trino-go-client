@@ -124,6 +124,41 @@ db.Query("SELECT * FROM foobar WHERE id=?", 1, sql.Named("X-Trino-User", string(
 The position of the X-Trino-User NamedArg is irrelevant and does not affect the
 query in any way.
 
+#### Query id and progress
+
+`database/sql` has no way to expose the Trino query id or the statistics the
+coordinator reports while a query runs. The driver makes them available through
+a callback passed as a pair of
+[NamedArg](https://godoc.org/database/sql#NamedArg) query parameters:
+
+* `X-Trino-Progress-Callback` - a value implementing the `trino.ProgressUpdater`
+  interface
+* `X-Trino-Progress-Callback-Period` - a `time.Duration` limiting how often the
+  callback is invoked while the query state does not change
+
+Both must be set together. The callback receives a `trino.QueryProgressInfo`
+with the `QueryId` and the current query statistics. It is invoked when the
+query is submitted, when a result page is received, and once more when the
+query finishes.
+
+Example:
+
+```go
+type queryLogger struct{}
+
+func (queryLogger) Update(info trino.QueryProgressInfo) {
+    log.Printf("query %s is %s, %.0f%% done", info.QueryId, info.QueryStats.State, info.QueryStats.ProgressPercentage)
+}
+
+rows, err := db.Query("SELECT * FROM foobar",
+    sql.Named("X-Trino-Progress-Callback", queryLogger{}),
+    sql.Named("X-Trino-Progress-Callback-Period", time.Second),
+)
+```
+
+Like `X-Trino-User`, these parameters are consumed by the driver and are not
+passed to the query.
+
 ### DSN (Data Source Name)
 
 The Data Source Name is a URL with a mandatory username, and optional query
