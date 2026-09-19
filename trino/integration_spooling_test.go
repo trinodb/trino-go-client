@@ -5,6 +5,9 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSpoolingWorkersHigherThenAllowedOutOfOrderSegments(t *testing.T) {
@@ -20,16 +23,12 @@ func TestSpoolingWorkersHigherThenAllowedOutOfOrderSegments(t *testing.T) {
 		sql.Named(trinoSpoolingWorkerCount, "2"),
 		sql.Named(trinoMaxOutOfOrdersSegments, "1"))
 
-	if err == nil || err.Error() != expectedError {
-		t.Fatal("unexpected error:", err)
-	}
+	require.EqualError(t, err, expectedError)
 }
 
 func TestIntegrationTypeConversionSpoolingProtocolInlineJsonEncoder(t *testing.T) {
 	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	dsn := *integrationServerFlag
 	dsn += "?custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
@@ -87,9 +86,7 @@ func TestIntegrationTypeConversionSpoolingProtocolInlineJsonEncoder(t *testing.T
 		&nullMap,
 		&goRow,
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 }
 
 func TestIntegrationSelectTpchSpoolingSegments(t *testing.T) {
@@ -142,9 +139,7 @@ func TestIntegrationSelectTpchSpoolingSegments(t *testing.T) {
 			defer db.Close()
 
 			rows, err := db.Query(tt.query, sql.Named(trinoEncoding, tt.encoding))
-			if err != nil {
-				t.Fatalf("Query failed: %v", err)
-			}
+			require.NoError(t, err, "Query failed")
 			defer rows.Close()
 
 			count := 0
@@ -161,18 +156,11 @@ func TestIntegrationSelectTpchSpoolingSegments(t *testing.T) {
 					&col.MktSegment,
 					&col.Comment,
 				)
-				if err != nil {
-					t.Fatalf("Row scan failed: %v", err)
-				}
+				require.NoError(t, err, "Row scan failed")
 			}
 
-			if rows.Err() != nil {
-				t.Fatalf("Rows iteration error: %v", rows.Err())
-			}
-
-			if count != tt.expected {
-				t.Fatalf("Expected %d rows, got %d", tt.expected, count)
-			}
+			require.NoError(t, rows.Err(), "Rows iteration error")
+			assert.Equal(t, tt.expected, count, "row count")
 		})
 	}
 }
@@ -194,9 +182,7 @@ func TestSpoolingIntegrationOrderedResults(t *testing.T) {
 	`
 
 	rows, err := db.Query(query, sql.Named(trinoEncoding, "json"))
-	if err != nil {
-		t.Fatalf("Query failed: %v", err)
-	}
+	require.NoError(t, err, "Query failed")
 	defer rows.Close()
 
 	expected := 1
@@ -204,21 +190,14 @@ func TestSpoolingIntegrationOrderedResults(t *testing.T) {
 
 	for rows.Next() {
 		err = rows.Scan(&actual)
-		if err != nil {
-			t.Fatalf("Row scan failed: %v", err)
-		}
+		require.NoError(t, err, "Row scan failed")
 
 		if actual != expected {
-			t.Fatalf("Unexpected number at position %d: got %d, expected %d", expected, actual, expected)
+			require.Failf(t, "Unexpected number", "at position %d: got %d, expected %d", expected, actual, expected)
 		}
 		expected++
 	}
 
-	if rows.Err() != nil {
-		t.Fatalf("Rows iteration error: %v", rows.Err())
-	}
-
-	if expected != 5_000_001 {
-		t.Fatalf("Expected 5,000,000 rows, got %d", expected-1)
-	}
+	require.NoError(t, rows.Err(), "Rows iteration error")
+	assert.Equal(t, 5_000_000, expected-1, "row count")
 }

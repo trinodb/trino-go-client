@@ -32,9 +32,7 @@ func TestIntegrationSelectQueryIterator(t *testing.T) {
 	db := integrationOpen(t)
 	defer db.Close()
 	rows, err := db.Query("SELECT * FROM system.runtime.nodes")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer rows.Close()
 	count := 0
 	for rows.Next() {
@@ -47,19 +45,11 @@ func TestIntegrationSelectQueryIterator(t *testing.T) {
 			&col.Coordinator,
 			&col.State,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if col.NodeID != "test" {
-			t.Errorf("Expected node_id == test but got %s", col.NodeID)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, "test", col.NodeID, "node_id")
 	}
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if count < 1 {
-		t.Error("no rows returned")
-	}
+	require.NoError(t, rows.Err())
+	assert.GreaterOrEqual(t, count, 1, "no rows returned")
 }
 
 func TestIntegrationSelectQueryNoResult(t *testing.T) {
@@ -74,9 +64,7 @@ func TestIntegrationSelectQueryNoResult(t *testing.T) {
 		&col.Coordinator,
 		&col.State,
 	)
-	if err == nil {
-		t.Fatalf("unexpected query returning data: %+v", col)
-	}
+	require.Error(t, err, "unexpected query returning data: %+v", col)
 }
 
 func TestIntegrationSelectFailedQuery(t *testing.T) {
@@ -85,16 +73,12 @@ func TestIntegrationSelectFailedQuery(t *testing.T) {
 	rows, err := db.Query("SELECT * FROM catalog.schema.do_not_exist")
 	if err == nil {
 		rows.Close()
-		t.Fatal("query to invalid catalog succeeded")
 	}
-	queryFailed, ok := err.(*ErrQueryFailed)
-	if !ok {
-		t.Fatal("unexpected error:", err)
-	}
-	trinoErr, ok := errors.Unwrap(queryFailed).(*ErrTrino)
-	if !ok {
-		t.Fatal("unexpected error:", trinoErr)
-	}
+	require.Error(t, err, "query to invalid catalog succeeded")
+	var queryFailed *ErrQueryFailed
+	require.ErrorAs(t, err, &queryFailed)
+	var trinoErr *ErrTrino
+	require.ErrorAs(t, err, &trinoErr)
 	expected := ErrTrino{
 		Message:   "line 1:15: Catalog 'catalog'",
 		SqlState:  "",
@@ -110,33 +94,14 @@ func TestIntegrationSelectFailedQuery(t *testing.T) {
 			Message: "line 1:15: Catalog 'catalog'",
 		},
 	}
-	if !strings.HasPrefix(trinoErr.Message, expected.Message) {
-		t.Fatalf("expected ErrTrino.Message to start with `%s`, got: %s", expected.Message, trinoErr.Message)
-	}
-	if trinoErr.SqlState != expected.SqlState {
-		t.Fatalf("expected ErrTrino.SqlState to be `%s`, got: %s", expected.SqlState, trinoErr.SqlState)
-	}
-	if trinoErr.ErrorCode != expected.ErrorCode {
-		t.Fatalf("expected ErrTrino.ErrorCode to be `%d`, got: %d", expected.ErrorCode, trinoErr.ErrorCode)
-	}
-	if trinoErr.ErrorName != expected.ErrorName {
-		t.Fatalf("expected ErrTrino.ErrorName to be `%s`, got: %s", expected.ErrorName, trinoErr.ErrorName)
-	}
-	if trinoErr.ErrorType != expected.ErrorType {
-		t.Fatalf("expected ErrTrino.ErrorType to be `%s`, got: %s", expected.ErrorType, trinoErr.ErrorType)
-	}
-	if trinoErr.ErrorLocation.LineNumber != expected.ErrorLocation.LineNumber {
-		t.Fatalf("expected ErrTrino.ErrorLocation.LineNumber to be `%d`, got: %d", expected.ErrorLocation.LineNumber, trinoErr.ErrorLocation.LineNumber)
-	}
-	if trinoErr.ErrorLocation.ColumnNumber != expected.ErrorLocation.ColumnNumber {
-		t.Fatalf("expected ErrTrino.ErrorLocation.ColumnNumber to be `%d`, got: %d", expected.ErrorLocation.ColumnNumber, trinoErr.ErrorLocation.ColumnNumber)
-	}
-	if trinoErr.FailureInfo.Type != expected.FailureInfo.Type {
-		t.Fatalf("expected ErrTrino.FailureInfo.Type to be `%s`, got: %s", expected.FailureInfo.Type, trinoErr.FailureInfo.Type)
-	}
-	if !strings.HasPrefix(trinoErr.FailureInfo.Message, expected.FailureInfo.Message) {
-		t.Fatalf("expected ErrTrino.FailureInfo.Message to start with `%s`, got: %s", expected.FailureInfo.Message, trinoErr.FailureInfo.Message)
-	}
+	assert.True(t, strings.HasPrefix(trinoErr.Message, expected.Message), "expected ErrTrino.Message to start with `%s`, got: %s", expected.Message, trinoErr.Message)
+	assert.Equal(t, expected.SqlState, trinoErr.SqlState, "ErrTrino.SqlState")
+	assert.Equal(t, expected.ErrorCode, trinoErr.ErrorCode, "ErrTrino.ErrorCode")
+	assert.Equal(t, expected.ErrorName, trinoErr.ErrorName, "ErrTrino.ErrorName")
+	assert.Equal(t, expected.ErrorType, trinoErr.ErrorType, "ErrTrino.ErrorType")
+	assert.Equal(t, expected.ErrorLocation, trinoErr.ErrorLocation, "ErrTrino.ErrorLocation")
+	assert.Equal(t, expected.FailureInfo.Type, trinoErr.FailureInfo.Type, "ErrTrino.FailureInfo.Type")
+	assert.True(t, strings.HasPrefix(trinoErr.FailureInfo.Message, expected.FailureInfo.Message), "expected ErrTrino.FailureInfo.Message to start with `%s`, got: %s", expected.FailureInfo.Message, trinoErr.FailureInfo.Message)
 }
 
 type tpchRow struct {
@@ -154,9 +119,7 @@ func TestIntegrationSelectTpch1000(t *testing.T) {
 	db := integrationOpen(t)
 	defer db.Close()
 	rows, err := db.Query("SELECT * FROM tpch.sf1.customer LIMIT 1000")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer rows.Close()
 	count := 0
 	for rows.Next() {
@@ -172,21 +135,10 @@ func TestIntegrationSelectTpch1000(t *testing.T) {
 			&col.MktSegment,
 			&col.Comment,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		/*
-			if col.CustKey == 1 && col.AcctBal != 711.56 {
-				t.Fatal("unexpected acctbal for custkey=1:", col.AcctBal)
-			}
-		*/
+		require.NoError(t, err)
 	}
-	if rows.Err() != nil {
-		t.Fatal(err)
-	}
-	if count != 1000 {
-		t.Fatal("not enough rows returned:", count)
-	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, 1000, count, "row count")
 }
 
 func TestIntegrationSelectCancelQuery(t *testing.T) {
@@ -196,37 +148,29 @@ func TestIntegrationSelectCancelQuery(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
 	defer cancel()
 	rows, err := db.QueryContext(ctx, "SELECT * FROM tpch.sf1.customer")
-	if err != nil {
-		goto handleErr
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var col tpchRow
-		err = rows.Scan(
-			&col.CustKey,
-			&col.Name,
-			&col.Address,
-			&col.NationKey,
-			&col.Phone,
-			&col.AcctBal,
-			&col.MktSegment,
-			&col.Comment,
-		)
-		if err != nil {
-			break
+	if err == nil {
+		defer rows.Close()
+		for rows.Next() {
+			var col tpchRow
+			err = rows.Scan(
+				&col.CustKey,
+				&col.Name,
+				&col.Address,
+				&col.NationKey,
+				&col.Phone,
+				&col.AcctBal,
+				&col.MktSegment,
+				&col.Comment,
+			)
+			if err != nil {
+				break
+			}
 		}
+		err = rows.Err()
+		require.Error(t, err, "unexpected query with deadline succeeded")
 	}
-	if err = rows.Err(); err == nil {
-		t.Fatal("unexpected query with deadline succeeded")
-	}
-handleErr:
 	errmsg := err.Error()
-	for _, msg := range []string{"cancel", "deadline"} {
-		if strings.Contains(errmsg, msg) {
-			return
-		}
-	}
-	t.Fatal("unexpected error:", err)
+	assert.True(t, strings.Contains(errmsg, "cancel") || strings.Contains(errmsg, "deadline"), "unexpected error: %v", err)
 }
 
 func TestIntegrationSessionProperties(t *testing.T) {
@@ -235,9 +179,7 @@ func TestIntegrationSessionProperties(t *testing.T) {
 	db := integrationOpen(t, dsn)
 	defer db.Close()
 	rows, err := db.Query("SHOW SESSION")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	for rows.Next() {
 		col := struct {
 			Name        string
@@ -253,33 +195,23 @@ func TestIntegrationSessionProperties(t *testing.T) {
 			&col.Type,
 			&col.Description,
 		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		switch {
-		case col.Name == "query_max_run_time" && col.Value != "10m":
-			t.Fatal("unexpected value for query_max_run_time:", col.Value)
-		case col.Name == "query_priority" && col.Value != "2":
-			t.Fatal("unexpected value for query_priority:", col.Value)
+		require.NoError(t, err)
+		switch col.Name {
+		case "query_max_run_time":
+			assert.Equal(t, "10m", col.Value, "query_max_run_time")
+		case "query_priority":
+			assert.Equal(t, "2", col.Value, "query_priority")
 		}
 	}
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, rows.Err())
 }
 
 func TestIntegrationNoResults(t *testing.T) {
 	db := integrationOpen(t)
 	rows, err := db.Query("SELECT 1 LIMIT 0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for rows.Next() {
-		t.Fatal(errors.New("Rows returned"))
-	}
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
+	require.False(t, rows.Next(), "Rows returned")
+	require.NoError(t, rows.Err())
 }
 
 func TestIntegrationQueryParametersSelect(t *testing.T) {
@@ -324,34 +256,19 @@ func TestIntegrationQueryParametersSelect(t *testing.T) {
 			defer db.Close()
 
 			rows, err := db.Query(scenario.query, scenario.args...)
-			if err != nil {
-				if scenario.expectedError == nil {
-					t.Errorf("Unexpected err: %s", err)
-					return
-				}
-				if err.Error() == scenario.expectedError.Error() {
-					return
-				}
-				t.Errorf("Expected err to be %s but got %s", scenario.expectedError, err)
-			}
-
 			if scenario.expectedError != nil {
-				t.Error("missing expected error")
+				require.EqualError(t, err, scenario.expectedError.Error())
 				return
 			}
-
+			require.NoError(t, err)
 			defer rows.Close()
 
 			var count int
 			for rows.Next() {
 				count++
 			}
-			if err = rows.Err(); err != nil {
-				t.Fatal(err)
-			}
-			if count != scenario.expectedRows {
-				t.Errorf("expecting %d rows, got %d", scenario.expectedRows, count)
-			}
+			require.NoError(t, rows.Err())
+			assert.Equal(t, scenario.expectedRows, count, "row count")
 		})
 	}
 }
@@ -362,31 +279,25 @@ func TestIntegrationQueryNextAfterClose(t *testing.T) {
 
 	ctx := context.Background()
 	conn, err := (&Driver{}).Open(*integrationServerFlag)
-	if err != nil {
-		t.Fatalf("Failed to open connection: %v", err)
-	}
+	require.NoError(t, err, "Failed to open connection")
 	defer conn.Close()
 
 	stmt, err := conn.(driver.ConnPrepareContext).PrepareContext(ctx, "SELECT 1")
-	if err != nil {
-		t.Fatalf("Failed preparing query: %v", err)
-	}
+	require.NoError(t, err, "Failed preparing query")
 
 	rows, err := stmt.(driver.StmtQueryContext).QueryContext(ctx, []driver.NamedValue{})
-	if err != nil {
-		t.Fatalf("Failed running query: %v", err)
-	}
+	require.NoError(t, err, "Failed running query")
 	defer rows.Close()
 
 	stmt.Close() // NOTE: the important bit.
 
 	var result driver.Value
-	if err := rows.Next([]driver.Value{result}); err != nil && !spoolingProtocolSupported {
-		t.Fatalf("unexpected result: %+v, no error was expected", err)
+	err = rows.Next([]driver.Value{result})
+	if !spoolingProtocolSupported {
+		require.NoError(t, err)
 	}
-	if err := rows.Next([]driver.Value{result}); err != io.EOF {
-		t.Fatalf("unexpected result: %+v, expected io.EOF", err)
-	}
+	err = rows.Next([]driver.Value{result})
+	require.ErrorIs(t, err, io.EOF)
 }
 
 func TestIntegrationExec(t *testing.T) {
@@ -394,33 +305,18 @@ func TestIntegrationExec(t *testing.T) {
 	defer db.Close()
 
 	_, err := db.Query(`SELECT count(*) FROM nation`)
-	expected := "Schema must be specified when session schema is not set"
-	if err == nil || !strings.Contains(err.Error(), expected) {
-		t.Fatalf("Expected to fail to execute query with error: %v, got: %v", expected, err)
-	}
+	require.ErrorContains(t, err, "Schema must be specified when session schema is not set")
 
 	result, err := db.Exec("USE tpch.sf100")
-	if err != nil {
-		t.Fatal("Failed executing query:", err.Error())
-	}
-	if result == nil {
-		t.Fatal("Expected exec result to be not nil")
-	}
+	require.NoError(t, err, "Failed executing query")
+	require.NotNil(t, result, "Expected exec result to be not nil")
 
 	a, err := result.RowsAffected()
-	if err != nil {
-		t.Fatal("Expected RowsAffected not to return any error, got:", err)
-	}
-	if a != 0 {
-		t.Fatal("Expected RowsAffected to be zero, got:", a)
-	}
+	require.NoError(t, err, "Expected RowsAffected not to return any error")
+	assert.Equal(t, int64(0), a, "RowsAffected")
 	rows, err := db.Query(`SELECT count(*) FROM nation`)
-	if err != nil {
-		t.Fatal("Failed executing query:", err.Error())
-	}
-	if rows == nil || !rows.Next() {
-		t.Fatal("Failed fetching results")
-	}
+	require.NoError(t, err, "Failed executing query")
+	require.True(t, rows.Next(), "Failed fetching results: %v", rows.Err())
 }
 
 func TestIntegrationUnsupportedHeader(t *testing.T) {
@@ -443,9 +339,7 @@ func TestIntegrationUnsupportedHeader(t *testing.T) {
 	}
 	for _, c := range cases {
 		_, err := db.Query(c.query)
-		if err == nil || err.Error() != c.err.Error() {
-			t.Fatal("unexpected error:", err)
-		}
+		require.EqualError(t, err, c.err.Error(), c.query)
 	}
 }
 
@@ -467,9 +361,8 @@ func TestIntegrationQueryContext(t *testing.T) {
 		},
 	}
 
-	if err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}}); err != nil {
-		t.Fatal(err)
-	}
+	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
+	require.NoError(t, err)
 
 	dsn := *integrationServerFlag + "?catalog=tpch&schema=sf100&source=cancel-test&custom_client=uncompressed"
 	db := integrationOpen(t, dsn)
@@ -519,12 +412,8 @@ func TestIntegrationQueryContext(t *testing.T) {
 				if err == nil {
 					break
 				}
-				if err != sql.ErrNoRows {
-					t.Fatal("failed to read query ID:", err)
-				}
-				if err = contextSleep(pollCtx, 100*time.Millisecond); err != nil {
-					t.Fatal("query did not start in 1 second")
-				}
+				require.ErrorIs(t, err, sql.ErrNoRows, "failed to read query ID")
+				require.NoError(t, contextSleep(pollCtx, 100*time.Millisecond), "query did not start in 1 second")
 			}
 
 			if tt.timeout == 0 {
@@ -534,11 +423,9 @@ func TestIntegrationQueryContext(t *testing.T) {
 			// Wait for the query to be canceled or completed
 			select {
 			case <-done:
-				t.Fatal("unexpected query succeeded despite cancellation or deadline")
+				require.Fail(t, "unexpected query succeeded despite cancellation or deadline")
 			case err := <-errCh:
-				if !strings.Contains(err.Error(), tt.expectedErrMsg) {
-					t.Fatalf("expected error containing %q, but got: %v", tt.expectedErrMsg, err)
-				}
+				require.ErrorContains(t, err, tt.expectedErrMsg)
 			}
 
 			// Poll system.runtime.queries to verify the query was canceled
@@ -550,15 +437,12 @@ func TestIntegrationQueryContext(t *testing.T) {
 				var state string
 				var code *string
 				err := row.Scan(&state, &code)
-				if err != nil {
-					t.Fatal("failed to read query state:", err)
-				}
+				require.NoError(t, err, "failed to read query state")
 				if state == "FAILED" && code != nil && *code == "USER_CANCELED" {
 					return
 				}
-				if err = contextSleep(pollCtx, 100*time.Millisecond); err != nil {
-					t.Fatalf("query was not canceled in 2 seconds; state: %s, code: %v, err: %v", state, code, err)
-				}
+				err = contextSleep(pollCtx, 100*time.Millisecond)
+				require.NoError(t, err, "query was not canceled in 2 seconds; state: %s, code: %v", state, code)
 			}
 		})
 	}
@@ -574,20 +458,14 @@ func TestIntegrationLargeQuery(t *testing.T) {
 	db := integrationOpen(t, dsn)
 	defer db.Close()
 	rows, err := db.Query("SELECT ?, '"+strings.Repeat("a", 5000000)+"'", 42)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer rows.Close()
 	count := 0
 	for rows.Next() {
 		count++
 	}
-	if rows.Err() != nil {
-		t.Fatal(err)
-	}
-	if count != 1 {
-		t.Fatal("not enough rows returned:", count)
-	}
+	require.NoError(t, rows.Err())
+	assert.Equal(t, 1, count, "row count")
 }
 
 func TestQueryForUsername(t *testing.T) {
@@ -698,12 +576,8 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 		assert.Equal(t, "2", ts, "Expected value does not equal result value")
 	}
 
-	if err = rows.Err(); err != nil {
-		t.Fatal(err)
-	}
-	if err = rows.Close(); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
 
 	// sort time in order to calculate interval
 	assert.NotEmpty(t, progressMap)
@@ -729,9 +603,7 @@ func TestSession(t *testing.T) {
 		t.Skip("Skipping test in short mode.")
 	}
 	err := RegisterCustomClient("uncompressed", &http.Client{Transport: &http.Transport{DisableCompression: true}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	c := &Config{
 		ServerURI:         *integrationServerFlag + "?custom_client=uncompressed",
 		SessionProperties: map[string]string{"query_priority": "1"},
@@ -802,7 +674,7 @@ func TestExec(t *testing.T) {
 	assert.Error(t, err, "trino: operation not supported")
 	numRows, err := result.RowsAffected()
 	require.NoError(t, err, "Failed checking rows affected")
-	assert.Equal(t, numRows, int64(3))
+	assert.Equal(t, int64(3), numRows)
 
 	rows, err := db.Query("SELECT * FROM memory.default.test")
 	require.NoError(t, err, "Failed executing DELETE query")

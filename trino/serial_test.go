@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -338,20 +339,12 @@ func TestSerial(t *testing.T) {
 
 		t.Run(scenario.name, func(t *testing.T) {
 			s, err := Serial(scenario.value)
-			if err != nil {
-				if scenario.expectedError {
-					return
-				}
-				t.Fatal(err)
-			}
-
 			if scenario.expectedError {
-				t.Fatal("missing an expected error")
+				require.Error(t, err, "missing an expected error")
+				return
 			}
-
-			if scenario.expectedSerial != s {
-				t.Fatalf("mismatched serial, got %q expected %q", s, scenario.expectedSerial)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, scenario.expectedSerial, s)
 		})
 	}
 }
