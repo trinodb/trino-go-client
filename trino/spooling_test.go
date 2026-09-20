@@ -160,34 +160,37 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 	}
 }
 
+// TestSpoolingProtocolSegmentDownloadRetryMaxAttempts covers a permanently
+// failing download: since SegmentFetcher.roundTrip dropped its fixed 5-retry
+// counter for the same elapsed-time budget as Conn.roundTrip, giving up now
+// takes a request_retry_timeout, not an attempt count.
 func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
+	// shares the mutable segmentDownloadInitialDelay package var with the
+	// other tests below, so it cannot run in parallel with them.
 	shortenSegmentDownloadRetries(t)
 	var failCounter atomic.Int32
-	// one attempt plus five retries
-	attempts := int32(6)
 
 	fc := newFakeCoordinator(t)
 	fc.respond(statementPage(), spooledPage("json",
 		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
 	))
 	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
-		if failCounter.Load() <= attempts {
-			failCounter.Add(1)
-			w.WriteHeader(http.StatusBadGateway)
-			return
-		}
+		failCounter.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
 	})
-	db := fc.open(t, "")
+	db := fc.open(t, "?request_retry_timeout=200ms")
 
+	start := time.Now()
 	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
 
 	collectInts(t, rows)
+	elapsed := time.Since(start)
 
 	require.Error(t, rows.Err())
-
-	require.ErrorContains(t, rows.Err(), "max retries reached for status code 502")
-	assert.Equal(t, attempts, failCounter.Load(), "Expected the download to be attempted once and retried five times")
+	assert.Less(t, elapsed, 2*time.Second, "the download must give up once its retry budget elapses, not retry forever")
+	assert.ErrorContains(t, rows.Err(), "request_retry_timeout")
+	assert.Greater(t, failCounter.Load(), int32(1), "the download must be retried at least once before giving up")
 }
 
 // shortenSegmentDownloadRetries keeps the retry tests from waiting for the

@@ -73,6 +73,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -94,6 +95,10 @@ var (
 
 	// DefaultCancelQueryTimeout is the timeout for the request to cancel queries in Trino.
 	DefaultCancelQueryTimeout = 30 * time.Second
+
+	// DefaultRequestRetryTimeout is the default elapsed-time budget for
+	// retrying a single HTTP request; see Config.RequestRetryTimeout.
+	DefaultRequestRetryTimeout = 2 * time.Minute
 
 	// ErrOperationNotSupported indicates that a database operation is not supported.
 	ErrOperationNotSupported = errors.New("trino: operation not supported")
@@ -248,7 +253,13 @@ type Config struct {
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
 	HeartbeatInterval          *time.Duration    // Interval between spooling-protocol HEAD heartbeats (optional; DSN: heartbeat_interval)
-	Roles                      map[string]string // Roles (optional)
+	// RequestRetryTimeout bounds how long a single HTTP request keeps being
+	// retried on 502/503/504 responses and transient network errors before
+	// the query fails. Zero means DefaultRequestRetryTimeout (2 minutes).
+	// Unrelated to QueryTimeout, which bounds the whole query, not a single
+	// request. (optional; DSN: request_retry_timeout)
+	RequestRetryTimeout time.Duration
+	Roles               map[string]string // Roles (optional)
 }
 
 func (c *Config) applyDefaults() {
@@ -343,6 +354,14 @@ func ParseDSN(dsn string) (*Config, error) {
 			return nil, fmt.Errorf("trino: invalid timeout for query_timeout: %q", queryTimeoutStr)
 		}
 		config.QueryTimeout = &queryTimeout
+	}
+
+	if requestRetryTimeoutStr := query.Get("request_retry_timeout"); requestRetryTimeoutStr != "" {
+		requestRetryTimeout, err := time.ParseDuration(requestRetryTimeoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid timeout for request_retry_timeout: %q", requestRetryTimeoutStr)
+		}
+		config.RequestRetryTimeout = requestRetryTimeout
 	}
 
 	if heartbeatStr := query.Get("heartbeat_interval"); heartbeatStr != "" {
@@ -507,6 +526,10 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add("query_timeout", c.QueryTimeout.String())
 	}
 
+	if c.RequestRetryTimeout != 0 {
+		query.Add("request_retry_timeout", c.RequestRetryTimeout.String())
+	}
+
 	if c.HeartbeatInterval != nil {
 		query.Add("heartbeat_interval", c.HeartbeatInterval.String())
 	}
@@ -552,6 +575,10 @@ type Conn struct {
 	forwardAuthorizationHeader bool
 	queryTimeout               *time.Duration
 	heartbeatInterval          *time.Duration
+	// requestRetryTimeout is the elapsed-time budget doRetryableRequest
+	// enforces for a single HTTP request; always positive (newConn fills in
+	// DefaultRequestRetryTimeout when the DSN/Config leave it <= 0).
+	requestRetryTimeout time.Duration
 	// timeZone is sent as X-Trino-Time-Zone; sessionTimeZone is set when the
 	// server reports a SET TIME ZONE and takes precedence while it lasts
 	timeZone        *time.Location
@@ -704,6 +731,7 @@ func newConn(dsn string) (*Conn, error) {
 		forwardAuthorizationHeader: conf.ForwardAuthorizationHeader,
 		queryTimeout:               conf.QueryTimeout,
 		heartbeatInterval:          conf.HeartbeatInterval,
+		requestRetryTimeout:        effectiveRequestRetryTimeout(conf.RequestRetryTimeout),
 		timeZone:                   timeZone,
 	}
 
@@ -1028,6 +1056,143 @@ func rewindRequestBody(req *http.Request) error {
 	return nil
 }
 
+// effectiveRequestRetryTimeout applies the <=0-means-default rule documented
+// on Config.RequestRetryTimeout.
+func effectiveRequestRetryTimeout(configured time.Duration) time.Duration {
+	if configured <= 0 {
+		return DefaultRequestRetryTimeout
+	}
+	return configured
+}
+
+// networkErrorPolicy decides whether doRetryableRequest retries a network
+// error (one where httpClient.Do never produced a response) for a given
+// request.
+type networkErrorPolicy func(err error) bool
+
+// dialPhaseOnly retries only a failure in establishing the connection: the
+// server never saw the request, so retrying cannot duplicate an effect. It is
+// used for the statement POST, which — unlike a GET or DELETE — is not
+// idempotent: Trino's QueuedStatementResource registers the query on POST but
+// does not submit it until the first GET, so a POST whose response never
+// arrived may have already registered a query that a retry would duplicate.
+// A *net.OpError with Op == "dial" covers a refused connection, a dial
+// timeout and a DNS failure (net.DNSError surfaces wrapped in it).
+func dialPhaseOnly(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+// transientNetworkError retries every network failure worth retrying once a
+// request is not the statement POST: a connect-phase failure (see
+// dialPhaseOnly), a client-side timeout (including one produced by
+// http.Client's own Timeout field, which surfaces as a context.
+// DeadlineExceeded wrapped around a *net.OpError — that deadline is scoped to
+// the single attempt, not the caller's ctx, so it is retried here), a
+// connection reset, or the coordinator closing the connection mid-response
+// (EOF / unexpected EOF). The caller's own ctx is never retried, but that is
+// doRetryableRequest's job (it checks ctx.Err() directly), not this
+// predicate's — checking for a wrapped context error here would also catch
+// the per-attempt client timeout above and wrongly refuse to retry it.
+func transientNetworkError(err error) bool {
+	if dialPhaseOnly(err) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+// retryableStatus reports whether doRetryableRequest retries status, the way
+// it already retried 502/503/504 before transient network errors were added.
+func retryableStatus(status int) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
+// doRetryableRequest is the retry loop shared by Conn.roundTrip,
+// SegmentFetcher.roundTrip and the spooled-segment acknowledgement: it
+// retries a 502, 503 or 504 response and a network error accepted by
+// retryNetworkErr, backing off by the golden ratio from initialDelay to a 15s
+// ceiling and rewinding the request body (rewindRequestBody) before every
+// retry. It gives up once budget has elapsed since the first attempt,
+// capping the final sleep to the remaining budget so the loop does not
+// overshoot it by a full backoff, and returns ctx.Err() immediately if ctx is
+// cancelled or its deadline passes — which is also how a budget shorter than
+// ctx's own deadline is enforced when the caller wants both bounds to apply.
+// The response returned on success is never one of the retried statuses; a
+// caller unwraps its own final-status handling (2xx vs. anything else) after
+// this returns.
+func doRetryableRequest(ctx context.Context, client *http.Client, req *http.Request, budget, initialDelay time.Duration, retryNetworkErr networkErrorPolicy) (*http.Response, error) {
+	start := time.Now()
+	delay := initialDelay
+	const maxDelayBetweenRequests = float64(15 * time.Second)
+	attempt := 0
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-timer.C:
+			attempt++
+			resp, err := client.Do(req)
+			if err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
+				}
+				if !retryNetworkErr(err) {
+					return nil, err
+				}
+			} else if !retryableStatus(resp.StatusCode) {
+				return resp, nil
+			} else {
+				resp.Body.Close()
+			}
+
+			elapsed := time.Since(start)
+			if elapsed >= budget {
+				reason := fmt.Sprintf("giving up after %d attempts in %s (request_retry_timeout=%s)", attempt, elapsed.Round(time.Millisecond), budget)
+				if err != nil {
+					return nil, fmt.Errorf("trino: %s: %w", reason, err)
+				}
+				return nil, &ErrQueryFailed{StatusCode: resp.StatusCode, Reason: errors.New(reason)}
+			}
+
+			if err := rewindRequestBody(req); err != nil {
+				return nil, err
+			}
+
+			remaining := budget - elapsed
+			sleep := min(delay, remaining)
+			timer.Reset(sleep)
+			delay = time.Duration(math.Min(float64(delay)*math.Phi, maxDelayBetweenRequests))
+		}
+	}
+}
+
+// wrapRetryError normalizes a doRetryableRequest error for a caller: the
+// caller's own context error (ctx.Done(), or the ambient ctx expiring mid-Do)
+// passes through as-is, a budget-exceeded *ErrQueryFailed (see
+// doRetryableRequest) passes through as-is, and any other error — a network
+// error the policy refused to retry, including a per-attempt http.Client
+// timeout, which also wraps context.DeadlineExceeded — is wrapped in
+// ErrQueryFailed like every other request failure in this package.
+func wrapRetryError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+		return err
+	}
+	if qf, ok := err.(*ErrQueryFailed); ok {
+		return qf
+	}
+	return &ErrQueryFailed{Reason: err}
+}
+
 func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reader, hs http.Header) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -1069,45 +1234,35 @@ func withoutRedirects(client *http.Client) *http.Client {
 	return &copied
 }
 
+// roundTrip sends req, retrying 502/503/504 and — depending on the request —
+// dial-phase failures or the full transient network error set (see
+// dialPhaseOnly and transientNetworkError) within c.requestRetryTimeout. The
+// statement POST gets the conservative, dial-only policy: Go's transport
+// already replays a GET or HEAD on a dead reused connection
+// (net/http's isReplayable), so this is what makes a retried GET, DELETE or
+// cancel resilient to a connection dropped after it was sent, and DELETE is
+// not otherwise replayable at all.
 func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response, error) {
-	delay := 100 * time.Millisecond
-	const maxDelayBetweenRequests = float64(15 * time.Second)
-	timer := time.NewTimer(0)
-	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-timer.C:
-			resp, err := c.httpClient.Do(req)
-			if err != nil {
-				return nil, &ErrQueryFailed{Reason: err}
-			}
-			switch resp.StatusCode {
-			case http.StatusOK:
-				c.applyResponseHeaders(resp.Header)
-				return resp, nil
-			case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
-				resp.Body.Close()
-				return nil, &ErrQueryFailed{
-					StatusCode: resp.StatusCode,
-					Reason:     fmt.Errorf("redirect to %s not followed", resp.Header.Get("Location")),
-				}
-			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-				resp.Body.Close()
-				if err := rewindRequestBody(req); err != nil {
-					return nil, &ErrQueryFailed{Reason: err}
-				}
-				timer.Reset(delay)
-				delay = time.Duration(math.Min(
-					float64(delay)*math.Phi,
-					maxDelayBetweenRequests,
-				))
-				continue
-			default:
-				return nil, newErrQueryFailedFromResponse(resp)
-			}
+	policy := transientNetworkError
+	if req.Method == http.MethodPost {
+		policy = dialPhaseOnly
+	}
+	resp, err := doRetryableRequest(ctx, &c.httpClient, req, c.requestRetryTimeout, 100*time.Millisecond, policy)
+	if err != nil {
+		return nil, wrapRetryError(ctx, err)
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		c.applyResponseHeaders(resp.Header)
+		return resp, nil
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		resp.Body.Close()
+		return nil, &ErrQueryFailed{
+			StatusCode: resp.StatusCode,
+			Reason:     fmt.Errorf("redirect to %s not followed", resp.Header.Get("Location")),
 		}
+	default:
+		return nil, newErrQueryFailedFromResponse(resp)
 	}
 }
 
@@ -1867,58 +2022,26 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 }
 
 type SegmentFetcher struct {
-	ctx             context.Context
-	httpClient      http.Client
-	spooledMetadata spooledMetadata
+	ctx                 context.Context
+	httpClient          http.Client
+	spooledMetadata     spooledMetadata
+	requestRetryTimeout time.Duration
 }
 
+// roundTrip downloads a segment through the same retry loop as
+// Conn.roundTrip (doRetryableRequest), retrying the full transient network
+// error set — a segment GET is idempotent — within sf.requestRetryTimeout.
+// It keeps its own, shorter segmentDownloadInitialDelay backoff start instead
+// of Conn.roundTrip's 100ms.
 func (sf *SegmentFetcher) roundTrip(req *http.Request) (*http.Response, error) {
-	delay := segmentDownloadInitialDelay
-	const maxRetries = 5
-
-	retries := 0
-	timer := time.NewTimer(0)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-timer.C:
-			resp, err := sf.httpClient.Do(req)
-			if err != nil {
-				var netErr net.Error
-
-				if errors.As(err, &netErr) && netErr.Timeout() {
-					retries++
-					if retries > maxRetries {
-						return nil, &ErrQueryFailed{Reason: fmt.Errorf("max retries reached: %w", err)}
-					}
-					delay = time.Duration(float64(delay) * math.Phi)
-					timer.Reset(delay)
-					continue
-				}
-
-				return nil, &ErrQueryFailed{Reason: err}
-			}
-
-			switch resp.StatusCode {
-			case http.StatusOK:
-				return resp, nil
-
-			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-				resp.Body.Close()
-				retries++
-				if retries > maxRetries {
-					return nil, &ErrQueryFailed{Reason: fmt.Errorf("max retries reached for status code %d", resp.StatusCode)}
-				}
-				delay = time.Duration(float64(delay) * math.Phi)
-				timer.Reset(delay)
-				continue
-
-			default:
-				return nil, newErrQueryFailedFromResponse(resp)
-			}
-		}
+	resp, err := doRetryableRequest(sf.ctx, &sf.httpClient, req, sf.requestRetryTimeout, segmentDownloadInitialDelay, transientNetworkError)
+	if err != nil {
+		return nil, wrapRetryError(sf.ctx, err)
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, newErrQueryFailedFromResponse(resp)
+	}
+	return resp, nil
 }
 
 func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
@@ -2757,9 +2880,10 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 					}
 
 					segmentFetcher := &SegmentFetcher{
-						ctx:             ctx,
-						httpClient:      st.conn.httpClient,
-						spooledMetadata: metadata,
+						ctx:                 ctx,
+						httpClient:          st.conn.httpClient,
+						spooledMetadata:     metadata,
+						requestRetryTimeout: st.conn.requestRetryTimeout,
 					}
 
 					segment, err := segmentFetcher.fetchSegment()
