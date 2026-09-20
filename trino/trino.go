@@ -74,6 +74,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 	"unicode"
 
@@ -95,6 +96,14 @@ var (
 
 	// DefaultCancelQueryTimeout is the timeout for the request to cancel queries in Trino.
 	DefaultCancelQueryTimeout = 30 * time.Second
+
+	// DefaultRequestRetryTimeout is how long a single HTTP request is retried
+	// when Config.RequestRetryTimeout is not set.
+	DefaultRequestRetryTimeout = 2 * time.Minute
+
+	// DefaultRequestRetryMaxAttempts is how many times a single HTTP request is
+	// sent when Config.RequestRetryMaxAttempts is not set.
+	DefaultRequestRetryMaxAttempts = 20
 
 	// ErrOperationNotSupported indicates that a database operation is not supported.
 	ErrOperationNotSupported = errors.New("trino: operation not supported")
@@ -273,6 +282,8 @@ type Config struct {
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
 	HeartbeatInterval          *time.Duration    // Interval between spooling-protocol HEAD heartbeats (optional; DSN: heartbeat_interval)
+	RequestRetryTimeout        *time.Duration    // How long a single HTTP request is retried (optional; DSN: request_retry_timeout)
+	RequestRetryMaxAttempts    *int              // How many times a single HTTP request is sent (optional; DSN: request_retry_max_attempts)
 	Roles                      map[string]string // Roles (optional)
 }
 
@@ -368,6 +379,25 @@ func ParseDSN(dsn string) (*Config, error) {
 			return nil, fmt.Errorf("trino: invalid timeout for query_timeout: %q", queryTimeoutStr)
 		}
 		config.QueryTimeout = &queryTimeout
+	}
+
+	if requestRetryTimeoutStr := query.Get("request_retry_timeout"); requestRetryTimeoutStr != "" {
+		requestRetryTimeout, err := time.ParseDuration(requestRetryTimeoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid timeout for request_retry_timeout: %q", requestRetryTimeoutStr)
+		}
+		if requestRetryTimeout <= 0 {
+			return nil, fmt.Errorf("trino: request_retry_timeout must be positive, got %s", requestRetryTimeoutStr)
+		}
+		config.RequestRetryTimeout = &requestRetryTimeout
+	}
+
+	if maxAttemptsStr := query.Get("request_retry_max_attempts"); maxAttemptsStr != "" {
+		maxAttempts, err := strconv.Atoi(maxAttemptsStr)
+		if err != nil || maxAttempts <= 0 {
+			return nil, fmt.Errorf("trino: request_retry_max_attempts must be a positive integer, got %q", maxAttemptsStr)
+		}
+		config.RequestRetryMaxAttempts = &maxAttempts
 	}
 
 	if heartbeatStr := query.Get("heartbeat_interval"); heartbeatStr != "" {
@@ -575,6 +605,14 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add("query_timeout", c.QueryTimeout.String())
 	}
 
+	if c.RequestRetryTimeout != nil {
+		query.Add("request_retry_timeout", c.RequestRetryTimeout.String())
+	}
+
+	if c.RequestRetryMaxAttempts != nil {
+		query.Add("request_retry_max_attempts", strconv.Itoa(*c.RequestRetryMaxAttempts))
+	}
+
 	if c.HeartbeatInterval != nil {
 		query.Add("heartbeat_interval", c.HeartbeatInterval.String())
 	}
@@ -756,6 +794,7 @@ type Conn struct {
 	authorizationUser string
 	// preAuthorizationRoles is the X-Trino-Role value to restore on reset.
 	preAuthorizationRoles string
+	retryLimit            retryLimit
 	// timeZone is sent as X-Trino-Time-Zone; sessionTimeZone is set when the
 	// server reports a SET TIME ZONE and takes precedence while it lasts
 	timeZone        *time.Location
@@ -897,7 +936,15 @@ func newConn(dsn string) (*Conn, error) {
 		forwardAuthorizationHeader: conf.ForwardAuthorizationHeader,
 		queryTimeout:               conf.QueryTimeout,
 		heartbeatInterval:          conf.HeartbeatInterval,
+		retryLimit:                 retryLimit{timeout: DefaultRequestRetryTimeout, maxAttempts: DefaultRequestRetryMaxAttempts},
 		timeZone:                   timeZone,
+	}
+
+	if conf.RequestRetryTimeout != nil {
+		c.retryLimit.timeout = *conf.RequestRetryTimeout
+	}
+	if conf.RequestRetryMaxAttempts != nil {
+		c.retryLimit.maxAttempts = *conf.RequestRetryMaxAttempts
 	}
 
 	var user string
@@ -1226,6 +1273,39 @@ func rewindRequestBody(req *http.Request) error {
 	return nil
 }
 
+// retryPolicy reports whether a network error, where no response arrived, is
+// retried.
+type retryPolicy func(err error) bool
+
+// dialPhaseOnly retries only errors establishing the connection, since the
+// server never saw the request. It is used for the statement POST, which is
+// not idempotent.
+func dialPhaseOnly(err error) bool {
+	var opErr *net.OpError
+	return errors.As(err, &opErr) && opErr.Op == "dial"
+}
+
+// transientNetworkError retries every transient network error. It is used for
+// idempotent requests.
+func transientNetworkError(err error) bool {
+	if dialPhaseOnly(err) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
+}
+
+func retryableStatus(status int) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
+}
+
 func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reader, hs http.Header) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
@@ -1267,9 +1347,46 @@ func withoutRedirects(client *http.Client) *http.Client {
 	return &copied
 }
 
+// roundTrip sends req, retrying 502/503/504 responses and network errors
+// within c.retryLimit. Only idempotent requests are retried on
+// network errors; connection errors are always retried.
 func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response, error) {
-	delay := 100 * time.Millisecond
+	policy := transientNetworkError
+	if req.Method == http.MethodPost {
+		policy = dialPhaseOnly
+	}
+	resp, err := roundTrip(ctx, &c.httpClient, req, c.retryLimit, 100*time.Millisecond, policy)
+	if err != nil {
+		return nil, err
+	}
+	switch resp.StatusCode {
+	case http.StatusOK:
+		c.applyResponseHeaders(resp.Header)
+		return resp, nil
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		resp.Body.Close()
+		return nil, &ErrQueryFailed{
+			StatusCode: resp.StatusCode,
+			Reason:     fmt.Errorf("redirect to %s not followed", resp.Header.Get("Location")),
+		}
+	default:
+		return nil, newErrQueryFailedFromResponse(resp)
+	}
+}
+
+// retryLimit ends retrying at whichever limit is reached first.
+type retryLimit struct {
+	timeout     time.Duration
+	maxAttempts int
+}
+
+// roundTrip retries a 502, 503 or 504 response and a network error accepted
+// by policy, backing off from initialDelay, until limit is reached.
+func roundTrip(ctx context.Context, client *http.Client, req *http.Request, limit retryLimit, initialDelay time.Duration, policy retryPolicy) (*http.Response, error) {
+	start := time.Now()
+	delay := initialDelay
 	const maxDelayBetweenRequests = float64(15 * time.Second)
+	attempt := 0
 	timer := time.NewTimer(0)
 	defer timer.Stop()
 	for {
@@ -1277,34 +1394,36 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-timer.C:
-			resp, err := c.httpClient.Do(req)
+			attempt++
+			resp, err := client.Do(req)
 			if err != nil {
-				return nil, &ErrQueryFailed{Reason: err}
-			}
-			switch resp.StatusCode {
-			case http.StatusOK:
-				c.applyResponseHeaders(resp.Header)
-				return resp, nil
-			case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
-				resp.Body.Close()
-				return nil, &ErrQueryFailed{
-					StatusCode: resp.StatusCode,
-					Reason:     fmt.Errorf("redirect to %s not followed", resp.Header.Get("Location")),
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return nil, ctxErr
 				}
-			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-				resp.Body.Close()
-				if err := rewindRequestBody(req); err != nil {
+				if !policy(err) {
 					return nil, &ErrQueryFailed{Reason: err}
 				}
-				timer.Reset(delay)
-				delay = time.Duration(math.Min(
-					float64(delay)*math.Phi,
-					maxDelayBetweenRequests,
-				))
-				continue
-			default:
-				return nil, newErrQueryFailedFromResponse(resp)
+			} else if !retryableStatus(resp.StatusCode) {
+				return resp, nil
+			} else {
+				resp.Body.Close()
 			}
+
+			elapsed := time.Since(start)
+			if elapsed >= limit.timeout || attempt >= limit.maxAttempts {
+				reason := fmt.Sprintf("giving up after %d attempts in %s (request_retry_timeout=%s, request_retry_max_attempts=%d)", attempt, elapsed.Round(time.Millisecond), limit.timeout, limit.maxAttempts)
+				if err != nil {
+					return nil, &ErrQueryFailed{Reason: fmt.Errorf("%s: %w", reason, err)}
+				}
+				return nil, &ErrQueryFailed{StatusCode: resp.StatusCode, Reason: errors.New(reason)}
+			}
+
+			if err := rewindRequestBody(req); err != nil {
+				return nil, &ErrQueryFailed{Reason: err}
+			}
+
+			timer.Reset(min(delay, limit.timeout-elapsed))
+			delay = time.Duration(math.Min(float64(delay)*math.Phi, maxDelayBetweenRequests))
 		}
 	}
 }
@@ -2209,55 +2328,18 @@ type SegmentFetcher struct {
 	spooledMetadata spooledMetadata
 	acks            *sync.WaitGroup
 	failedAcks      *atomic.Int64
+	retryLimit      retryLimit
 }
 
 func (sf *SegmentFetcher) roundTrip(req *http.Request) (*http.Response, error) {
-	delay := segmentDownloadInitialDelay
-	const maxRetries = 5
-
-	retries := 0
-	timer := time.NewTimer(0)
-	defer timer.Stop()
-
-	for {
-		select {
-		case <-timer.C:
-			resp, err := sf.httpClient.Do(req)
-			if err != nil {
-				var netErr net.Error
-
-				if errors.As(err, &netErr) && netErr.Timeout() {
-					retries++
-					if retries > maxRetries {
-						return nil, &ErrQueryFailed{Reason: fmt.Errorf("max retries reached: %w", err)}
-					}
-					delay = time.Duration(float64(delay) * math.Phi)
-					timer.Reset(delay)
-					continue
-				}
-
-				return nil, &ErrQueryFailed{Reason: err}
-			}
-
-			switch resp.StatusCode {
-			case http.StatusOK:
-				return resp, nil
-
-			case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
-				resp.Body.Close()
-				retries++
-				if retries > maxRetries {
-					return nil, &ErrQueryFailed{Reason: fmt.Errorf("max retries reached for status code %d", resp.StatusCode)}
-				}
-				delay = time.Duration(float64(delay) * math.Phi)
-				timer.Reset(delay)
-				continue
-
-			default:
-				return nil, newErrQueryFailedFromResponse(resp)
-			}
-		}
+	resp, err := roundTrip(sf.ctx, &sf.httpClient, req, sf.retryLimit, segmentDownloadInitialDelay, transientNetworkError)
+	if err != nil {
+		return nil, err
 	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, newErrQueryFailedFromResponse(resp)
+	}
+	return resp, nil
 }
 
 func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
@@ -3204,6 +3286,7 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 						spooledMetadata: metadata,
 						acks:            &st.waitSegmentAcks,
 						failedAcks:      &st.failedSegmentAcks,
+						retryLimit:      st.conn.retryLimit,
 					}
 
 					segment, err := segmentFetcher.fetchSegment()
