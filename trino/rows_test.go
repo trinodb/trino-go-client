@@ -420,3 +420,68 @@ func TestNextReturnsContextError(t *testing.T) {
 	assert.False(t, rows.Next())
 	assert.ErrorIs(t, rows.Err(), context.Canceled)
 }
+
+// TestQueryWarningsCollectedAcrossPages exercises the "warnings" named
+// argument: both pages of a two-page query repeat the first warning, the
+// second page adds a new one, and the sink ends up with each warning once,
+// in the order the coordinator first reported it.
+func TestQueryWarningsCollectedAcrossPages(t *testing.T) {
+	t.Parallel()
+	deprecated := Warning{Code: 3, Name: "DEPRECATED_FUNCTION", Message: "Use of deprecated function: foo"}
+	tooManyStages := Warning{Code: 1, Name: "TOO_MANY_STAGES", Message: "Query has too many stages"}
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage(),
+		pageOf(&queryResponse{
+			ID:       fakeQueryID,
+			Columns:  []queryColumn{integerColumn("_col0")},
+			Data:     [][]any{{1}},
+			Warnings: []Warning{deprecated},
+		}),
+		pageOf(&queryResponse{
+			ID:       fakeQueryID,
+			Warnings: []Warning{deprecated, tooManyStages},
+		}),
+	)
+	db := fc.open(t, "")
+
+	var warnings Warnings
+	rows, err := db.Query("SELECT 1", sql.Named(trinoWarningsParam, &warnings))
+	require.NoError(t, err)
+	assert.Equal(t, []int{1}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+
+	assert.Equal(t, []Warning{deprecated, tooManyStages}, warnings.All())
+}
+
+// A query without a "warnings" sink drops the warnings the coordinator sent.
+func TestQueryWarningsIgnoredWithoutSink(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage(),
+		pageOf(&queryResponse{
+			ID:       fakeQueryID,
+			Columns:  []queryColumn{integerColumn("_col0")},
+			Data:     [][]any{{1}},
+			Warnings: []Warning{{Code: 3, Name: "DEPRECATED_FUNCTION", Message: "Use of deprecated function: foo"}},
+		}),
+	)
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	assert.Equal(t, []int{1}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+}
+
+func TestNamedWarningsArgumentMustBeWarningsPointer(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "")
+
+	_, err := db.Query("SELECT 1", sql.Named(trinoWarningsParam, "not-a-sink"))
+
+	require.EqualError(t, err, "trino: warnings must be a *trino.Warnings, got string")
+	assert.Empty(t, fc.capturedRequests(), "the query must be rejected before anything is sent")
+}

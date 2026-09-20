@@ -171,6 +171,7 @@ const (
 	// back to a plainer representation for every capability left out.
 	clientCapabilities = "PARAMETRIC_DATETIME,NUMBER,PATH"
 	trinoEncoding      = "encoding"
+	trinoWarningsParam = "warnings"
 
 	trinoSpoolingWorkerCount    = `spooling_worker_count`
 	trinoMaxOutOfOrdersSegments = `max_out_of_order_segments`
@@ -1281,6 +1282,7 @@ type driverStmt struct {
 	query                         string
 	user                          string
 	timeZone                      *time.Location
+	warnings                      *Warnings
 	nextURIs                      chan string
 	httpResponses                 chan *http.Response
 	queryResponses                chan queryResponse
@@ -1461,6 +1463,9 @@ func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
 			if arg.Name == trinoProgressCallbackPeriodParam {
 				return nil
 			}
+			if arg.Name == trinoWarningsParam {
+				return nil
+			}
 		}
 	}
 
@@ -1475,6 +1480,7 @@ type stmtResponse struct {
 	Error       ErrTrino  `json:"error"`
 	UpdateType  string    `json:"updateType"`
 	UpdateCount int64     `json:"updateCount"`
+	Warnings    []Warning `json:"warnings"`
 }
 
 type stmtStats struct {
@@ -1604,6 +1610,9 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 
 func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
 	query := st.query
+	// A prepared statement is executed more than once; the sink belongs to
+	// the execution that passed it, not to the ones after it.
+	st.warnings = nil
 	hs := make(http.Header)
 	hs.Add(trinoClientCapabilitiesHeader, clientCapabilities)
 	// The server reads extra credentials only when the statement is submitted.
@@ -1659,6 +1668,15 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 					return nil, err
 				}
 				st.spoolingMaxOutOfOrderSegments = maxSegmentsOutOfOrder
+				continue
+			}
+
+			if arg.Name == trinoWarningsParam {
+				warnings, ok := arg.Value.(*Warnings)
+				if !ok {
+					return nil, fmt.Errorf("trino: %s must be a *trino.Warnings, got %T", arg.Name, arg.Value)
+				}
+				st.warnings = warnings
 				continue
 			}
 
@@ -1746,6 +1764,9 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("trino: %w", err)
+	}
+	if st.warnings != nil {
+		st.warnings.add(sr.Warnings)
 	}
 
 	st.doneCh = make(chan struct{})
@@ -2191,6 +2212,80 @@ type queryResponse struct {
 	Error       ErrTrino      `json:"error"`
 	UpdateType  string        `json:"updateType"`
 	UpdateCount int64         `json:"updateCount"`
+	Warnings    []Warning     `json:"warnings"`
+}
+
+// Warning is a warning the coordinator attached to a query, such as a
+// deprecation notice or a performance hint.
+type Warning struct {
+	// Code and Name identify the warning; Name is the stable identifier
+	// (matching io.trino.spi.connector.StandardWarningCode on the
+	// coordinator), Code is not guaranteed to stay the same across releases.
+	Code    int
+	Name    string
+	Message string
+}
+
+// warningWire mirrors the coordinator's io.trino.client.Warning JSON shape,
+// which nests the code under "warningCode" instead of flattening it.
+type warningWire struct {
+	WarningCode struct {
+		Code int    `json:"code"`
+		Name string `json:"name"`
+	} `json:"warningCode"`
+	Message string `json:"message"`
+}
+
+func (w *Warning) UnmarshalJSON(data []byte) error {
+	var wire warningWire
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	w.Code = wire.WarningCode.Code
+	w.Name = wire.WarningCode.Name
+	w.Message = wire.Message
+	return nil
+}
+
+var _ json.Unmarshaler = (*Warning)(nil)
+
+// Warnings collects the warnings of one query. Pass a pointer as the
+// sql.Named("warnings", &warnings) argument of Query or Exec; after the rows
+// are consumed, All returns every distinct warning in the order the
+// coordinator first reported it.
+type Warnings struct {
+	mu   sync.Mutex
+	seen map[Warning]struct{}
+	list []Warning
+}
+
+// All returns a copy of every distinct warning collected so far, in the
+// order the coordinator first reported it.
+func (w *Warnings) All() []Warning {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]Warning(nil), w.list...)
+}
+
+// add records ws, skipping any warning already seen. Warning is deduplicated
+// as a whole rather than by Code alone, since Code is not guaranteed to stay
+// the same across releases.
+func (w *Warnings) add(ws []Warning) {
+	if len(ws) == 0 {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.seen == nil {
+		w.seen = make(map[Warning]struct{}, len(ws))
+	}
+	for _, warning := range ws {
+		if _, ok := w.seen[warning]; ok {
+			continue
+		}
+		w.seen[warning] = struct{}{}
+		w.list = append(w.list, warning)
+	}
 }
 
 type segmentMetadata struct {
@@ -2490,6 +2585,9 @@ func (qr *driverRows) fetch() error {
 		case qresp = <-qr.stmt.queryResponses:
 			if qresp.ID == "" {
 				return io.EOF
+			}
+			if qr.stmt.warnings != nil {
+				qr.stmt.warnings.add(qresp.Warnings)
 			}
 
 			err = qr.initColumns(&qresp)
@@ -2842,6 +2940,9 @@ func (qr *driverRows) proccessSpollingSegments() {
 				if qresp.ID == "" {
 					qr.waitForAllSpoolingWorkersFinish()
 					return
+				}
+				if qr.stmt.warnings != nil {
+					qr.stmt.warnings.add(qresp.Warnings)
 				}
 
 				qr.stmt.sendHeartbeatURI(qresp.NextURI)
