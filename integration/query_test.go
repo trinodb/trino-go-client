@@ -499,6 +499,35 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 	}
 }
 
+// TestQueryWarnings exercises the "warnings" named argument against a real
+// coordinator: EXPLAIN (TYPE LOGICAL) has reported a DEPRECATED_SYNTAX
+// warning since Trino 479 (favor EXPLAIN (TYPE DISTRIBUTED) instead), so it
+// is skipped on older servers.
+func TestQueryWarnings(t *testing.T) {
+	requireServerVersion(t, 479)
+	db := integrationOpen(t)
+
+	var warnings trino.Warnings
+	rows, err := db.Query("EXPLAIN (TYPE LOGICAL) SELECT 1", sql.Named("warnings", &warnings))
+	require.NoError(t, err)
+	for rows.Next() {
+		var plan string
+		require.NoError(t, rows.Scan(&plan))
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+
+	all := warnings.All()
+	require.NotEmpty(t, all, "EXPLAIN (TYPE LOGICAL) should warn that the syntax is deprecated")
+	found := false
+	for _, w := range all {
+		if w.Name == "DEPRECATED_SYNTAX" {
+			found = true
+		}
+	}
+	assert.True(t, found, "expected a DEPRECATED_SYNTAX warning, got %+v", all)
+}
+
 func TestSetPath(t *testing.T) {
 	db := integrationOpen(t)
 

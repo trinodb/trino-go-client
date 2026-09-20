@@ -166,6 +166,29 @@ rows, err := db.Query("SELECT * FROM foobar",
 Like `X-Trino-User`, these parameters are consumed by the driver and are not
 passed to the query.
 
+#### Query warnings
+
+The coordinator can attach warnings to a query, such as deprecation notices,
+which `database/sql` also has no way to expose. Pass a `*trino.Warnings` as
+the `warnings` [NamedArg](https://godoc.org/database/sql#NamedArg); once the
+rows are consumed, `All` returns every distinct warning the coordinator
+reported, in the order it first reported it.
+
+Example:
+
+```go
+var warnings trino.Warnings
+rows, err := db.Query("SELECT * FROM foobar", sql.Named("warnings", &warnings))
+// ... consume rows ...
+for _, w := range warnings.All() {
+    log.Printf("warning %s: %s", w.Name, w.Message)
+}
+```
+
+Like `X-Trino-User`, this parameter is consumed by the driver and is not
+passed to the query. Without a `warnings` argument, warnings the coordinator
+reports are dropped.
+
 ### DSN (Data Source Name)
 
 The Data Source Name is a URL with a mandatory username, and optional query

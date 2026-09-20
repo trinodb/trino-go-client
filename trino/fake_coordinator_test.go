@@ -241,8 +241,12 @@ func (fc *fakeCoordinator) unexpected(w http.ResponseWriter, r *http.Request) {
 	fc.writeJSON(w, ErrTrino{ErrorName: "Unexpected request", Message: r.Method + " " + r.URL.Path})
 }
 
+// writeJSON writes v as the response, encoding any warnings in the
+// coordinator's nested wire shape. Warning only implements UnmarshalJSON
+// (decoding real responses is what the driver needs); re-encoding them here
+// is test-only scaffolding, kept out of the public API.
 func (fc *fakeCoordinator) writeJSON(w http.ResponseWriter, v any) {
-	if err := json.NewEncoder(w).Encode(v); err != nil {
+	if err := json.NewEncoder(w).Encode(wireEncode(v)); err != nil {
 		fc.t.Errorf("fake coordinator: encoding response: %v", err)
 	}
 }
@@ -254,6 +258,65 @@ func setNextURI(response any, nextURI string) {
 	case *queryResponse:
 		r.NextURI = nextURI
 	}
+}
+
+// setWarnings attaches ws to response; only *stmtResponse and *queryResponse
+// carry warnings.
+func setWarnings(response any, ws []Warning) {
+	switch r := response.(type) {
+	case *stmtResponse:
+		r.Warnings = ws
+	case *queryResponse:
+		r.Warnings = ws
+	}
+}
+
+// withWarnings attaches ws to the page's response, for tests that assert on
+// when warnings are collected.
+func (p page) withWarnings(ws ...Warning) page {
+	inner := p.response
+	p.response = func(baseURL string) any {
+		response := inner(baseURL)
+		setWarnings(response, ws)
+		return response
+	}
+	return p
+}
+
+// wireEncode returns v as is, unless it is a *stmtResponse or *queryResponse
+// carrying warnings, in which case it returns a shadow value whose Warnings
+// field encodes in the coordinator's nested io.trino.client.Warning shape.
+func wireEncode(v any) any {
+	switch r := v.(type) {
+	case *stmtResponse:
+		if len(r.Warnings) == 0 {
+			return r
+		}
+		return struct {
+			*stmtResponse
+			Warnings []warningWire `json:"warnings"`
+		}{r, toWireWarnings(r.Warnings)}
+	case *queryResponse:
+		if len(r.Warnings) == 0 {
+			return r
+		}
+		return struct {
+			*queryResponse
+			Warnings []warningWire `json:"warnings"`
+		}{r, toWireWarnings(r.Warnings)}
+	default:
+		return v
+	}
+}
+
+func toWireWarnings(ws []Warning) []warningWire {
+	wires := make([]warningWire, len(ws))
+	for i, w := range ws {
+		wires[i].WarningCode.Code = w.Code
+		wires[i].WarningCode.Name = w.Name
+		wires[i].Message = w.Message
+	}
+	return wires
 }
 
 // pageOf serves response as is; its nextUri is filled in by the fake.

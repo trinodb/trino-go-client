@@ -448,6 +448,32 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 	}
 }
 
+// TestSpoolingProtocolWarningsCollectedAcrossPages checks that warnings
+// reported only on a later spooled page (consumed by
+// proccessSpollingSegments, not by fetch's first page) are still collected.
+func TestSpoolingProtocolWarningsCollectedAcrossPages(t *testing.T) {
+	t.Parallel()
+	firstPage := Warning{Code: 1, Name: "TOO_MANY_STAGES", Message: "Query has too many stages"}
+	laterPage := Warning{Code: 5, Name: "DEPRECATED_SYNTAX", Message: "EXPLAIN TYPE LOGICAL is deprecated"}
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage(),
+		spooledPage("json", spooledSegment("seg0", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1})).withWarnings(firstPage),
+		spooledPage("json", spooledSegment("seg1", map[string]any{"segmentSize": 8, "rowOffset": 1, "rowsCount": 1})).withWarnings(firstPage, laterPage),
+	)
+	fc.serveSegment("seg0", []byte("[[1000]]"))
+	fc.serveSegment("seg1", []byte("[[1001]]"))
+	db := fc.open(t, "")
+
+	var warnings Warnings
+	rows, err := db.Query("SELECT 1", sql.Named(trinoWarningsParam, &warnings))
+	require.NoError(t, err)
+	assert.Equal(t, []int{1000, 1001}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+
+	assert.Equal(t, []Warning{firstPage, laterPage}, warnings.All())
+}
+
 func TestSpoolingProtocolAcknowledgesSegments(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
