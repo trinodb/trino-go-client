@@ -545,9 +545,12 @@ When reading response rows, the driver supports most Trino data types, except:
 * `IPADDRESS` - returned as string
 * `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string
 * `UUID` - returned as string
-
-Data types like `HyperLogLog`, `SetDigest`, `QDigest`, and `TDigest` are not
-supported and cannot be returned from a query.
+* `Geometry`, `SphericalGeography` and `color` - returned as string
+* `BingTile` and `KdbTree` - returned as `map[string]interface{}`, the JSON
+  object the server sent
+* any other type, like `HyperLogLog`, `SetDigest`, `QDigest`, and `TDigest` -
+  returned as `[]byte`, decoded from the base64 form the server sends, the
+  same as `VARBINARY` and as the Java client does
 
 For reading nullable columns, use:
 * `trino.NullTime`

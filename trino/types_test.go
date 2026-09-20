@@ -381,6 +381,24 @@ func TestTypeConversion(t *testing.T) {
 			sample:   "Point (0 0)",
 			want:     "Point (0 0)",
 		},
+		{dataType: "color", rawType: "color", sample: "red", want: "red"},
+		{dataType: "HyperLogLog", rawType: "HyperLogLog", sample: "AAI=", want: []byte{0x00, 0x02}},
+		{dataType: "SetDigest", rawType: "SetDigest", sample: "AAI=", want: []byte{0x00, 0x02}},
+		{dataType: "qdigest(double)", rawType: "qdigest", sample: "AAI=", want: []byte{0x00, 0x02}},
+		{dataType: "tdigest", rawType: "tdigest", sample: "AAI=", want: []byte{0x00, 0x02}},
+		{dataType: "ObjectId", rawType: "ObjectId", sample: "AAI=", want: []byte{0x00, 0x02}},
+		{
+			dataType: "BingTile",
+			rawType:  "BingTile",
+			sample:   map[string]interface{}{"x": json.Number("1"), "y": json.Number("2"), "zoom": json.Number("3")},
+			want:     map[string]interface{}{"x": json.Number("1"), "y": json.Number("2"), "zoom": json.Number("3")},
+		},
+		{
+			dataType: "KdbTree",
+			rawType:  "KdbTree",
+			sample:   map[string]interface{}{"root": map[string]interface{}{"leafId": json.Number("0")}},
+			want:     map[string]interface{}{"root": map[string]interface{}{"leafId": json.Number("0")}},
+		},
 	}
 
 	for _, tc := range cases {
@@ -510,14 +528,16 @@ func TestConvertValueFloatSpecialValues(t *testing.T) {
 	}
 }
 
-func TestConvertValueRejectsUnsupportedType(t *testing.T) {
+// Types the driver does not know by name decode as base64, the same as the
+// Java client's default, so a value that is not base64 is the only error path.
+func TestConvertValueRejectsInvalidBase64ForUnknownType(t *testing.T) {
 	t.Parallel()
 	converter, err := newTypeConverter("HyperLogLog", typeSignature{RawType: "HyperLogLog"}, time.Local)
 	require.NoError(t, err)
 
-	_, err = converter.ConvertValue("AAI=")
+	_, err = converter.ConvertValue("not base64!")
 
-	require.EqualError(t, err, `type not supported: "HyperLogLog"`)
+	require.ErrorContains(t, err, "cannot decode base64 string into []byte")
 }
 
 func TestConvertValueRejectsInvalidVarbinary(t *testing.T) {
@@ -576,6 +596,29 @@ func TestGetScanTypeRejectsTruncatedArraySignatures(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType)
 	})
+}
+
+func TestGetScanTypeForNonStandardTypes(t *testing.T) {
+	t.Parallel()
+	for typeName, want := range map[string]reflect.Type{
+		"Geometry":           reflect.TypeOf(sql.NullString{}),
+		"SphericalGeography": reflect.TypeOf(sql.NullString{}),
+		"color":              reflect.TypeOf(sql.NullString{}),
+		"BingTile":           reflect.TypeOf(new(interface{})).Elem(),
+		"KdbTree":            reflect.TypeOf(new(interface{})).Elem(),
+		"row":                reflect.TypeOf(new(interface{})).Elem(),
+		"HyperLogLog":        reflect.TypeOf([]byte{}),
+		"SetDigest":          reflect.TypeOf([]byte{}),
+		"qdigest":            reflect.TypeOf([]byte{}),
+		"tdigest":            reflect.TypeOf([]byte{}),
+	} {
+		t.Run(typeName, func(t *testing.T) {
+			scanType, err := getScanType([]string{typeName})
+
+			require.NoError(t, err)
+			assert.Equal(t, want, scanType)
+		})
+	}
 }
 
 // NullTime.Scan accepts only time.Time and NullTime; anything else leaves
