@@ -404,6 +404,32 @@ The `query_timeout` parameter sets a timeout for the query. If the query takes
 longer than the timeout, it will be cancelled. If it is not set the default
 context timeout will be used.
 
+##### `request_retry_timeout`
+
+```
+Type:           time.Duration
+Valid values:   duration string
+Default:        2m (trino.DefaultRequestRetryTimeout)
+```
+
+The `request_retry_timeout` parameter sets how long a single HTTP request is
+retried on a `502`, `503` or `504` response or a network error before the query
+fails. Only idempotent requests are retried on network errors after the
+connection is established. The value must be positive.
+
+##### `request_retry_max_attempts`
+
+```
+Type:           int
+Valid values:   positive integer
+Default:        20 (trino.DefaultRequestRetryMaxAttempts)
+```
+
+The `request_retry_max_attempts` parameter sets how many times a single HTTP
+request is sent before the query fails. Retrying stops at whichever of
+`request_retry_timeout` and `request_retry_max_attempts` is reached first; with
+the defaults, the timeout is reached first.
+
 ##### `heartbeat_interval`
 
 ```

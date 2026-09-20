@@ -160,34 +160,48 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 	}
 }
 
-func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
-	shortenSegmentDownloadRetries(t)
-	var failCounter atomic.Int32
-	// one attempt plus five retries
-	attempts := int32(6)
-
+func failingSegmentCoordinator(t *testing.T, failures *atomic.Int32) *fakeCoordinator {
 	fc := newFakeCoordinator(t)
 	fc.respond(statementPage(), spooledPage("json",
 		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
 	))
 	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
-		if failCounter.Load() <= attempts {
-			failCounter.Add(1)
-			w.WriteHeader(http.StatusBadGateway)
-			return
-		}
+		failures.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
 	})
-	db := fc.open(t, "")
+	return fc
+}
+
+// Shares the mutable segmentDownloadInitialDelay with the other tests below,
+// so it cannot run in parallel with them.
+func TestSpoolingProtocolSegmentDownloadRetryTimeout(t *testing.T) {
+	shortenSegmentDownloadRetries(t)
+	var failures atomic.Int32
+	db := failingSegmentCoordinator(t, &failures).open(t, "?request_retry_timeout=200ms&request_retry_max_attempts=100000")
+
+	start := time.Now()
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+	elapsed := time.Since(start)
+
+	require.Error(t, rows.Err())
+	assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond)
+	assert.Less(t, elapsed, 2*time.Second)
+	assert.ErrorContains(t, rows.Err(), fmt.Sprintf("giving up after %d attempts", failures.Load()))
+}
+
+func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
+	shortenSegmentDownloadRetries(t)
+	var failures atomic.Int32
+	db := failingSegmentCoordinator(t, &failures).open(t, "?request_retry_timeout=1h&request_retry_max_attempts=3")
 
 	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
-
 	collectInts(t, rows)
 
 	require.Error(t, rows.Err())
-
-	require.ErrorContains(t, rows.Err(), "max retries reached for status code 502")
-	assert.Equal(t, attempts, failCounter.Load(), "Expected the download to be attempted once and retried five times")
+	assert.EqualValues(t, 3, failures.Load())
 }
 
 // shortenSegmentDownloadRetries keeps the retry tests from waiting for the
