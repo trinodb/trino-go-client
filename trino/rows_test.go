@@ -128,7 +128,10 @@ func TestSetRoleHeader(t *testing.T) {
 		statementPage().withHeader(trinoSetRoleHeader, "hive=ROLE%7Badmin%7D"),
 		resultPage([][]any{{1}}),
 	)
-	rows, err := db.Query("SET ROLE admin IN hive")
+	conn, err := db.Conn(context.Background())
+	require.NoError(t, err)
+	defer conn.Close()
+	rows, err := conn.QueryContext(context.Background(), "SET ROLE admin IN hive")
 	require.NoError(t, err)
 	require.NoError(t, rows.Close())
 
@@ -138,7 +141,7 @@ func TestSetRoleHeader(t *testing.T) {
 			withHeader(trinoSetRoleHeader, "catalog=NONE"),
 		resultPage([][]any{{1}}),
 	)
-	rows, err = db.Query("SET ROLE writer IN iceberg")
+	rows, err = conn.QueryContext(context.Background(), "SET ROLE writer IN iceberg")
 	require.NoError(t, err)
 	require.NoError(t, rows.Close())
 
@@ -148,6 +151,27 @@ func TestSetRoleHeader(t *testing.T) {
 	assert.Equal(t, "catalog=ROLE{user},hive=ROLE%7Badmin%7D", requests[1].header.Get(trinoRoleHeader), "server-set role should be added to the DSN role")
 	assert.Equal(t, "catalog=ROLE{user},hive=ROLE%7Badmin%7D", requests[2].header.Get(trinoRoleHeader), "roles should carry over to the next statement")
 	assert.Equal(t, "catalog=NONE,hive=ROLE%7Badmin%7D,iceberg=ROLE%7Bwriter%7D", requests[3].header.Get(trinoRoleHeader), "every Set-Role value should be applied and roles of other catalogs kept")
+}
+
+// A role selected through a plain db.Query does not follow the pooled
+// connection to the next caller.
+func TestPooledQueryDoesNotLeakRole(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "?roles=catalog%3Auser")
+	db.SetMaxOpenConns(1)
+
+	fc.respond(statementPage().withHeader(trinoSetRoleHeader, "hive=ROLE%7Badmin%7D"), emptyPage())
+	_, err := db.Exec("SET ROLE admin IN hive")
+	require.NoError(t, err)
+
+	fc.respond(statementPage(), emptyPage())
+	_, err = db.Exec("SELECT 1")
+	require.NoError(t, err)
+
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 4)
+	assert.Equal(t, "catalog=ROLE{user}", requests[2].header.Get(trinoRoleHeader))
 }
 
 func TestClientMetadataHeaders(t *testing.T) {

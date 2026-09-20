@@ -154,6 +154,12 @@ const (
 	trinoErrorTransactionAlreadyAborted = "TRANSACTION_ALREADY_ABORTED"
 	trinoErrorNotInTransaction          = "NOT_IN_TRANSACTION"
 
+	trinoOriginalUserHeader           = trinoHeaderPrefix + `Original-User`
+	trinoOriginalRolesHeader          = trinoHeaderPrefix + `Original-Roles`
+	trinoSetAuthorizationUserHeader   = trinoHeaderPrefix + `Set-Authorization-User`
+	trinoResetAuthorizationUserHeader = trinoHeaderPrefix + `Reset-Authorization-User`
+	trinoSetOriginalRolesHeader       = trinoHeaderPrefix + `Set-Original-Roles`
+
 	trinoProgressCallbackParam       = trinoHeaderPrefix + `Progress-Callback`
 	trinoProgressCallbackPeriodParam = trinoHeaderPrefix + `Progress-Callback-Period`
 
@@ -169,7 +175,7 @@ const (
 	trinoClientCapabilitiesHeader = trinoHeaderPrefix + `Client-Capabilities`
 	// clientCapabilities lists what the driver can decode; the server falls
 	// back to a plainer representation for every capability left out.
-	clientCapabilities = "PARAMETRIC_DATETIME,NUMBER,PATH"
+	clientCapabilities = "PARAMETRIC_DATETIME,NUMBER,PATH,SESSION_AUTHORIZATION"
 	trinoEncoding      = "encoding"
 	trinoWarningsParam = "warnings"
 
@@ -553,6 +559,16 @@ type Conn struct {
 	forwardAuthorizationHeader bool
 	queryTimeout               *time.Duration
 	heartbeatInterval          *time.Duration
+	// configuredUser is the X-Trino-User value from the DSN.
+	configuredUser string
+	// configuredRoles is the X-Trino-Role value from Config.Roles.
+	configuredRoles string
+	// authorizationUser is the user set by SET SESSION AUTHORIZATION, or
+	// empty when none is active. X-Trino-Original-User cannot tell, since it
+	// is empty when the DSN has no user.
+	authorizationUser string
+	// preAuthorizationRoles is the X-Trino-Role value to restore on reset.
+	preAuthorizationRoles string
 	// timeZone is sent as X-Trino-Time-Zone; sessionTimeZone is set when the
 	// server reports a SET TIME ZONE and takes precedence while it lasts
 	timeZone        *time.Location
@@ -716,6 +732,7 @@ func newConn(dsn string) (*Conn, error) {
 			c.auth = serverURL.User
 		}
 	}
+	c.configuredUser = user
 
 	if tags := conf.ClientTags; tags != nil {
 		c.httpHeaders.Add(trinoTagsHeader, strings.Join(tags, commaSeparator))
@@ -725,6 +742,7 @@ func newConn(dsn string) (*Conn, error) {
 		rolesHeader := formatRolesFromMap(conf.Roles)
 		if rolesHeader != "" {
 			c.httpHeaders.Add(trinoRoleHeader, rolesHeader)
+			c.configuredRoles = rolesHeader
 		}
 	}
 
@@ -886,11 +904,14 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 	return &driverTx{conn: c}, nil
 }
 
-// ResetSession implements the driver.SessionResetter interface. It drops any
-// transaction state so a connection returning to the pool cannot leak its
-// transaction ID into unrelated queries.
+// ResetSession implements the driver.SessionResetter interface. It drops
+// the transaction, authorization user and roles of the previous caller.
 func (c *Conn) ResetSession(ctx context.Context) error {
-	c.deleteHTTPHeader(trinoTransactionHeader)
+	c.httpHeadersMu.Lock()
+	defer c.httpHeadersMu.Unlock()
+	c.httpHeaders.Del(trinoTransactionHeader)
+	c.resetAuthorization()
+	c.setConfiguredRolesHeader()
 	return nil
 }
 
@@ -1153,6 +1174,103 @@ func (c *Conn) applyResponseHeaders(headers http.Header) {
 	if v := headers.Get(trinoClearTransactionHeader); v != "" {
 		c.httpHeaders.Set(trinoTransactionHeader, noTransactionID)
 	}
+	// Roles of the previous identity do not apply to the new one.
+	if v := headers.Get(trinoSetAuthorizationUserHeader); v != "" {
+		if c.authorizationUser == "" {
+			c.preAuthorizationRoles = c.httpHeaders.Get(trinoRoleHeader)
+		}
+		c.httpHeaders.Set(trinoUserHeader, v)
+		c.httpHeaders.Set(trinoOriginalUserHeader, c.configuredUser)
+		c.httpHeaders.Del(trinoOriginalRolesHeader)
+		// The server does not URL-encode these values.
+		for _, role := range headers.Values(trinoSetOriginalRolesHeader) {
+			c.httpHeaders.Add(trinoOriginalRolesHeader, role)
+		}
+		c.httpHeaders.Del(trinoRoleHeader)
+		c.authorizationUser = v
+	}
+	if v := headers.Get(trinoResetAuthorizationUserHeader); v != "" {
+		c.resetAuthorization()
+	}
+}
+
+// resetAuthorization reverts SET SESSION AUTHORIZATION, if active. Callers
+// must hold httpHeadersMu for writing.
+func (c *Conn) resetAuthorization() {
+	if c.authorizationUser == "" {
+		return
+	}
+	c.setConfiguredUserHeader()
+	if c.preAuthorizationRoles == "" {
+		c.httpHeaders.Del(trinoRoleHeader)
+	} else {
+		c.httpHeaders.Set(trinoRoleHeader, c.preAuthorizationRoles)
+	}
+	c.httpHeaders.Del(trinoOriginalUserHeader)
+	c.httpHeaders.Del(trinoOriginalRolesHeader)
+	c.authorizationUser = ""
+	c.preAuthorizationRoles = ""
+}
+
+type authorizationSnapshot struct {
+	user                  string
+	preAuthorizationRoles string
+	headers               http.Header
+}
+
+var authorizationHeaders = []string{trinoUserHeader, trinoOriginalUserHeader, trinoOriginalRolesHeader, trinoRoleHeader}
+
+func (c *Conn) snapshotAuthorization() authorizationSnapshot {
+	c.httpHeadersMu.RLock()
+	defer c.httpHeadersMu.RUnlock()
+	s := authorizationSnapshot{
+		user:                  c.authorizationUser,
+		preAuthorizationRoles: c.preAuthorizationRoles,
+		headers:               http.Header{},
+	}
+	for _, name := range authorizationHeaders {
+		if v := c.httpHeaders.Values(name); v != nil {
+			s.headers[name] = slices.Clone(v)
+		}
+	}
+	return s
+}
+
+// restoreAuthorization undoes an authorization change made by a statement
+// that failed afterwards.
+func (c *Conn) restoreAuthorization(s authorizationSnapshot) {
+	c.httpHeadersMu.Lock()
+	defer c.httpHeadersMu.Unlock()
+	if c.authorizationUser == s.user {
+		return
+	}
+	for _, name := range authorizationHeaders {
+		if v, ok := s.headers[name]; ok {
+			c.httpHeaders[name] = v
+		} else {
+			c.httpHeaders.Del(name)
+		}
+	}
+	c.authorizationUser = s.user
+	c.preAuthorizationRoles = s.preAuthorizationRoles
+}
+
+// Callers must hold httpHeadersMu for writing.
+func (c *Conn) setConfiguredUserHeader() {
+	if c.configuredUser == "" {
+		c.httpHeaders.Del(trinoUserHeader)
+		return
+	}
+	c.httpHeaders.Set(trinoUserHeader, c.configuredUser)
+}
+
+// Callers must hold httpHeadersMu for writing.
+func (c *Conn) setConfiguredRolesHeader() {
+	if c.configuredRoles == "" {
+		c.httpHeaders.Del(trinoRoleHeader)
+		return
+	}
+	c.httpHeaders.Set(trinoRoleHeader, c.configuredRoles)
 }
 
 // applySessionTimeZone follows a SET TIME ZONE reported by the server, so
@@ -1417,8 +1535,10 @@ func (st *driverStmt) Exec(args []driver.Value) (driver.Result, error) {
 }
 
 func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
+	authorization := st.conn.snapshotAuthorization()
 	sr, err := st.exec(ctx, args)
 	if err != nil {
+		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
 	rows := &driverRows{
@@ -1436,6 +1556,7 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 	}
 
 	if err != nil && err != io.EOF {
+		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
 	return rows, nil
@@ -1590,19 +1711,23 @@ func (st *driverStmt) Query(args []driver.Value) (driver.Rows, error) {
 }
 
 func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
+	authorization := st.conn.snapshotAuthorization()
 	sr, err := st.exec(ctx, args)
 	if err != nil {
+		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
 	rows := &driverRows{
-		ctx:     ctx,
-		stmt:    st,
-		queryID: sr.ID,
-		nextURI: sr.NextURI,
-		statsCh: st.statsCh,
-		doneCh:  st.doneCh,
+		ctx:           ctx,
+		stmt:          st,
+		queryID:       sr.ID,
+		nextURI:       sr.NextURI,
+		statsCh:       st.statsCh,
+		doneCh:        st.doneCh,
+		authorization: &authorization,
 	}
 	if err = rows.fetch(); err != nil && err != io.EOF {
+		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
 	return rows, nil
@@ -2027,6 +2152,9 @@ type driverRows struct {
 
 	statsCh chan QueryProgressInfo
 	doneCh  chan struct{}
+
+	// authorization is restored if the query fails while reading rows.
+	authorization *authorizationSnapshot
 }
 
 var _ driver.Rows = &driverRows{}
@@ -2123,7 +2251,13 @@ func (qr *driverRows) ColumnTypePrecisionScale(index int) (precision, scale int6
 // size as the Columns() are wide.
 //
 // Next should return io.EOF when there are no more rows.
-func (qr *driverRows) Next(dest []driver.Value) error {
+func (qr *driverRows) Next(dest []driver.Value) (err error) {
+	defer func() {
+		if err != nil && err != io.EOF && qr.authorization != nil {
+			qr.stmt.conn.restoreAuthorization(*qr.authorization)
+			qr.authorization = nil
+		}
+	}()
 	if qr.err != nil {
 		return qr.err
 	}
