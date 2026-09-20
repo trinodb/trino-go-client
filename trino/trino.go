@@ -62,6 +62,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -2026,6 +2027,10 @@ type SegmentFetcher struct {
 	httpClient          http.Client
 	spooledMetadata     spooledMetadata
 	requestRetryTimeout time.Duration
+	// queryID identifies the query a downloaded segment belongs to; it is
+	// only used to label a persistent acknowledgement failure in the log
+	// (see fetchSegment).
+	queryID string
 }
 
 // roundTrip downloads a segment through the same retry loop as
@@ -2083,7 +2088,6 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 
 	//acknowledge the segment read
 	go func() {
-		// TODO: handle ack erros
 		// The download workers are stopped as soon as the last row is
 		// consumed, which can be before this goroutine runs; the
 		// acknowledgement must outlive them.
@@ -2091,6 +2095,7 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 		defer cancel()
 		ackReq, err := http.NewRequestWithContext(ctx, "GET", sf.spooledMetadata.ackUri, nil)
 		if err != nil {
+			sf.logAckFailure(err)
 			return
 		}
 
@@ -2100,14 +2105,42 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 			}
 		}
 
-		resp, err := sf.httpClient.Do(ackReq)
+		// Retried the same way as the segment download itself (transient
+		// network errors and 502/503/504, within requestRetryTimeout); a
+		// persistent failure is only logged, never returned — the rows were
+		// already read correctly, and the only loss on a dropped ack is the
+		// coordinator holding the segment in storage until its TTL expires.
+		resp, err := doRetryableRequest(ctx, &sf.httpClient, ackReq, sf.requestRetryTimeout, segmentDownloadInitialDelay, transientNetworkError)
 		if err != nil {
+			sf.logAckFailure(err)
 			return
 		}
-		resp.Body.Close()
+		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			sf.logAckFailure(fmt.Errorf("unexpected status %d", resp.StatusCode))
+		}
 	}()
 
 	return data, nil
+}
+
+// logAckFailure reports a spooled segment acknowledgement that could not be
+// delivered even after retrying. It is deliberately the only effect of that
+// failure: acknowledging a segment is cleanup (it lets the coordinator free
+// the segment from spooling storage before its TTL), not correctness, so it
+// must never fail the query that already read the segment successfully.
+//
+// This logs to slog.Default() rather than a per-connection logger because
+// the driver has no way to reach one here: database/sql's Driver.Open(name
+// string) only ever sees the DSN string, so there is no per-Conn hook to
+// thread a *slog.Logger through short of adding a driver.Connector, which is
+// a larger change tracked separately (trinodb/trino-go-client#222).
+func (sf *SegmentFetcher) logAckFailure(err error) {
+	slog.Default().Warn("trino: failed to acknowledge spooled segment",
+		"query_id", sf.queryID,
+		"segment_uri", sf.spooledMetadata.uri,
+		"err", err,
+	)
 }
 
 func formatStringLiteral(query string) string {
@@ -2635,7 +2668,7 @@ func (qr *driverRows) fetch() error {
 				}
 			case map[string]interface{}:
 				// spooling protocol
-				qr.stmt.startSpoolingProtocolWorkers(qr.ctx)
+				qr.stmt.startSpoolingProtocolWorkers(qr.ctx, qr.queryID)
 				qr.stmt.sendHeartbeatURI(qresp.NextURI)
 				qr.startOrderedSegmentStreamer()
 
@@ -2665,7 +2698,7 @@ func (qr *driverRows) fetch() error {
 	}
 }
 
-func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
+func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context, queryID string) {
 	st.usingSpooledProtocol = true
 
 	if st.spoolingWorkerCount == 0 {
@@ -2699,7 +2732,7 @@ func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
 	st.heartbeatNextURICh = make(chan string, 1)
 
 	st.startSegmentDispatcher()
-	st.startDownloadSegmentsWorkers(downloadSegmentsCtx)
+	st.startDownloadSegmentsWorkers(downloadSegmentsCtx, queryID)
 	st.startSegmentsDecodersWorkers(decodeSegmentCtx)
 	st.startHeartbeat(ctx)
 }
@@ -2867,7 +2900,7 @@ func (st *driverStmt) startSegmentDispatcher() {
 	}()
 }
 
-func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
+func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context, queryID string) {
 	st.waitDownloadSegmentsWorkers.Add(st.spoolingWorkerCount)
 	for i := 0; i < st.spoolingWorkerCount; i++ {
 		go func() {
@@ -2884,6 +2917,7 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 						httpClient:          st.conn.httpClient,
 						spooledMetadata:     metadata,
 						requestRetryTimeout: st.conn.requestRetryTimeout,
+						queryID:             queryID,
 					}
 
 					segment, err := segmentFetcher.fetchSegment()
