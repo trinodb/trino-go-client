@@ -118,6 +118,55 @@ func testIntegrationTypeConversion(t *testing.T, db *sql.DB, args ...any) {
 	assert.Equal(t, []interface{}{json.Number("1"), "a", "2017-07-10 01:02:03.004000 UTC", []interface{}{"c"}}, goRow, "GoRow")
 }
 
+// TestIntegrationNonStandardTypes covers the types Trino serializes without
+// a dedicated JSON encoding. Like the Java client, the driver returns
+// geometries and colors as text, Bing tiles as the JSON object the server
+// sent, and everything else, like HyperLogLog sketches, as the base64-decoded
+// bytes, so the sketch reads back identical to its VARBINARY cast.
+func TestIntegrationNonStandardTypes(t *testing.T) {
+	db := integrationOpen(t)
+
+	var (
+		sketch         []byte
+		sketchAsBinary []byte
+		nullSketch     []byte
+		geometry       string
+		geography      string
+		color          string
+		bingTile       map[string]interface{}
+	)
+	rows, err := db.Query(`
+		SELECT
+			approx_set(1),
+			CAST(approx_set(1) AS VARBINARY),
+			CAST(NULL AS HyperLogLog),
+			ST_Point(1, 2),
+			to_spherical_geography(ST_Point(1, 2)),
+			color('red'),
+			bing_tile(1, 2, 3)
+	`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err)
+	assert.Equal(t, "HYPERLOGLOG", columnTypes[0].DatabaseTypeName())
+	assert.Equal(t, reflect.TypeOf([]byte{}), columnTypes[0].ScanType())
+	assert.Equal(t, reflect.TypeOf(sql.NullString{}), columnTypes[3].ScanType())
+	assert.Equal(t, "BINGTILE", columnTypes[6].DatabaseTypeName())
+
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&sketch, &sketchAsBinary, &nullSketch, &geometry, &geography, &color, &bingTile))
+
+	assert.NotEmpty(t, sketch)
+	assert.Equal(t, sketchAsBinary, sketch)
+	assert.Nil(t, nullSketch)
+	assert.Equal(t, "POINT (1 2)", geometry)
+	assert.Equal(t, "POINT (1 2)", geography)
+	assert.Equal(t, "red", color)
+	assert.Equal(t, map[string]interface{}{"x": json.Number("1"), "y": json.Number("2"), "zoom": json.Number("3")}, bingTile)
+}
+
 // TestComplexTypes pins down how ROW and MAP values decode when nested,
 // which TestIntegrationTypeConversion does not exercise: the driver does not
 // parse these into structured Go types, it passes through whatever shape the

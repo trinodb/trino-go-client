@@ -3081,7 +3081,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 	switch typeNames[0] {
 	case "boolean":
 		v = sql.NullBool{}
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "color", "unknown":
 		v = sql.NullString{}
 	case "varbinary":
 		v = []byte{}
@@ -3152,6 +3152,11 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				// if this is a 4 or more dimensional array, scan type will be an empty interface
 			}
 		}
+	case "row", "KdbTree", "BingTile":
+		// passed through in the shape the JSON response used, so there is no dedicated scan type
+	default:
+		// every type without a textual form, like HyperLogLog or SetDigest, arrives as base64 like varbinary
+		v = []byte{}
 	}
 	if v == nil {
 		return reflect.TypeOf(new(interface{})).Elem(), nil
@@ -3168,18 +3173,12 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bool, err
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "unknown":
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "color", "unknown":
 		vv, err := scanNullString(v)
 		if !vv.Valid {
 			return nil, err
 		}
 		return vv.String, err
-	case "varbinary":
-		vv, err := scanNullBytes(v)
-		if !vv.Valid {
-			return nil, err
-		}
-		return vv.Bytes, err
 	case "tinyint", "smallint", "integer", "bigint":
 		vv, err := scanNullInt64(v)
 		if !vv.Valid {
@@ -3213,8 +3212,18 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return v, nil
+	case "KdbTree", "BingTile":
+		if err := validateMap(v); err != nil {
+			return nil, err
+		}
+		return v, nil
 	default:
-		return nil, fmt.Errorf("type not supported: %q", c.typeName)
+		// varbinary, and every type without a textual form like HyperLogLog or SetDigest, arrive as base64 strings
+		vv, err := scanNullBytes(v)
+		if !vv.Valid {
+			return nil, err
+		}
+		return vv.Bytes, err
 	}
 }
 
