@@ -284,6 +284,47 @@ func assertTimeIn(t *testing.T, zone string, got time.Time) {
 	assert.Equal(t, zone, got.Location().String())
 }
 
+// TestQueryUnknownTypeColumns covers columns whose raw type is outside the
+// driver's fixed list, mirroring how the Java client decodes them: Color as
+// a string, KdbTree/BingTile/variant passed through unchanged, and any other
+// unknown raw type (HyperLogLog here) base64-decoded to []byte, including
+// NULL and a malformed payload.
+func TestQueryUnknownTypeColumns(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		rawType string
+		payload any
+		want    any
+		wantErr string
+	}{
+		{name: "HyperLogLog decodes base64 to bytes", rawType: "HyperLogLog", payload: "AAI=", want: []byte{0x00, 0x02}},
+		{name: "Color scans as a string", rawType: "color", payload: "red", want: "red"},
+		{name: "BingTile passes through as an object", rawType: "BingTile", payload: map[string]any{"a": json.Number("1")}, want: map[string]any{"a": json.Number("1")}},
+		{name: "variant passes through unchanged", rawType: "variant", payload: "hello", want: "hello"},
+		{name: "NULL of an unknown type scans as nil", rawType: "HyperLogLog", payload: nil, want: nil},
+		{name: "non-string payload for an unknown type errors", rawType: "HyperLogLog", payload: true, wantErr: "cannot convert true (bool) to []byte"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), columnsPage([]queryColumn{typedColumn("_col0", tc.rawType)}, [][]any{{tc.payload}}))
+			db := fc.open(t, "")
+
+			var got any
+			err := db.QueryRow("SELECT 1").Scan(&got)
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestExtraCredentialsSentOnlyWithTheStatement(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)

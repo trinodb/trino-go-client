@@ -3081,7 +3081,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 	switch typeNames[0] {
 	case "boolean":
 		v = sql.NullBool{}
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown", "color", "Geometry", "SphericalGeography":
 		v = sql.NullString{}
 	case "varbinary":
 		v = []byte{}
@@ -3152,6 +3152,12 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				// if this is a 4 or more dimensional array, scan type will be an empty interface
 			}
 		}
+	case "row", "KdbTree", "BingTile", "variant":
+		// scanned as-is; falls through to the empty interface below
+	default:
+		// any other raw type (HyperLogLog, qdigest, connector-defined types, ...) is
+		// decoded from its base64 payload, matching the Java client's default behaviour
+		v = []byte{}
 	}
 	if v == nil {
 		return reflect.TypeOf(new(interface{})).Elem(), nil
@@ -3168,7 +3174,7 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bool, err
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "unknown":
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "color", "unknown":
 		vv, err := scanNullString(v)
 		if !vv.Valid {
 			return nil, err
@@ -3213,8 +3219,16 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return v, nil
+	case "KdbTree", "BingTile", "variant":
+		return v, nil
 	default:
-		return nil, fmt.Errorf("type not supported: %q", c.typeName)
+		// any other raw type (HyperLogLog, qdigest, connector-defined types, ...) is
+		// base64 decoded, matching the Java client's default behaviour
+		vv, err := scanNullBytes(v)
+		if !vv.Valid {
+			return nil, err
+		}
+		return vv.Bytes, err
 	}
 }
 

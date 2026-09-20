@@ -336,6 +336,19 @@ func timestampColumn(name string) queryColumn {
 	}
 }
 
+// typedColumn builds a column whose raw type has no arguments, for tests
+// that only care about the raw type name (e.g. HyperLogLog, Color, BingTile).
+func typedColumn(name, rawType string) queryColumn {
+	return queryColumn{
+		Name: name,
+		Type: rawType,
+		TypeSignature: typeSignature{
+			RawType:   rawType,
+			Arguments: []typeArgument{},
+		},
+	}
+}
+
 // spooledSegment describes a segment downloaded from the fake under name.
 func spooledSegment(name string, metadata any) map[string]any {
 	return map[string]any{

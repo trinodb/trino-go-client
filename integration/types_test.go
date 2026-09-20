@@ -997,3 +997,50 @@ func assertTimestampIn(t *testing.T, db *sql.DB, location *time.Location) {
 	assert.True(t, got.Equal(time.Date(2017, 7, 10, 1, 2, 3, 0, location)), "got %v", got)
 	assert.Equal(t, location.String(), got.Location().String())
 }
+
+// TestIntegrationUnknownTypeColumns covers columns of raw types outside the
+// driver's fixed list, mirroring the Java client: Color decodes as a string,
+// and any other unknown raw type (HyperLogLog here) decodes its base64
+// payload to []byte. BingTile passes through as a JSON object, but the
+// geospatial functions are only available when the server has that plugin
+// loaded, so its sub-test checks first and skips when they are absent.
+func TestIntegrationUnknownTypeColumns(t *testing.T) {
+	db := integrationOpen(t)
+
+	t.Run("HyperLogLog from approx_set", func(t *testing.T) {
+		var got any
+		require.NoError(t, db.QueryRow("SELECT approx_set(1)").Scan(&got))
+		bytes, ok := got.([]byte)
+		require.True(t, ok, "want []byte, got %T (%v)", got, got)
+		assert.NotEmpty(t, bytes)
+	})
+
+	t.Run("Color from color()", func(t *testing.T) {
+		var got any
+		require.NoError(t, db.QueryRow("SELECT color('red')").Scan(&got))
+		str, ok := got.(string)
+		require.True(t, ok, "want string, got %T (%v)", got, got)
+		assert.NotEmpty(t, str)
+	})
+
+	t.Run("BingTile from bing_tile()", func(t *testing.T) {
+		if !integrationFunctionExists(t, db, "bing_tile") {
+			t.Skip("bing_tile is not available on this server (geospatial plugin not loaded)")
+		}
+		var got any
+		require.NoError(t, db.QueryRow("SELECT bing_tile(1, 1, 1)").Scan(&got))
+		assert.IsType(t, map[string]any{}, got)
+	})
+}
+
+// integrationFunctionExists reports whether the server has a function named
+// name, e.g. because the plugin that provides it is not loaded in this image.
+func integrationFunctionExists(t *testing.T, db *sql.DB, name string) bool {
+	t.Helper()
+	rows, err := db.Query("SHOW FUNCTIONS LIKE '" + name + "'")
+	require.NoError(t, err)
+	defer rows.Close()
+	exists := rows.Next()
+	require.NoError(t, rows.Err())
+	return exists
+}

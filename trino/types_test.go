@@ -510,14 +510,64 @@ func TestConvertValueFloatSpecialValues(t *testing.T) {
 	}
 }
 
-func TestConvertValueRejectsUnsupportedType(t *testing.T) {
+// TestConvertValueDecodesUnknownRawType covers the fallback for raw types the
+// driver does not otherwise recognize (HyperLogLog, qdigest, connector types,
+// ...): the base64 payload is decoded to []byte, matching the Java client's
+// default behaviour, instead of being rejected.
+func TestConvertValueDecodesUnknownRawType(t *testing.T) {
 	t.Parallel()
 	converter, err := newTypeConverter("HyperLogLog", typeSignature{RawType: "HyperLogLog"}, time.Local)
 	require.NoError(t, err)
 
-	_, err = converter.ConvertValue("AAI=")
+	got, err := converter.ConvertValue("AAI=")
 
-	require.EqualError(t, err, `type not supported: "HyperLogLog"`)
+	require.NoError(t, err)
+	assert.Equal(t, []byte{0x00, 0x02}, got)
+}
+
+// TestConvertValueRejectsNonStringUnknownType covers the error path: an
+// unknown raw type whose payload is not a base64 string still fails, the
+// same way varbinary would.
+func TestConvertValueRejectsNonStringUnknownType(t *testing.T) {
+	t.Parallel()
+	converter, err := newTypeConverter("HyperLogLog", typeSignature{RawType: "HyperLogLog"}, time.Local)
+	require.NoError(t, err)
+
+	_, err = converter.ConvertValue(true)
+
+	require.ErrorContains(t, err, "cannot convert true (bool) to []byte")
+}
+
+// TestConvertValuePassesThroughSelectedUnknownTypes covers the raw types the
+// Java client decodes as an opaque JSON value rather than base64: KdbTree and
+// BingTile are objects, variant carries an arbitrary JSON value.
+func TestConvertValuePassesThroughSelectedUnknownTypes(t *testing.T) {
+	t.Parallel()
+	for _, rawType := range []string{"KdbTree", "BingTile", "variant"} {
+		t.Run(rawType, func(t *testing.T) {
+			converter, err := newTypeConverter(rawType, typeSignature{RawType: rawType}, time.Local)
+			require.NoError(t, err)
+
+			payload := map[string]interface{}{"a": 1.0}
+			got, err := converter.ConvertValue(payload)
+
+			require.NoError(t, err)
+			assert.Equal(t, payload, got)
+		})
+	}
+}
+
+// TestConvertValueColorAsString covers Color, which the Java client decodes
+// as a plain string rather than base64.
+func TestConvertValueColorAsString(t *testing.T) {
+	t.Parallel()
+	converter, err := newTypeConverter("color", typeSignature{RawType: "color"}, time.Local)
+	require.NoError(t, err)
+
+	got, err := converter.ConvertValue("red")
+
+	require.NoError(t, err)
+	assert.Equal(t, "red", got)
 }
 
 func TestConvertValueRejectsInvalidVarbinary(t *testing.T) {
@@ -576,6 +626,32 @@ func TestGetScanTypeRejectsTruncatedArraySignatures(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType)
 	})
+}
+
+func TestGetScanTypeForUnknownRawTypes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		rawType string
+		want    reflect.Type
+	}{
+		{rawType: "color", want: reflect.TypeOf(sql.NullString{})},
+		{rawType: "Geometry", want: reflect.TypeOf(sql.NullString{})},
+		{rawType: "SphericalGeography", want: reflect.TypeOf(sql.NullString{})},
+		{rawType: "KdbTree", want: reflect.TypeOf(new(interface{})).Elem()},
+		{rawType: "BingTile", want: reflect.TypeOf(new(interface{})).Elem()},
+		{rawType: "variant", want: reflect.TypeOf(new(interface{})).Elem()},
+		{rawType: "row", want: reflect.TypeOf(new(interface{})).Elem()},
+		{rawType: "HyperLogLog", want: reflect.TypeOf([]byte{})},
+		{rawType: "qdigest", want: reflect.TypeOf([]byte{})},
+	}
+	for _, tc := range cases {
+		t.Run(tc.rawType, func(t *testing.T) {
+			got, err := getScanType([]string{tc.rawType})
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 // NullTime.Scan accepts only time.Time and NullTime; anything else leaves
