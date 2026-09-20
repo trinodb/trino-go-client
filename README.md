@@ -131,6 +131,31 @@ db.Query("SELECT * FROM foobar WHERE id=?", 1, sql.Named("X-Trino-User", string(
 The position of the X-Trino-User NamedArg is irrelevant and does not affect the
 query in any way.
 
+Trino 426 and newer also let a session switch its authorization user with `SET
+SESSION AUTHORIZATION <user>`, reverted with `RESET SESSION AUTHORIZATION`.
+Statements after the switch run as the new user until the reset. The switch is
+held by the underlying connection, and `database/sql` resets a connection when
+it takes it from the pool, so run the switch and every statement that should
+run as the new user on one [`sql.Conn`](https://godoc.org/database/sql#Conn):
+
+```go
+conn, err := db.Conn(ctx)
+if err != nil {
+	return err
+}
+defer conn.Close()
+
+if _, err := conn.ExecContext(ctx, "SET SESSION AUTHORIZATION bob"); err != nil {
+	return err
+}
+// Runs as bob. A db.Query here would run as the DSN user instead.
+rows, err := conn.QueryContext(ctx, "SELECT current_user")
+```
+
+While the switch is active, the roles from the `roles` parameter and any role
+selected with `SET ROLE` are not sent; they apply again after the reset. Trino
+rejects both statements inside a transaction.
+
 #### Query id and progress
 
 `database/sql` has no way to expose the Trino query id or the statistics the
@@ -450,6 +475,8 @@ Valid values:   A semicolon-separated list of catalog-to-role assignments,
 Default:        empty
 ```
 The roles parameter defines authorization roles to assume for one or more catalogs during the Trino session.
+A role selected with `SET ROLE` lasts until `database/sql` resets the
+connection for its next caller, and no roles are sent while a `SET SESSION AUTHORIZATION` switch is active.
 
 ##### Example
 ``` go
