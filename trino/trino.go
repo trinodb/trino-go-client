@@ -249,7 +249,7 @@ func (d *Driver) OpenConnector(name string) (driver.Connector, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Connector{conf: conf}, nil
+	return newConnector(conf), nil
 }
 
 var (
@@ -260,7 +260,12 @@ var (
 // Connector opens connections from a Config, including the fields a DSN
 // cannot carry. Use it with sql.OpenDB.
 type Connector struct {
-	conf *Config
+	conf         *Config
+	externalAuth *externalAuthenticator
+}
+
+func newConnector(conf *Config) *Connector {
+	return &Connector{conf: conf, externalAuth: newExternalAuthenticator(conf)}
 }
 
 var _ driver.Connector = &Connector{}
@@ -280,7 +285,7 @@ func NewConnector(conf *Config) (*Connector, error) {
 	if err := c.validate(serverURL); err != nil {
 		return nil, err
 	}
-	return &Connector{conf: c}, nil
+	return newConnector(c), nil
 }
 
 func (c *Config) clone() *Config {
@@ -305,6 +310,10 @@ func (c *Config) clone() *Config {
 		cloned.RequestRetryMaxAttempts = new(int)
 		*cloned.RequestRetryMaxAttempts = *c.RequestRetryMaxAttempts
 	}
+	if c.ExternalAuthenticationTimeout != nil {
+		cloned.ExternalAuthenticationTimeout = new(time.Duration)
+		*cloned.ExternalAuthenticationTimeout = *c.ExternalAuthenticationTimeout
+	}
 	return &cloned
 }
 
@@ -314,7 +323,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return newConnFromConfig(c.conf)
+	return newConnFromConfig(c.conf, c.externalAuth)
 }
 
 func (c *Connector) Driver() driver.Driver {
@@ -364,9 +373,14 @@ type Config struct {
 	RequestRetryMaxAttempts    *int              // How many times a single HTTP request is sent (optional; DSN: request_retry_max_attempts)
 	Roles                      map[string]string // Roles (optional)
 
+	ExternalAuthentication        bool           // Obtain a token through the server's external authentication, e.g. OAuth2, when it rejects a request (optional; DSN: externalAuthentication)
+	ExternalAuthenticationTimeout *time.Duration // Time the user has to authenticate (optional, default is 2m; DSN: externalAuthenticationTimeout)
+
 	// Fields below cannot be expressed in a DSN; pass them with NewConnector.
 
-	HTTPClient *http.Client `dsn:"-"` // Client for every request, which never follows redirects (optional)
+	HTTPClient      *http.Client    `dsn:"-"` // Client for every request, which never follows redirects (optional)
+	RedirectHandler RedirectHandler `dsn:"-"` // Sends the user to the external authentication URL (optional, default is OpenBrowser)
+	TokenCache      TokenCache      `dsn:"-"` // Keeps the external authentication token (optional, default is in memory, per Connector)
 }
 
 func (c *Config) applyDefaults() {
@@ -493,6 +507,28 @@ func ParseDSN(dsn string) (*Config, error) {
 		config.HeartbeatInterval = &heartbeat
 	}
 
+	if externalAuth := query.Get(externalAuthenticationConfig); externalAuth != "" {
+		enabled, err := strconv.ParseBool(externalAuth)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid boolean for %s: %q", externalAuthenticationConfig, externalAuth)
+		}
+		if enabled && serverURL.Scheme != "https" {
+			return nil, errExternalAuthenticationNeedsTLS
+		}
+		config.ExternalAuthentication = enabled
+	}
+
+	if timeoutStr := query.Get(externalAuthenticationTimeoutConfig); timeoutStr != "" {
+		timeout, err := time.ParseDuration(timeoutStr)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid duration for %s: %w", externalAuthenticationTimeoutConfig, err)
+		}
+		if timeout <= 0 {
+			return nil, fmt.Errorf("trino: %s must be positive, got %s", externalAuthenticationTimeoutConfig, timeoutStr)
+		}
+		config.ExternalAuthenticationTimeout = &timeout
+	}
+
 	if kerberosParam := query.Get(kerberosEnabledConfig); kerberosParam != "" {
 		enabled, err := strconv.ParseBool(kerberosParam)
 		if err != nil {
@@ -601,6 +637,12 @@ func (c *Config) validate(serverURL *url.URL) error {
 	if c.KerberosEnabled && !isSSL {
 		return errors.New("trino: client configuration error, SSL must be enabled for secure env")
 	}
+	if err := c.validateExternalAuthentication(serverURL); err != nil {
+		return err
+	}
+	if c.ExternalAuthenticationTimeout != nil && *c.ExternalAuthenticationTimeout <= 0 {
+		return fmt.Errorf("trino: %s must be positive, got %s", externalAuthenticationTimeoutConfig, *c.ExternalAuthenticationTimeout)
+	}
 	if c.HeartbeatInterval != nil && *c.HeartbeatInterval <= 0 {
 		return fmt.Errorf("trino: heartbeat_interval must be positive, got %s", *c.HeartbeatInterval)
 	}
@@ -633,6 +675,12 @@ func (c *Config) FormatDSN() (string, error) {
 	if c.HTTPClient != nil {
 		return "", errors.New("trino: HTTPClient cannot be expressed in a DSN, use NewConnector")
 	}
+	if c.RedirectHandler != nil {
+		return "", errors.New("trino: RedirectHandler cannot be expressed in a DSN, use NewConnector")
+	}
+	if c.TokenCache != nil {
+		return "", errors.New("trino: TokenCache cannot be expressed in a DSN, use NewConnector")
+	}
 	c.applyDefaults()
 
 	serverURL, err := url.Parse(c.ServerURI)
@@ -664,6 +712,13 @@ func (c *Config) FormatDSN() (string, error) {
 
 	if c.ForwardAuthorizationHeader {
 		query.Add(forwardAuthorizationHeaderConfig, "true")
+	}
+
+	if c.ExternalAuthentication {
+		query.Add(externalAuthenticationConfig, "true")
+	}
+	if c.ExternalAuthenticationTimeout != nil {
+		query.Add(externalAuthenticationTimeoutConfig, c.ExternalAuthenticationTimeout.String())
 	}
 
 	if c.DisableExplicitPrepare {
@@ -903,6 +958,7 @@ type Conn struct {
 	// server reports a SET TIME ZONE and takes precedence while it lasts
 	timeZone        *time.Location
 	sessionTimeZone *time.Location
+	externalAuth    *externalAuthenticator
 }
 
 var (
@@ -972,12 +1028,19 @@ func newConn(dsn string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newConnFromConfig(conf)
+	return newConnFromConfig(conf, newExternalAuthenticator(conf))
 }
 
-func newConnFromConfig(conf *Config) (*Conn, error) {
-	var kerberosClient *client.Client
+func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn, error) {
+	serverURL, err := url.Parse(conf.ServerURI)
+	if err != nil {
+		return nil, fmt.Errorf("trino: invalid server URL: %w", err)
+	}
+	if err := conf.validateExternalAuthentication(serverURL); err != nil {
+		return nil, err
+	}
 
+	var kerberosClient *client.Client
 	if conf.KerberosEnabled {
 		kt, err := keytab.Load(conf.KerberosKeytabPath)
 		if err != nil {
@@ -993,11 +1056,6 @@ func newConnFromConfig(conf *Config) (*Conn, error) {
 		if loginErr != nil {
 			return nil, fmt.Errorf("trino: Error login to KDC: %v", loginErr)
 		}
-	}
-
-	serverURL, err := url.Parse(conf.ServerURI)
-	if err != nil {
-		return nil, fmt.Errorf("trino: invalid server URL: %w", err)
 	}
 
 	var httpClient = http.DefaultClient
@@ -1047,6 +1105,7 @@ func newConnFromConfig(conf *Config) (*Conn, error) {
 		heartbeatInterval:          conf.HeartbeatInterval,
 		retryLimit:                 retryLimit{timeout: DefaultRequestRetryTimeout, maxAttempts: DefaultRequestRetryMaxAttempts},
 		timeZone:                   timeZone,
+		externalAuth:               externalAuth,
 	}
 
 	if conf.RequestRetryTimeout != nil {
@@ -1433,6 +1492,11 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 	}
 
 	c.copyHTTPHeaders(req.Header)
+	if c.externalAuth != nil {
+		if token := c.externalAuth.cache.Token(); token != "" {
+			req.Header.Set(authorizationHeader, getAuthorization(token))
+		}
+	}
 	for k, v := range hs {
 		req.Header[k] = v
 	}
@@ -1464,22 +1528,55 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 	if req.Method == http.MethodPost {
 		policy = dialPhaseOnly
 	}
-	resp, err := roundTrip(ctx, &c.httpClient, req, c.retryLimit, 100*time.Millisecond, policy)
-	if err != nil {
-		return nil, err
-	}
-	switch resp.StatusCode {
-	case http.StatusOK:
-		c.applyResponseHeaders(resp.Header)
-		return resp, nil
-	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
-		resp.Body.Close()
-		return nil, &ErrQueryFailed{
-			StatusCode: resp.StatusCode,
-			Reason:     fmt.Errorf("redirect to %s not followed", resp.Header.Get("Location")),
+	reauthenticated := false
+	reuses := 0
+	for {
+		resp, err := roundTrip(ctx, &c.httpClient, req, c.retryLimit, 100*time.Millisecond, policy)
+		if err != nil {
+			return nil, err
 		}
-	default:
-		return nil, newErrQueryFailedFromResponse(resp)
+		switch resp.StatusCode {
+		case http.StatusOK:
+			c.applyResponseHeaders(resp.Header)
+			return resp, nil
+		case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+			resp.Body.Close()
+			return nil, &ErrQueryFailed{
+				StatusCode: resp.StatusCode,
+				Reason:     fmt.Errorf("redirect to %s not followed", resp.Header.Get("Location")),
+			}
+		case http.StatusUnauthorized:
+			if c.externalAuth == nil || reauthenticated {
+				return nil, newErrQueryFailedFromResponse(resp)
+			}
+			challenge, err := parseExternalAuthChallenge(resp.Header)
+			if challenge == nil && err == nil {
+				return nil, newErrQueryFailedFromResponse(resp)
+			}
+			resp.Body.Close()
+			if err != nil {
+				return nil, &ErrQueryFailed{StatusCode: resp.StatusCode, Reason: err}
+			}
+			rejected := strings.TrimPrefix(req.Header.Get(authorizationHeader), "Bearer ")
+			token, loggedIn, err := c.externalAuth.authenticate(ctx, &c.httpClient, challenge, rejected, reuses < maxCachedTokenReuses)
+			if err != nil {
+				return nil, &ErrQueryFailed{StatusCode: resp.StatusCode, Reason: err}
+			}
+			if err := rewindRequestBody(req); err != nil {
+				return nil, &ErrQueryFailed{Reason: err}
+			}
+			req.Header.Set(authorizationHeader, getAuthorization(token))
+			// A token another connection cached may be rejected too, so
+			// only a login of our own spends the one retry, and a cache
+			// that keeps offering rejected tokens is bypassed.
+			if loggedIn {
+				reauthenticated = true
+			} else {
+				reuses++
+			}
+		default:
+			return nil, newErrQueryFailedFromResponse(resp)
+		}
 	}
 }
 
