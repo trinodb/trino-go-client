@@ -73,6 +73,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 
@@ -1601,6 +1602,9 @@ type driverStmt struct {
 	heartbeatNextURICh            chan string
 	cancelHeartbeat               context.CancelFunc
 	waitHeartbeat                 sync.WaitGroup
+	waitSegmentAcks               sync.WaitGroup
+	failedSegmentAcks             atomic.Int64
+	lastProgress                  QueryProgressInfo
 }
 
 type segmentToDecode struct {
@@ -1684,6 +1688,16 @@ func (st *driverStmt) Close() error {
 		st.cancelHeartbeat()
 	}
 	st.waitHeartbeat.Wait()
+
+	// Acknowledgments can finish after the last progress update, so report
+	// failures among them once they are all done.
+	if st.conn.progressUpdater != nil && st.usingSpooledProtocol {
+		st.waitSegmentAcks.Wait()
+		if failed := st.failedSegmentAcks.Load(); failed > st.lastProgress.FailedSegmentAcknowledgments {
+			st.lastProgress.FailedSegmentAcknowledgments = failed
+			st.conn.progressUpdater.Update(st.lastProgress)
+		}
+	}
 
 	close(st.nextURIs)
 	close(st.errors)
@@ -2176,6 +2190,8 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			QueryId:    sr.ID,
 			QueryStats: sr.Stats,
 		}
+		st.failedSegmentAcks.Store(0)
+		st.lastProgress = srStats
 		select {
 		case st.statsCh <- srStats:
 		default:
@@ -2191,6 +2207,8 @@ type SegmentFetcher struct {
 	ctx             context.Context
 	httpClient      http.Client
 	spooledMetadata spooledMetadata
+	acks            *sync.WaitGroup
+	failedAcks      *atomic.Int64
 }
 
 func (sf *SegmentFetcher) roundTrip(req *http.Request) (*http.Response, error) {
@@ -2279,9 +2297,15 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 		return nil, fmt.Errorf("error reading response body: %v", err)
 	}
 
-	//acknowledge the segment read
+	// A failed acknowledgment leaves the segment in storage until it expires
+	// but does not affect the rows already read, so it is only counted.
+	if sf.acks != nil {
+		sf.acks.Add(1)
+	}
 	go func() {
-		// TODO: handle ack erros
+		if sf.acks != nil {
+			defer sf.acks.Done()
+		}
 		// The download workers are stopped as soon as the last row is
 		// consumed, which can be before this goroutine runs; the
 		// acknowledgement must outlive them.
@@ -2289,6 +2313,7 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 		defer cancel()
 		ackReq, err := http.NewRequestWithContext(ctx, "GET", sf.spooledMetadata.ackUri, nil)
 		if err != nil {
+			sf.ackFailed()
 			return
 		}
 
@@ -2300,12 +2325,22 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 
 		resp, err := sf.httpClient.Do(ackReq)
 		if err != nil {
+			sf.ackFailed()
 			return
 		}
 		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			sf.ackFailed()
+		}
 	}()
 
 	return data, nil
+}
+
+func (sf *SegmentFetcher) ackFailed() {
+	if sf.failedAcks != nil {
+		sf.failedAcks.Add(1)
+	}
 }
 
 func formatStringLiteral(query string) string {
@@ -3167,6 +3202,8 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 						ctx:             ctx,
 						httpClient:      st.conn.httpClient,
 						spooledMetadata: metadata,
+						acks:            &st.waitSegmentAcks,
+						failedAcks:      &st.failedSegmentAcks,
 					}
 
 					segment, err := segmentFetcher.fetchSegment()
@@ -3387,9 +3424,11 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 	}
 
 	qrStats := QueryProgressInfo{
-		QueryId:    id,
-		QueryStats: stats,
+		QueryId:                      id,
+		QueryStats:                   stats,
+		FailedSegmentAcknowledgments: qr.stmt.failedSegmentAcks.Load(),
 	}
+	qr.stmt.lastProgress = qrStats
 	currentTime := time.Now()
 	diff := currentTime.Sub(qr.stmt.conn.progressUpdaterPeriod.LastCallbackTime)
 	period := qr.stmt.conn.progressUpdaterPeriod.Period
@@ -4431,6 +4470,9 @@ func (s *NullSlice3Map) Scan(value interface{}) error {
 type QueryProgressInfo struct {
 	QueryId    string
 	QueryStats stmtStats
+	// FailedSegmentAcknowledgments counts spooled segments the driver read
+	// but could not acknowledge, which stay in storage until they expire.
+	FailedSegmentAcknowledgments int64
 }
 
 type queryProgressCallbackPeriod struct {
@@ -4441,5 +4483,6 @@ type queryProgressCallbackPeriod struct {
 
 type ProgressUpdater interface {
 	// Update the query progress, immediately when the query starts, when receiving data, and once when the query is finished.
+	// A spooled query whose segment acknowledgments failed gets one more update when its statement is closed.
 	Update(QueryProgressInfo)
 }

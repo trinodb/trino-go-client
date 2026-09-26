@@ -173,6 +173,12 @@ with the `QueryId` and the current query statistics. It is invoked when the
 query is submitted, when a result page is received, and once more when the
 query finishes.
 
+For a query using the spooling protocol, `FailedSegmentAcknowledgments` counts
+the segments the driver read but could not acknowledge. Those segments stay in
+storage until they expire. Acknowledgments can finish after the query does, so
+closing the rows waits for them and, if any failed since the last invocation,
+invokes the callback once more with the final count.
+
 Example:
 
 ```go

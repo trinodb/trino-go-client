@@ -497,6 +497,83 @@ func TestSpoolingProtocolAcknowledgesSegments(t *testing.T) {
 	}, 5*time.Second, time.Millisecond, "every downloaded segment must be acknowledged")
 }
 
+type recordingProgressUpdater struct {
+	mu      sync.Mutex
+	updates []QueryProgressInfo
+}
+
+func (u *recordingProgressUpdater) Update(info QueryProgressInfo) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.updates = append(u.updates, info)
+}
+
+func (u *recordingProgressUpdater) failedAcks() []int64 {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	var failed []int64
+	for _, info := range u.updates {
+		failed = append(failed, info.FailedSegmentAcknowledgments)
+	}
+	return failed
+}
+
+// queryWithProgress reads every row of a spooled query and closes it, which
+// closes the statement and so waits for its acknowledgments.
+func queryWithProgress(t *testing.T, fc *fakeCoordinator, updater ProgressUpdater) {
+	t.Helper()
+	db := fc.open(t, "")
+	rows, err := db.Query("SELECT 1",
+		sql.Named(trinoProgressCallbackParam, updater),
+		sql.Named(trinoProgressCallbackPeriodParam, time.Millisecond))
+	require.NoError(t, err)
+	assert.Equal(t, []int{1000, 1001}, collectInts(t, rows))
+	require.NoError(t, rows.Err(), "a failed acknowledgment must not fail the query")
+	require.NoError(t, rows.Close())
+}
+
+func twoSegmentCoordinator(t *testing.T) *fakeCoordinator {
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg0", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+		spooledSegment("seg1", map[string]any{"segmentSize": 8, "rowOffset": 1, "rowsCount": 1}),
+	))
+	fc.serveSegment("seg0", []byte("[[1000]]"))
+	fc.serveSegment("seg1", []byte("[[1001]]"))
+	return fc
+}
+
+// An acknowledgment that fails after the last page arrived is still reported,
+// in an update sent when the statement closes.
+func TestSpoolingProtocolReportsFailedAcknowledgments(t *testing.T) {
+	t.Parallel()
+	fc := twoSegmentCoordinator(t)
+	fc.handleAck("seg1", func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	updater := &recordingProgressUpdater{}
+
+	queryWithProgress(t, fc, updater)
+
+	failed := updater.failedAcks()
+	require.NotEmpty(t, failed)
+	assert.EqualValues(t, 1, failed[len(failed)-1], "the last update should count the failed acknowledgment")
+	assert.Contains(t, fc.ackedSegments(), "seg0")
+}
+
+func TestSpoolingProtocolNoExtraUpdateWhenAcknowledgmentsSucceed(t *testing.T) {
+	t.Parallel()
+	fc := twoSegmentCoordinator(t)
+	updater := &recordingProgressUpdater{}
+
+	queryWithProgress(t, fc, updater)
+
+	for _, failed := range updater.failedAcks() {
+		assert.Zero(t, failed)
+	}
+}
+
 // newHeartbeatCoordinator serves a single spooled segment whose download
 // completes only when release is closed, so heartbeats are sent while it is
 // in flight. Every page updates the connection headers, so that the race

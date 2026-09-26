@@ -34,14 +34,15 @@ type fakeCoordinator struct {
 	t      testing.TB
 	server *httptest.Server
 
-	mu         sync.Mutex
-	pages      []page
-	beforePage func(index int, r *http.Request)
-	statement  func(w http.ResponseWriter, r *http.Request, query string)
-	downloads  map[string]http.HandlerFunc
-	heartbeat  http.HandlerFunc
-	requests   []capturedRequest
-	acks       []string
+	mu          sync.Mutex
+	pages       []page
+	beforePage  func(index int, r *http.Request)
+	statement   func(w http.ResponseWriter, r *http.Request, query string)
+	downloads   map[string]http.HandlerFunc
+	ackHandlers map[string]http.HandlerFunc
+	heartbeat   http.HandlerFunc
+	requests    []capturedRequest
+	acks        []string
 }
 
 type capturedRequest struct {
@@ -201,6 +202,16 @@ func (fc *fakeCoordinator) handleSegment(name string, handler http.HandlerFunc) 
 	fc.downloads[name] = handler
 }
 
+// handleAck answers a segment's acknowledgment with handler instead of 200.
+func (fc *fakeCoordinator) handleAck(name string, handler http.HandlerFunc) {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	if fc.ackHandlers == nil {
+		fc.ackHandlers = map[string]http.HandlerFunc{}
+	}
+	fc.ackHandlers[name] = handler
+}
+
 // onStatement answers the initial POST itself, for queries whose response
 // depends on the statement text rather than on a fixed sequence of pages, as
 // transaction control does.
@@ -277,8 +288,16 @@ func (fc *fakeCoordinator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(r.URL.Path, "/v1/spooled/download/"):
 		fc.serveDownload(w, r)
 	case strings.HasPrefix(r.URL.Path, "/v1/spooled/ack/"):
+		name := strings.TrimPrefix(r.URL.Path, "/v1/spooled/ack/")
 		fc.mu.Lock()
-		fc.acks = append(fc.acks, strings.TrimPrefix(r.URL.Path, "/v1/spooled/ack/"))
+		handler := fc.ackHandlers[name]
+		fc.mu.Unlock()
+		if handler != nil {
+			handler(w, r)
+			return
+		}
+		fc.mu.Lock()
+		fc.acks = append(fc.acks, name)
 		fc.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	default:
