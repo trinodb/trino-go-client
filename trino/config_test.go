@@ -479,6 +479,9 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	configType := v.Type()
 
 	for i := 0; i < v.NumField(); i++ {
+		if configType.Field(i).Tag.Get("dsn") == "-" {
+			continue
+		}
 		field := v.Field(i)
 		fieldName := configType.Field(i).Name
 		fieldType := field.Type()
@@ -630,11 +633,12 @@ func TestConnErrorDSN(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			// A DSN that does not parse fails in sql.Open, the rest on first use.
 			db, err := sql.Open("trino", tc.dsn)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, db.Close()) })
-
-			_, err = db.Query("SELECT 1")
+			if err == nil {
+				t.Cleanup(func() { require.NoError(t, db.Close()) })
+				_, err = db.Query("SELECT 1")
+			}
 
 			assert.Errorf(t, err, "test dsn is supposed to fail: %s", tc.dsn)
 		})
@@ -696,13 +700,9 @@ func TestHeartbeatIntervalFormatDSNRoundTrip(t *testing.T) {
 	assert.Equal(t, 90*time.Second, *got.HeartbeatInterval)
 }
 
-func TestHeartbeatIntervalPingRejectsInvalidDSN(t *testing.T) {
+func TestHeartbeatIntervalOpenRejectsInvalidDSN(t *testing.T) {
 	t.Parallel()
-	db, err := sql.Open("trino", "http://user@127.0.0.1:9/?heartbeat_interval=0s")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = db.Close() })
-
-	err = db.Ping()
+	_, err := sql.Open("trino", "http://user@127.0.0.1:9/?heartbeat_interval=0s")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "heartbeat_interval must be positive")
 }
@@ -763,11 +763,7 @@ func TestSSLCertTrustsServer(t *testing.T) {
 
 func TestSSLVerificationModeInvalid(t *testing.T) {
 	t.Parallel()
-	db, err := sql.Open("trino", "https://localhost:9?SSLVerification=bogus")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-
-	err = db.Ping()
+	_, err := sql.Open("trino", "https://localhost:9?SSLVerification=bogus")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid SSL verification mode")
 }

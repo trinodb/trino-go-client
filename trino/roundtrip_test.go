@@ -308,10 +308,10 @@ func TestQueryTimeoutDeadline(t *testing.T) {
 			// the parked handler cannot block the server from closing
 			t.Cleanup(func() { close(testDone) })
 			db, err := sql.Open("trino", ts.URL+"?query_timeout="+tc.queryTimeout)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, db.Close()) })
-
-			_, err = db.Query("SELECT 1")
+			if err == nil {
+				t.Cleanup(func() { require.NoError(t, db.Close()) })
+				_, err = db.Query("SELECT 1")
+			}
 			assert.ErrorContains(t, err, tc.wantErr)
 		})
 	}
