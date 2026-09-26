@@ -110,6 +110,32 @@ func TestFormatDSN(t *testing.T) {
 			want: "https://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client",
 		},
 		{
+			name: "SSL client cert and key path",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8080",
+				SSLClientCertPath: "client.pem",
+				SSLClientKeyPath:  "client-key.pem",
+			},
+			want: "https://foobar@localhost:8080?SSLClientCertPath=client.pem&SSLClientKeyPath=client-key.pem&source=trino-go-client",
+		},
+		{
+			name: "SSL client cert and key string",
+			config: &Config{
+				ServerURI:     "https://foobar@localhost:8080",
+				SSLClientCert: sampleCertificatePEM,
+				SSLClientKey:  "sample-key",
+			},
+			want: "https://foobar@localhost:8080?SSLClientCert=" + url.QueryEscape(sampleCertificatePEM) + "&SSLClientKey=sample-key&source=trino-go-client",
+		},
+		{
+			name: "SSL verification mode CA",
+			config: &Config{
+				ServerURI:       "https://foobar@localhost:8080",
+				SSLVerification: SSLVerificationCA,
+			},
+			want: "https://foobar@localhost:8080?SSLVerification=CA&source=trino-go-client",
+		},
+		{
 			name: "extra credentials",
 			config: &Config{
 				ServerURI:        "http://foobar@localhost:8080",
@@ -206,6 +232,60 @@ func TestFormatDSNRejects(t *testing.T) {
 		{
 			name:   "password without TLS",
 			config: &Config{ServerURI: "http://user:secret@localhost:8080"},
+		},
+		{
+			name: "client certificate without key",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SSLClientCertPath: "client.pem",
+			},
+		},
+		{
+			name: "client key without certificate",
+			config: &Config{
+				ServerURI:        "https://foobar@localhost:8090",
+				SSLClientKeyPath: "client-key.pem",
+			},
+		},
+		{
+			name: "client certificate without TLS",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8090",
+				SSLClientCertPath: "client.pem",
+				SSLClientKeyPath:  "client-key.pem",
+			},
+		},
+		{
+			name: "client certificate path and string together",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SSLClientCertPath: "client.pem",
+				SSLClientCert:     sampleCertificatePEM,
+				SSLClientKeyPath:  "client-key.pem",
+			},
+		},
+		{
+			name: "client key path and string together",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8090",
+				SSLClientCertPath: "client.pem",
+				SSLClientKeyPath:  "client-key.pem",
+				SSLClientKey:      "sample-key",
+			},
+		},
+		{
+			name: "unknown SSL verification mode",
+			config: &Config{
+				ServerURI:       "https://foobar@localhost:8090",
+				SSLVerification: "bogus",
+			},
+		},
+		{
+			name: "SSL verification without TLS",
+			config: &Config{
+				ServerURI:       "http://foobar@localhost:8090",
+				SSLVerification: SSLVerificationNone,
+			},
 		},
 	}
 
@@ -317,6 +397,25 @@ func TestParseDSNToConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "HTTPS with client certificate path and CA verification",
+			config: &Config{
+				ServerURI:         "https://foobar@localhost:8080",
+				Source:            "trino-go-client",
+				SSLClientCertPath: "client-cert-path",
+				SSLClientKeyPath:  "client-key-path",
+				SSLVerification:   SSLVerificationCA,
+			},
+		},
+		{
+			name: "HTTPS with inline client certificate and key",
+			config: &Config{
+				ServerURI:     "https://localhost:8080",
+				Source:        "trino-go-client",
+				SSLClientCert: "-----BEGIN CERTIFICATE-----\ntest-client-cert-data\n-----END CERTIFICATE-----",
+				SSLClientKey:  "-----BEGIN PRIVATE KEY-----\ntest-client-key-data\n-----END PRIVATE KEY-----",
+			},
+		},
+		{
 			name: "HTTP with explicit default boolean values",
 			config: &Config{
 				ServerURI:                  "http://localhost:8080",
@@ -360,6 +459,11 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"KerberosConfigPath=/etc/krb5.conf&" +
 		"SSLCertPath=/path/to/cert.pem&" +
 		"SSLCert=-----BEGIN%20CERTIFICATE-----test-cert-----END%20CERTIFICATE-----&" +
+		"SSLClientCertPath=/path/to/client-cert.pem&" +
+		"SSLClientCert=-----BEGIN%20CERTIFICATE-----test-client-cert-----END%20CERTIFICATE-----&" +
+		"SSLClientKeyPath=/path/to/client-key.pem&" +
+		"SSLClientKey=-----BEGIN%20PRIVATE%20KEY-----test-client-key-----END%20PRIVATE%20KEY-----&" +
+		"SSLVerification=CA&" +
 		"accessToken=jwt-token-here&" +
 		"explicitPrepare=false&" +
 		"forwardAuthorizationHeader=true&" +
@@ -413,6 +517,11 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, "/etc/krb5.conf", config.KerberosConfigPath)
 	assert.Equal(t, "/path/to/cert.pem", config.SSLCertPath)
 	assert.Equal(t, "-----BEGIN CERTIFICATE-----test-cert-----END CERTIFICATE-----", config.SSLCert)
+	assert.Equal(t, "/path/to/client-cert.pem", config.SSLClientCertPath)
+	assert.Equal(t, "-----BEGIN CERTIFICATE-----test-client-cert-----END CERTIFICATE-----", config.SSLClientCert)
+	assert.Equal(t, "/path/to/client-key.pem", config.SSLClientKeyPath)
+	assert.Equal(t, "-----BEGIN PRIVATE KEY-----test-client-key-----END PRIVATE KEY-----", config.SSLClientKey)
+	assert.Equal(t, SSLVerificationCA, config.SSLVerification)
 	assert.Equal(t, "jwt-token-here", config.AccessToken)
 	assert.Equal(t, true, config.DisableExplicitPrepare)
 	assert.Equal(t, true, config.ForwardAuthorizationHeader)
@@ -634,6 +743,120 @@ func TestSSLCertTrustsServer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			config := tc.config
 			config.ServerURI = fc.url()
+			dsn, err := config.FormatDSN()
+			require.NoError(t, err)
+			db, err := sql.Open("trino", dsn)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			rows, err := db.Query("SELECT 1")
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, []int{1}, collectInts(t, rows))
+		})
+	}
+}
+
+func TestSSLVerificationModeInvalid(t *testing.T) {
+	t.Parallel()
+	db, err := sql.Open("trino", "https://localhost:9?SSLVerification=bogus")
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	err = db.Ping()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid SSL verification mode")
+}
+
+func TestSSLClientCertKeyPairingRejected(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		query string
+	}{
+		{name: "cert without key", query: "SSLClientCert=" + url.QueryEscape(sampleCertificatePEM)},
+		{name: "key without cert", query: "SSLClientKey=sample-key"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			db, err := sql.Open("trino", "https://localhost:9?"+tc.query)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			err = db.Ping()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "must be specified together")
+		})
+	}
+}
+
+func TestSSLClientCertificate(t *testing.T) {
+	t.Parallel()
+	fc := newFakeMTLSCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+
+	cases := []struct {
+		name       string
+		withClient bool
+	}{
+		{name: "with client certificate", withClient: true},
+		{name: "without client certificate", withClient: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := Config{ServerURI: fc.url(), SSLCert: fc.certificatePEM()}
+			if tc.withClient {
+				config.SSLClientCert = fc.clientCertificatePEM()
+				config.SSLClientKey = fc.clientPrivateKeyPEM()
+			}
+			dsn, err := config.FormatDSN()
+			require.NoError(t, err)
+			db, err := sql.Open("trino", dsn)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			rows, err := db.Query("SELECT 1")
+
+			if !tc.withClient {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, []int{1}, collectInts(t, rows))
+		})
+	}
+}
+
+// The coordinator's certificate names a host other than the one dialed.
+func TestSSLVerificationModes(t *testing.T) {
+	t.Parallel()
+	fc := newFakeTLSCoordinatorForHost(t, "example.com")
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+
+	cases := []struct {
+		name    string
+		mode    string
+		trusted bool
+		wantErr string
+	}{
+		{name: "full rejects hostname mismatch", mode: SSLVerificationFull, trusted: true, wantErr: "certificate"},
+		{name: "ca skips hostname check", mode: SSLVerificationCA, trusted: true},
+		{name: "ca rejects untrusted chain", mode: SSLVerificationCA, wantErr: "certificate"},
+		{name: "none skips all checks", mode: SSLVerificationNone},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			config := Config{ServerURI: fc.url(), SSLVerification: tc.mode}
+			if tc.trusted {
+				config.SSLCert = fc.certificatePEM()
+			}
 			dsn, err := config.FormatDSN()
 			require.NoError(t, err)
 			db, err := sql.Open("trino", dsn)

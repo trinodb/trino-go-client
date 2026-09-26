@@ -340,6 +340,52 @@ trino.RegisterCustomClient("otel", otelClient)
 db, err := sql.Open("trino", "https://user@localhost:8080?custom_client=otel")
 ```
 
+##### `SSLCertPath` / `SSLCert`
+
+```
+Type:           string
+Valid values:   a filesystem path (SSLCertPath) or PEM-encoded certificate content (SSLCert)
+Default:        empty (the system trust store is used)
+```
+
+An additional CA certificate the driver should trust, as a file path or as
+inline PEM content; only one of the pair may be set. Requires HTTPS, and is
+ignored when `custom_client` is set.
+
+##### `SSLClientCertPath` / `SSLClientCert` and `SSLClientKeyPath` / `SSLClientKey`
+
+```
+Type:           string
+Valid values:   a filesystem path (...Path) or PEM-encoded content
+Default:        empty (no client certificate is presented)
+```
+
+A PEM client certificate and its private key, for TLS client authentication
+(mutual TLS). The certificate and the key must each be given as either a path
+or inline content, not both, and the certificate and key must be set
+together. Requires HTTPS, and is ignored when `custom_client` is set.
+
+```go
+db, err := sql.Open("trino", "https://user@localhost:8080"+
+    "?SSLClientCertPath=/path/to/client-cert.pem"+
+    "&SSLClientKeyPath=/path/to/client-key.pem")
+```
+
+##### `SSLVerification`
+
+```
+Type:           string
+Valid values:   "FULL", "CA", "NONE"
+Default:        "FULL"
+```
+
+Controls how the driver validates the coordinator's TLS certificate, matching
+the JDBC driver's `SSLVerification` property. `FULL` validates the
+certificate chain and the hostname. `CA` validates the certificate chain but
+not the hostname. `NONE` disables certificate validation entirely and must
+only be used for development, since it also allows a network attacker to
+intercept the connection. Requires HTTPS.
+
 ##### `query_timeout`
 
 ```

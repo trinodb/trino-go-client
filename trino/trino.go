@@ -192,6 +192,11 @@ const (
 	kerberosRemoteServiceNameConfig  = "KerberosRemoteServiceName"
 	sslCertPathConfig                = "SSLCertPath"
 	sslCertConfig                    = "SSLCert"
+	sslClientCertPathConfig          = "SSLClientCertPath"
+	sslClientCertConfig              = "SSLClientCert"
+	sslClientKeyPathConfig           = "SSLClientKeyPath"
+	sslClientKeyConfig               = "SSLClientKey"
+	sslVerificationConfig            = "SSLVerification"
 	accessTokenConfig                = "accessToken"
 	explicitPrepareConfig            = "explicitPrepare"
 	forwardAuthorizationHeaderConfig = "forwardAuthorizationHeader"
@@ -228,6 +233,13 @@ func (d *Driver) Open(name string) (driver.Conn, error) {
 
 var _ driver.Driver = &Driver{}
 
+// Values of Config.SSLVerification, as in the JDBC driver.
+const (
+	SSLVerificationFull = "FULL" // Verify the certificate chain and the hostname (default)
+	SSLVerificationCA   = "CA"   // Verify the certificate chain only
+	SSLVerificationNone = "NONE" // Verify nothing
+)
+
 // Config is a configuration that can be encoded to a DSN string.
 type Config struct {
 	ServerURI                  string            // URI of the Trino server, e.g. http://user@localhost:8080
@@ -250,6 +262,11 @@ type Config struct {
 	KerberosConfigPath         string            // The krb5 config path (optional)
 	SSLCertPath                string            // The SSL cert path for TLS verification (optional)
 	SSLCert                    string            // The SSL cert for TLS verification (optional)
+	SSLClientCertPath          string            // Path to a PEM client certificate for TLS client authentication (optional)
+	SSLClientCert              string            // PEM client certificate for TLS client authentication (optional)
+	SSLClientKeyPath           string            // Path to the PEM private key of the client certificate (optional)
+	SSLClientKey               string            // PEM private key of the client certificate (optional)
+	SSLVerification            string            // FULL, CA or NONE (optional, default FULL)
 	AccessToken                string            // An access token (JWT) for authentication (optional)
 	DisableExplicitPrepare     bool              // Disable the use of explicit prepared statements (optional, default is false)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
@@ -399,6 +416,29 @@ func ParseDSN(dsn string) (*Config, error) {
 		config.SSLCert = sslCert
 	}
 
+	if sslClientCertPath := query.Get(sslClientCertPathConfig); sslClientCertPath != "" {
+		config.SSLClientCertPath = sslClientCertPath
+	}
+
+	if sslClientCert := query.Get(sslClientCertConfig); sslClientCert != "" {
+		config.SSLClientCert = sslClientCert
+	}
+
+	if sslClientKeyPath := query.Get(sslClientKeyPathConfig); sslClientKeyPath != "" {
+		config.SSLClientKeyPath = sslClientKeyPath
+	}
+
+	if sslClientKey := query.Get(sslClientKeyConfig); sslClientKey != "" {
+		config.SSLClientKey = sslClientKey
+	}
+
+	if sslVerification := query.Get(sslVerificationConfig); sslVerification != "" {
+		config.SSLVerification = sslVerification
+	}
+	if _, err := config.sslVerificationMode(); err != nil {
+		return nil, err
+	}
+
 	config.applyDefaults()
 	return config, nil
 }
@@ -469,7 +509,7 @@ func (c *Config) FormatDSN() (string, error) {
 	}
 
 	if c.CustomClientName != "" {
-		if c.SSLCert != "" || c.SSLCertPath != "" {
+		if c.SSLCert != "" || c.SSLCertPath != "" || c.SSLClientCert != "" || c.SSLClientCertPath != "" {
 			return "", fmt.Errorf("trino: client configuration error, a custom client cannot be specific together with a custom SSL certificate")
 		}
 	}
@@ -491,6 +531,26 @@ func (c *Config) FormatDSN() (string, error) {
 			return "", fmt.Errorf("trino: client configuration error, a custom SSL certificate string cannot be specified together with a certificate file")
 		}
 		query.Add(sslCertConfig, c.SSLCert)
+	}
+
+	if err := addPEMParam(query, isSSL, "client certificate", sslClientCertPathConfig, c.SSLClientCertPath, sslClientCertConfig, c.SSLClientCert); err != nil {
+		return "", err
+	}
+	if err := addPEMParam(query, isSSL, "client key", sslClientKeyPathConfig, c.SSLClientKeyPath, sslClientKeyConfig, c.SSLClientKey); err != nil {
+		return "", err
+	}
+	if hasClientCert, hasClientKey := c.SSLClientCert != "" || c.SSLClientCertPath != "", c.SSLClientKey != "" || c.SSLClientKeyPath != ""; hasClientCert != hasClientKey {
+		return "", fmt.Errorf("trino: client configuration error, a client certificate and its key must be specified together")
+	}
+
+	if c.SSLVerification != "" {
+		if !isSSL {
+			return "", fmt.Errorf("trino: client configuration error, SSL must be enabled to specify %s", sslVerificationConfig)
+		}
+		if _, err := c.sslVerificationMode(); err != nil {
+			return "", err
+		}
+		query.Add(sslVerificationConfig, c.SSLVerification)
 	}
 
 	if c.KerberosEnabled {
@@ -538,6 +598,132 @@ func (c *Config) FormatDSN() (string, error) {
 	}
 	serverURL.RawQuery = query.Encode()
 	return serverURL.String(), nil
+}
+
+// addPEMParam adds whichever of a PEM path or value is set.
+func addPEMParam(query url.Values, isSSL bool, label, pathParam, path, valueParam, value string) error {
+	if path == "" && value == "" {
+		return nil
+	}
+	if !isSSL {
+		return fmt.Errorf("trino: client configuration error, SSL must be enabled to specify a %s", label)
+	}
+	if path != "" && value != "" {
+		return fmt.Errorf("trino: client configuration error, a %s file cannot be specified together with a %s string", label, label)
+	}
+	if path != "" {
+		query.Add(pathParam, path)
+	} else {
+		query.Add(valueParam, value)
+	}
+	return nil
+}
+
+func (c *Config) sslVerificationMode() (string, error) {
+	switch mode := c.SSLVerification; mode {
+	case "":
+		return SSLVerificationFull, nil
+	case SSLVerificationFull, SSLVerificationCA, SSLVerificationNone:
+		return mode, nil
+	default:
+		return "", fmt.Errorf("trino: invalid SSL verification mode: %q", mode)
+	}
+}
+
+// clientCertificate returns ok false when no client certificate is set.
+func (c *Config) clientCertificate() (cert tls.Certificate, ok bool, err error) {
+	if c.SSLClientCert != "" && c.SSLClientCertPath != "" {
+		return tls.Certificate{}, false, fmt.Errorf("trino: client configuration error, a client certificate file cannot be specified together with a certificate string")
+	}
+	if c.SSLClientKey != "" && c.SSLClientKeyPath != "" {
+		return tls.Certificate{}, false, fmt.Errorf("trino: client configuration error, a client key file cannot be specified together with a key string")
+	}
+
+	certPEM := []byte(c.SSLClientCert)
+	if c.SSLClientCertPath != "" {
+		if certPEM, err = os.ReadFile(c.SSLClientCertPath); err != nil {
+			return tls.Certificate{}, false, fmt.Errorf("trino: Error loading SSL Client Cert File: %w", err)
+		}
+	}
+	keyPEM := []byte(c.SSLClientKey)
+	if c.SSLClientKeyPath != "" {
+		if keyPEM, err = os.ReadFile(c.SSLClientKeyPath); err != nil {
+			return tls.Certificate{}, false, fmt.Errorf("trino: Error loading SSL Client Key File: %w", err)
+		}
+	}
+
+	switch hasCert, hasKey := len(certPEM) != 0, len(keyPEM) != 0; {
+	case !hasCert && !hasKey:
+		return tls.Certificate{}, false, nil
+	case hasCert != hasKey:
+		return tls.Certificate{}, false, fmt.Errorf("trino: client configuration error, SSLClientCert(Path) and SSLClientKey(Path) must be specified together")
+	}
+
+	cert, err = tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return tls.Certificate{}, false, fmt.Errorf("trino: Error loading SSL client key pair: %w", err)
+	}
+	return cert, true, nil
+}
+
+// verifyCertificateChain verifies the chain against roots, or the system
+// roots when nil, without checking the hostname.
+func verifyCertificateChain(roots *x509.CertPool) func(tls.ConnectionState) error {
+	return func(cs tls.ConnectionState) error {
+		certs := cs.PeerCertificates
+		if len(certs) == 0 {
+			return fmt.Errorf("trino: no peer certificate presented")
+		}
+		intermediates := x509.NewCertPool()
+		for _, cert := range certs[1:] {
+			intermediates.AddCert(cert)
+		}
+		_, err := certs[0].Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates})
+		return err
+	}
+}
+
+// TLSConfig returns the TLS settings of c for an http.Client of your own, or
+// nil when Go's defaults apply.
+func (c *Config) TLSConfig() (*tls.Config, error) {
+	mode, err := c.sslVerificationMode()
+	if err != nil {
+		return nil, err
+	}
+
+	cert := []byte(c.SSLCert)
+	if certPath := c.SSLCertPath; certPath != "" {
+		if cert, err = os.ReadFile(certPath); err != nil {
+			return nil, fmt.Errorf("trino: Error loading SSL Cert File: %w", err)
+		}
+	}
+
+	clientCert, hasClientCert, err := c.clientCertificate()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(cert) == 0 && !hasClientCert && mode == SSLVerificationFull {
+		return nil, nil
+	}
+
+	conf := &tls.Config{}
+	if len(cert) != 0 {
+		certPool := x509.NewCertPool()
+		certPool.AppendCertsFromPEM(cert)
+		conf.RootCAs = certPool
+	}
+	if hasClientCert {
+		conf.Certificates = []tls.Certificate{clientCert}
+	}
+	switch mode {
+	case SSLVerificationCA:
+		conf.InsecureSkipVerify = true
+		conf.VerifyConnection = verifyCertificateChain(conf.RootCAs)
+	case SSLVerificationNone:
+		conf.InsecureSkipVerify = true
+	}
+	return conf, nil
 }
 
 // Conn is a Trino connection.
@@ -674,25 +860,14 @@ func newConn(dsn string) (*Conn, error) {
 			return nil, fmt.Errorf("trino: custom client not registered: %q", clientKey)
 		}
 	} else if serverURL.Scheme == "https" {
-
-		cert := []byte(conf.SSLCert)
-
-		if certPath := conf.SSLCertPath; certPath != "" {
-			cert, err = os.ReadFile(certPath)
-			if err != nil {
-				return nil, fmt.Errorf("trino: Error loading SSL Cert File: %w", err)
-			}
+		tlsConfig, err := conf.TLSConfig()
+		if err != nil {
+			return nil, err
 		}
-
-		if len(cert) != 0 {
-			certPool := x509.NewCertPool()
-			certPool.AppendCertsFromPEM(cert)
-
+		if tlsConfig != nil {
 			httpClient = &http.Client{
 				Transport: &http.Transport{
-					TLSClientConfig: &tls.Config{
-						RootCAs: certPool,
-					},
+					TLSClientConfig: tlsConfig,
 				},
 			}
 		}

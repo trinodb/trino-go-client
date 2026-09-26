@@ -1,16 +1,25 @@
 package trino
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"database/sql"
 	"encoding/json"
 	"encoding/pem"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -70,6 +79,84 @@ func startFakeCoordinator(t testing.TB, start func(http.Handler) *httptest.Serve
 	fc.server = start(fc)
 	t.Cleanup(fc.server.Close)
 	return fc
+}
+
+// newFakeTLSCoordinatorForHost serves a certificate for hostname, not for
+// the address the driver dials.
+func newFakeTLSCoordinatorForHost(t testing.TB, hostname string) *fakeCoordinator {
+	t.Helper()
+	cert, _, _ := generateSelfSignedCert(t, hostname, []string{hostname}, nil)
+	fc := &fakeCoordinator{t: t, downloads: map[string]http.HandlerFunc{}}
+	server := httptest.NewUnstartedServer(fc)
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{cert}}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	fc.server = server
+	return fc
+}
+
+type fakeMTLSCoordinator struct {
+	*fakeCoordinator
+	clientCertPEM string
+	clientKeyPEM  string
+}
+
+// newFakeMTLSCoordinator requires the client certificate it generates.
+func newFakeMTLSCoordinator(t testing.TB) *fakeMTLSCoordinator {
+	t.Helper()
+	serverCert, _, _ := generateSelfSignedCert(t, "fake-coordinator", nil, []net.IP{net.ParseIP("127.0.0.1")})
+	_, clientCertPEM, clientKeyPEM := generateSelfSignedCert(t, "fake-client", nil, nil)
+
+	clientCAs := x509.NewCertPool()
+	clientCAs.AppendCertsFromPEM([]byte(clientCertPEM))
+
+	fc := &fakeCoordinator{t: t, downloads: map[string]http.HandlerFunc{}}
+	server := httptest.NewUnstartedServer(fc)
+	server.TLS = &tls.Config{
+		Certificates: []tls.Certificate{serverCert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    clientCAs,
+	}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	fc.server = server
+
+	return &fakeMTLSCoordinator{fakeCoordinator: fc, clientCertPEM: clientCertPEM, clientKeyPEM: clientKeyPEM}
+}
+
+func (fc *fakeMTLSCoordinator) clientCertificatePEM() string { return fc.clientCertPEM }
+func (fc *fakeMTLSCoordinator) clientPrivateKeyPEM() string  { return fc.clientKeyPEM }
+
+// generateSelfSignedCert returns the certificate and its PEM and key PEM.
+func generateSelfSignedCert(t testing.TB, commonName string, dnsNames []string, ips []net.IP) (cert tls.Certificate, certPEM, keyPEM string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano()),
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              dnsNames,
+		IPAddresses:           ips,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	certPEMBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+	keyPEMBytes := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+
+	cert, err = tls.X509KeyPair(certPEMBytes, keyPEMBytes)
+	require.NoError(t, err)
+
+	return cert, string(certPEMBytes), string(keyPEMBytes)
 }
 
 func (fc *fakeCoordinator) url() string {
