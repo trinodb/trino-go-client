@@ -11,7 +11,7 @@ Trino, and receive the resulting data.
 
 * Native Go implementation
 * Connections over HTTP or HTTPS
-* HTTP Basic, Kerberos, and JSON web token (JWT) authentication
+* HTTP Basic, Kerberos, JSON web token (JWT), and OAuth2 authentication
 * Per-query user information for access control
 * Support custom HTTP client (tunable conn pools, timeouts, TLS)
 * Transactions through `database/sql`, with isolation levels and read-only mode
@@ -87,7 +87,7 @@ have no effect.
 
 ### Authentication
 
-Both HTTP Basic, Kerberos, and JWT authentication are supported.
+HTTP Basic, Kerberos, JWT, and OAuth2 authentication are supported.
 
 #### HTTP Basic authentication
 
@@ -118,6 +118,56 @@ struct.
 Please refer to the [Coordinator JWT
 Authentication](https://trino.io/docs/current/security/jwt.html) for
 server-side configuration.
+
+#### External authentication
+
+With `externalAuthentication=true`, a coordinator that uses
+[OAuth2 authentication](https://trino.io/docs/current/security/oauth2.html)
+logs the user in through the browser, like the JDBC driver does. When the
+coordinator rejects a request, the driver passes the login URL to
+`Config.RedirectHandler`, waits for the token until
+`externalAuthenticationTimeout` (default 2m) passes, and retries the request
+with it, so a query running when the token expires continues. The token is kept
+in `Config.TokenCache` and shared by all connections of a `Connector`. By
+default, `RedirectHandler` is `trino.OpenBrowser`, and the cache holds the
+token in memory.
+
+```go
+connector, err := trino.NewConnector(&trino.Config{
+	ServerURI:              "https://trino.example.com:8443",
+	ExternalAuthentication: true,
+	RedirectHandler: func(ctx context.Context, redirectURL *url.URL) error {
+		fmt.Println("Log in at", redirectURL)
+		return nil
+	},
+})
+```
+
+Implement `trino.TokenCache` to keep the token between runs of a program.
+External authentication **is only supported on encrypted connections over
+HTTPS**, and cannot be combined with a password, Kerberos, or
+`forwardAuthorizationHeader`. An `AccessToken` is sent until a token is cached.
+
+#### OAuth2 client credentials
+
+A service can obtain tokens with the OAuth2 client credentials grant through an
+`HTTPClient` from
+[golang.org/x/oauth2](https://pkg.go.dev/golang.org/x/oauth2/clientcredentials),
+which adds the token to every request and renews it when it expires:
+
+```go
+import "golang.org/x/oauth2/clientcredentials"
+
+credentials := clientcredentials.Config{
+	ClientID:     "trino-client",
+	ClientSecret: secret,
+	TokenURL:     "https://idp.example.com/oauth2/token",
+}
+connector, err := trino.NewConnector(&trino.Config{
+	ServerURI:  "https://trino.example.com:8443",
+	HTTPClient: credentials.Client(context.Background()),
+})
+```
 
 #### Authorization header forwarding
 This driver supports forwarding authorization headers by adding a
@@ -468,6 +518,28 @@ The `heartbeat_interval` parameter sets how often the client sends a **HEAD**
 heartbeat to the current `nextUri` while a **spooled** query is in progress. It
 applies to the whole connection (same idea as session-scoped client settings in
 other Trino clients). Only used when the server uses the spooling protocol.
+
+##### `externalAuthentication`
+
+```
+Type:           bool
+Valid values:   true, false
+Default:        false
+```
+
+The `externalAuthentication` parameter enables [external
+authentication](#external-authentication). It requires HTTPS.
+
+##### `externalAuthenticationTimeout`
+
+```
+Type:           time.Duration
+Valid values:   positive duration string (e.g. 5m)
+Default:        unset (client waits 2m)
+```
+
+The `externalAuthenticationTimeout` parameter sets how long the client waits for
+the user to log in.
 
 ##### `explicitPrepare`
 

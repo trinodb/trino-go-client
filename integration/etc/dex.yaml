@@ -1,0 +1,22 @@
+# OAuth2 provider for the external authentication test. The test reaches the
+# containers as dex:5556 and trino:8443, the names Trino uses on the network.
+issuer: http://dex:5556/dex
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+oauth2:
+  skipApprovalScreen: true
+enablePasswordDB: true
+staticClients:
+  - id: trino
+    name: Trino
+    secret: trino-secret
+    redirectURIs:
+      - https://trino:8443/oauth2/callback
+staticPasswords:
+  - email: test@example.com
+    username: test
+    userID: 08a8684b-db88-4b73-90a9-3cd1661f5466
+    # bcrypt of "password"
+    hash: $2a$10$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W

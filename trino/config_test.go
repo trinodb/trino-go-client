@@ -481,6 +481,8 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"request_retry_timeout=90s&" +
 		"request_retry_max_attempts=4&" +
 		"heartbeat_interval=45s&" +
+		"externalAuthentication=true&" +
+		"externalAuthenticationTimeout=5m&" +
 		"roles=catalog1%3Arole1%3Bcatalog2%3Arole2"
 
 	config, err := ParseDSN(complexDSN)
@@ -549,6 +551,9 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.NotNil(t, config.HeartbeatInterval)
 	assert.Equal(t, 45*time.Second, *config.HeartbeatInterval)
 	assert.Equal(t, map[string]string{"catalog1": "role1", "catalog2": "role2"}, config.Roles)
+	assert.True(t, config.ExternalAuthentication)
+	require.NotNil(t, config.ExternalAuthenticationTimeout)
+	assert.Equal(t, 5*time.Minute, *config.ExternalAuthenticationTimeout)
 }
 
 func TestParseDSNPasswordRequiresTLS(t *testing.T) {
