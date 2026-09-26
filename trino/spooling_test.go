@@ -1,9 +1,11 @@
 package trino
 
 import (
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"slices"
 	"sync"
@@ -160,34 +162,37 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 	}
 }
 
+// TestSpoolingProtocolSegmentDownloadRetryMaxAttempts covers a permanently
+// failing download: since SegmentFetcher.roundTrip dropped its fixed 5-retry
+// counter for the same elapsed-time budget as Conn.roundTrip, giving up now
+// takes a request_retry_timeout, not an attempt count.
 func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
+	// shares the mutable segmentDownloadInitialDelay package var with the
+	// other tests below, so it cannot run in parallel with them.
 	shortenSegmentDownloadRetries(t)
 	var failCounter atomic.Int32
-	// one attempt plus five retries
-	attempts := int32(6)
 
 	fc := newFakeCoordinator(t)
 	fc.respond(statementPage(), spooledPage("json",
 		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
 	))
 	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
-		if failCounter.Load() <= attempts {
-			failCounter.Add(1)
-			w.WriteHeader(http.StatusBadGateway)
-			return
-		}
+		failCounter.Add(1)
+		w.WriteHeader(http.StatusBadGateway)
 	})
-	db := fc.open(t, "")
+	db := fc.open(t, "?request_retry_timeout=200ms")
 
+	start := time.Now()
 	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
 
 	collectInts(t, rows)
+	elapsed := time.Since(start)
 
 	require.Error(t, rows.Err())
-
-	require.ErrorContains(t, rows.Err(), "max retries reached for status code 502")
-	assert.Equal(t, attempts, failCounter.Load(), "Expected the download to be attempted once and retried five times")
+	assert.Less(t, elapsed, 2*time.Second, "the download must give up once its retry budget elapses, not retry forever")
+	assert.ErrorContains(t, rows.Err(), "request_retry_timeout")
+	assert.Greater(t, failCounter.Load(), int32(1), "the download must be retried at least once before giving up")
 }
 
 // shortenSegmentDownloadRetries keeps the retry tests from waiting for the
@@ -495,6 +500,107 @@ func TestSpoolingProtocolAcknowledgesSegments(t *testing.T) {
 		acked := fc.ackedSegments()
 		return slices.Contains(acked, "seg0") && slices.Contains(acked, "seg1")
 	}, 5*time.Second, time.Millisecond, "every downloaded segment must be acknowledged")
+}
+
+// TestSpoolingProtocolAckRetriesTransientFailures covers the #187 half of
+// the retry work: the acknowledgement now goes through the same retry loop
+// as the segment download itself (doRetryableRequest), so a transient 503
+// on the ack endpoint is retried rather than silently dropped.
+func TestSpoolingProtocolAckRetriesTransientFailures(t *testing.T) {
+	t.Parallel()
+	var attempts atomic.Int32
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.serveSegment("seg", []byte("[[1000]]"))
+	fc.handleAck("seg", func(w http.ResponseWriter, r *http.Request) {
+		if attempts.Add(1) <= 2 {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	assert.Equal(t, []int{1000}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+
+	// the acknowledgement, like the download, runs in the background
+	require.Eventually(t, func() bool {
+		return attempts.Load() == 3
+	}, 5*time.Second, time.Millisecond, "the ack must be retried until it succeeds")
+	assert.EqualValues(t, 3, attempts.Load(), "exactly two failed attempts plus the one that succeeded")
+}
+
+// channelSlogHandler forwards every record it handles to a channel, so a
+// test can wait for a log emitted from a background goroutine instead of
+// polling slog's package-private state.
+type channelSlogHandler struct {
+	records chan slog.Record
+}
+
+func (h *channelSlogHandler) Enabled(context.Context, slog.Level) bool { return true }
+
+func (h *channelSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.records <- r
+	return nil
+}
+
+func (h *channelSlogHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *channelSlogHandler) WithGroup(string) slog.Handler      { return h }
+
+// TestSpoolingProtocolAckPersistentFailureIsLogged covers the rest of #187:
+// an ack that fails even after retrying must never fail the query — the rows
+// were already read correctly — but a maintainer needs to know segments are
+// being left behind, so it logs exactly one Warn record to slog.Default().
+//
+// This exercises slog's process-wide default logger, so it cannot run in
+// parallel with anything else that does (there is nothing else in this
+// package that does, but a future test must not add one without noticing).
+func TestSpoolingProtocolAckPersistentFailureIsLogged(t *testing.T) {
+	records := make(chan slog.Record, 4)
+	previous := slog.Default()
+	slog.SetDefault(slog.New(&channelSlogHandler{records: records}))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.serveSegment("seg", []byte("[[1000]]"))
+	fc.handleAck("seg", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	assert.Equal(t, []int{1000}, collectInts(t, rows))
+	require.NoError(t, rows.Err(), "a persistent ack failure must not fail the query")
+
+	select {
+	case rec := <-records:
+		assert.Equal(t, slog.LevelWarn, rec.Level)
+		attrs := map[string]string{}
+		rec.Attrs(func(a slog.Attr) bool {
+			attrs[a.Key] = a.Value.String()
+			return true
+		})
+		assert.Equal(t, fakeQueryID, attrs["query_id"])
+		assert.Contains(t, attrs["segment_uri"], "/v1/spooled/download/seg")
+		assert.NotEmpty(t, attrs["err"])
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected one Warn record for the persistent ack failure")
+	}
+
+	select {
+	case rec := <-records:
+		t.Fatalf("expected exactly one Warn record for the persistent ack failure, got a second: %+v", rec)
+	default:
+	}
 }
 
 // newHeartbeatCoordinator serves a single spooled segment whose download

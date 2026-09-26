@@ -167,6 +167,14 @@ func TestFormatDSN(t *testing.T) {
 			want: "https://foobar@localhost:8090?query_timeout=10s&source=trino-go-client",
 		},
 		{
+			name: "request retry timeout",
+			config: &Config{
+				ServerURI:           "https://foobar@localhost:8090",
+				RequestRetryTimeout: 45 * time.Second,
+			},
+			want: "https://foobar@localhost:8090?request_retry_timeout=45s&source=trino-go-client",
+		},
+		{
 			name: "forward authorization header",
 			config: &Config{
 				ServerURI:                  "https://foobar@localhost:8090",
@@ -281,6 +289,7 @@ func TestParseDSNToConfig(t *testing.T) {
 				ForwardAuthorizationHeader: true,
 				QueryTimeout:               &[]time.Duration{5 * time.Minute}[0],
 				HeartbeatInterval:          &[]time.Duration{2 * time.Minute}[0],
+				RequestRetryTimeout:        90 * time.Second,
 				Roles:                      map[string]string{"catalog1": "role1", "catalog2": "role2"},
 			},
 		},
@@ -364,6 +373,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"explicitPrepare=false&" +
 		"forwardAuthorizationHeader=true&" +
 		"query_timeout=5m30s&" +
+		"request_retry_timeout=90s&" +
 		"heartbeat_interval=45s&" +
 		"roles=catalog1%3Arole1%3Bcatalog2%3Arole2"
 
@@ -390,6 +400,8 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 			assert.True(t, field.Bool(), "Field %s should be true - add it to the test DSN and ParseDSNToConfig", fieldName)
 		case reflect.Ptr:
 			assert.NotNil(t, field.Interface(), "Field %s should not be nil - add it to the test DSN and ParseDSNToConfig", fieldName)
+		case reflect.Int64:
+			assert.NotZero(t, field.Interface(), "Field %s should not be zero - add it to the test DSN and ParseDSNToConfig", fieldName)
 		}
 	}
 
@@ -418,6 +430,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, true, config.ForwardAuthorizationHeader)
 	assert.NotNil(t, config.QueryTimeout)
 	assert.Equal(t, 5*time.Minute+30*time.Second, *config.QueryTimeout)
+	assert.Equal(t, 90*time.Second, config.RequestRetryTimeout)
 	assert.NotNil(t, config.HeartbeatInterval)
 	assert.Equal(t, 45*time.Second, *config.HeartbeatInterval)
 	assert.Equal(t, map[string]string{"catalog1": "role1", "catalog2": "role2"}, config.Roles)
@@ -596,6 +609,34 @@ func TestHeartbeatIntervalPingRejectsInvalidDSN(t *testing.T) {
 	err = db.Ping()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "heartbeat_interval must be positive")
+}
+
+func TestRequestRetryTimeoutDSNParse(t *testing.T) {
+	t.Parallel()
+	base := "http://user@127.0.0.1:9"
+
+	_, err := ParseDSN(base + "/?request_retry_timeout=not_a_duration")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid timeout for request_retry_timeout")
+
+	cfg, err := ParseDSN(base + "/?request_retry_timeout=750ms")
+	require.NoError(t, err)
+	assert.Equal(t, 750*time.Millisecond, cfg.RequestRetryTimeout)
+}
+
+func TestRequestRetryTimeoutFormatDSNRoundTrip(t *testing.T) {
+	t.Parallel()
+	c := &Config{
+		ServerURI:           "http://user@localhost:8080",
+		RequestRetryTimeout: 90 * time.Second,
+	}
+	dsn, err := c.FormatDSN()
+	require.NoError(t, err)
+	assert.Contains(t, dsn, "request_retry_timeout=1m30s")
+
+	got, err := ParseDSN(dsn)
+	require.NoError(t, err)
+	assert.Equal(t, 90*time.Second, got.RequestRetryTimeout)
 }
 
 func TestSSLCertPath(t *testing.T) {
