@@ -297,10 +297,23 @@ func (c *Config) clone() *Config {
 		cloned.HeartbeatInterval = new(time.Duration)
 		*cloned.HeartbeatInterval = *c.HeartbeatInterval
 	}
+	if c.RequestRetryTimeout != nil {
+		cloned.RequestRetryTimeout = new(time.Duration)
+		*cloned.RequestRetryTimeout = *c.RequestRetryTimeout
+	}
+	if c.RequestRetryMaxAttempts != nil {
+		cloned.RequestRetryMaxAttempts = new(int)
+		*cloned.RequestRetryMaxAttempts = *c.RequestRetryMaxAttempts
+	}
 	return &cloned
 }
 
-func (c *Connector) Connect(context.Context) (driver.Conn, error) {
+// Connect checks ctx only before it starts: a Kerberos login and the reading
+// of certificate and keytab files cannot be cancelled.
+func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return newConnFromConfig(c.conf)
 }
 
