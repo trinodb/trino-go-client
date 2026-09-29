@@ -1,9 +1,11 @@
 package trino
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -84,7 +86,7 @@ func TestHTTPClientConflicts(t *testing.T) {
 }
 
 // An HTTPClient must not follow a redirect, which would send the extra
-// credentials to another host.
+// credentials to another host, even when its own CheckRedirect would.
 func TestConnectorHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	t.Parallel()
 	var redirected atomic.Int32
@@ -95,10 +97,13 @@ func TestConnectorHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	source := httptest.NewServer(http.RedirectHandler(target.URL, http.StatusFound))
 	t.Cleanup(source.Close)
 
+	transport := &countingTransport{}
+	follow := func(*http.Request, []*http.Request) error { return nil }
+	client := &http.Client{Transport: transport, CheckRedirect: follow}
 	connector, err := NewConnector(&Config{
 		ServerURI:        source.URL,
 		ExtraCredentials: map[string]string{"token": "secret"},
-		HTTPClient:       &http.Client{},
+		HTTPClient:       client,
 	})
 	require.NoError(t, err)
 	db := sql.OpenDB(connector)
@@ -107,6 +112,51 @@ func TestConnectorHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	_, err = db.Query("SELECT 1")
 	assert.ErrorContains(t, err, "not followed")
 	assert.Zero(t, redirected.Load())
+	assert.Positive(t, transport.requests.Load(), "the request goes through HTTPClient")
+	assert.Equal(t, reflect.ValueOf(follow).Pointer(), reflect.ValueOf(client.CheckRedirect).Pointer(), "the caller's client is not modified")
+}
+
+func TestConnectorConnectHonoursCancelledContext(t *testing.T) {
+	t.Parallel()
+	connector, err := NewConnector(&Config{ServerURI: "http://localhost"})
+	require.NoError(t, err)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = connector.Connect(ctx)
+	assert.ErrorIs(t, err, context.Canceled)
+}
+
+// clone must copy every map, slice and pointer field, so that a change to the
+// caller's Config cannot reach a Connector. Fields tagged dsn:"-" are shared
+// on purpose.
+func TestConfigCloneCopiesReferenceFields(t *testing.T) {
+	t.Parallel()
+	conf := &Config{}
+	v := reflect.ValueOf(conf).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		switch f.Kind() {
+		case reflect.Map:
+			f.Set(reflect.MakeMap(f.Type()))
+			f.SetMapIndex(reflect.Zero(f.Type().Key()), reflect.Zero(f.Type().Elem()))
+		case reflect.Slice:
+			f.Set(reflect.MakeSlice(f.Type(), 1, 1))
+		case reflect.Pointer:
+			f.Set(reflect.New(f.Type().Elem()))
+		}
+	}
+
+	cloned := reflect.ValueOf(conf.clone()).Elem()
+	for i := 0; i < v.NumField(); i++ {
+		field := v.Type().Field(i)
+		switch v.Field(i).Kind() {
+		case reflect.Map, reflect.Slice, reflect.Pointer:
+			if field.Tag.Get("dsn") == "-" {
+				continue
+			}
+			assert.NotEqual(t, v.Field(i).Pointer(), cloned.Field(i).Pointer(), "%s is shared with the clone", field.Name)
+		}
+	}
 }
 
 // Map values are passed as typed, without the DSN's separators.

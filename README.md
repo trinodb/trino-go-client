@@ -77,10 +77,12 @@ if err != nil {
 db := sql.OpenDB(connector)
 ```
 
-The driver does not follow redirects with `HTTPClient`, since they would carry
-the `X-Trino-*` headers to another host. It cannot be combined with
-`custom_client`, `SSLCert` or `SSLCertPath`, and `Config.FormatDSN` returns an
-error when it is set. `NewConnector` copies the `Config`, so later changes to it
+As with the default client, the driver does not follow redirects with
+`HTTPClient`, since they would carry the `X-Trino-*` headers to another host;
+only a registered `custom_client` keeps its own redirect policy. `HTTPClient`
+cannot be combined with `custom_client`, a server or client certificate, or
+`SSLVerification`; `Config.TLSConfig` builds the matching `tls.Config` for its
+transport. `Config.FormatDSN` returns an error when it is set. `NewConnector` copies the `Config`, so later changes to it
 have no effect.
 
 ### Authentication
