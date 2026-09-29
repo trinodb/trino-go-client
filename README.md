@@ -180,6 +180,30 @@ While the switch is active, the roles from the `roles` parameter and any role
 selected with `SET ROLE` are not sent; they apply again after the reset. Trino
 rejects both statements inside a transaction.
 
+#### Session state and the connection pool
+
+Statements that change the session, such as `USE`, `SET PATH`, `SET SESSION`,
+`SET TIME ZONE`, `SET ROLE`, `PREPARE` and `SET SESSION AUTHORIZATION`, change
+it on the underlying connection only. When `database/sql` hands that connection
+to the next caller, the driver puts back the user, catalog, schema, session
+properties, roles and time zone from the DSN, and drops the path and prepared
+statements. To run several statements in one session, use one
+[`sql.Conn`](https://godoc.org/database/sql#Conn):
+
+```go
+conn, err := db.Conn(ctx)
+if err != nil {
+	return err
+}
+defer conn.Close()
+
+if _, err := conn.ExecContext(ctx, "USE tpch.tiny"); err != nil {
+	return err
+}
+// Reads tpch.tiny.nation. A db.Query here would use the DSN catalog and schema.
+rows, err := conn.QueryContext(ctx, "SELECT * FROM nation")
+```
+
 #### Query id and progress
 
 `database/sql` has no way to expose the Trino query id or the statistics the

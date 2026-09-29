@@ -271,16 +271,40 @@ func TestIntegrationExec(t *testing.T) {
 	_, err := db.Query(`SELECT count(*) FROM nation`)
 	require.ErrorContains(t, err, "Schema must be specified when session schema is not set")
 
-	result, err := db.Exec("USE tpch.sf100")
+	// USE lasts only while the connection is pinned.
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	result, err := conn.ExecContext(ctx, "USE tpch.sf100")
 	require.NoError(t, err, "Failed executing query")
 	require.NotNil(t, result, "Expected exec result to be not nil")
 
 	a, err := result.RowsAffected()
 	require.NoError(t, err, "Expected RowsAffected not to return any error")
 	assert.Equal(t, int64(0), a, "RowsAffected")
-	rows, err := db.Query(`SELECT count(*) FROM nation`)
+	rows, err := conn.QueryContext(ctx, `SELECT count(*) FROM nation`)
 	require.NoError(t, err, "Failed executing query")
 	require.True(t, rows.Next(), "Failed fetching results: %v", rows.Err())
+	require.NoError(t, rows.Close())
+}
+
+func TestIntegrationPooledConnectionResetsSession(t *testing.T) {
+	db := integrationOpen(t)
+	db.SetMaxOpenConns(1)
+
+	_, err := db.Exec("USE tpch.sf100")
+	require.NoError(t, err)
+	_, err = db.Exec("SET SESSION query_priority = 5")
+	require.NoError(t, err)
+
+	_, err = db.Query(`SELECT count(*) FROM nation`)
+	require.ErrorContains(t, err, "Schema must be specified when session schema is not set", "USE should not reach the next caller")
+
+	var name, value, defaultValue, typeName, description string
+	require.NoError(t, db.QueryRow("SHOW SESSION LIKE 'query_priority'").Scan(&name, &value, &defaultValue, &typeName, &description))
+	assert.Equal(t, defaultValue, value, "SET SESSION should not reach the next caller")
 }
 
 func TestIntegrationQueryContext(t *testing.T) {
@@ -530,12 +554,16 @@ func TestQueryWarnings(t *testing.T) {
 
 func TestSetPath(t *testing.T) {
 	db := integrationOpen(t)
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
 
-	_, err := db.Exec("SET PATH memory.default, tpch.tiny")
+	_, err = conn.ExecContext(ctx, "SET PATH memory.default, tpch.tiny")
 	require.NoError(t, err)
 
 	var path string
-	require.NoError(t, db.QueryRow("SELECT current_path").Scan(&path))
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT current_path").Scan(&path))
 	assert.Equal(t, "memory.default, tpch.tiny", path)
 }
 
@@ -549,11 +577,15 @@ func TestSession(t *testing.T) {
 	require.NoError(t, err)
 
 	db := integrationOpen(t, dsn)
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
 
-	_, err = db.Exec("SET SESSION join_distribution_type='BROADCAST'")
+	_, err = conn.ExecContext(ctx, "SET SESSION join_distribution_type='BROADCAST'")
 	require.NoError(t, err, "Failed executing query")
 
-	row := db.QueryRow("SHOW SESSION LIKE 'join_distribution_type'")
+	row := conn.QueryRowContext(ctx, "SHOW SESSION LIKE 'join_distribution_type'")
 	var name string
 	var value string
 	var defaultValue string
@@ -564,10 +596,10 @@ func TestSession(t *testing.T) {
 
 	assert.Equal(t, "BROADCAST", value)
 
-	_, err = db.Exec("RESET SESSION join_distribution_type")
+	_, err = conn.ExecContext(ctx, "RESET SESSION join_distribution_type")
 	require.NoError(t, err, "Failed executing query")
 
-	row = db.QueryRow("SHOW SESSION LIKE 'join_distribution_type'")
+	row = conn.QueryRowContext(ctx, "SHOW SESSION LIKE 'join_distribution_type'")
 	err = row.Scan(&name, &value, &defaultValue, &typeName, &description)
 	require.NoError(t, err, "Failed executing query")
 
