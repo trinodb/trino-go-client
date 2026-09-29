@@ -230,6 +230,11 @@ const (
 // segment download; each further retry waits phi times longer.
 var segmentDownloadInitialDelay = 200 * time.Millisecond
 
+// sessionStateHeaders are the request headers that USE, SET PATH, SET SESSION
+// and PREPARE change on a connection. ResetSession restores them to the values
+// the connection was opened with.
+var sessionStateHeaders = []string{trinoCatalogHeader, trinoSchemaHeader, trinoPathHeader, trinoSessionHeader, preparedStatementHeader}
+
 var responseToRequestHeaderMap = map[string]string{
 	trinoSetSchemaHeader:  trinoSchemaHeader,
 	trinoSetCatalogHeader: trinoCatalogHeader,
@@ -953,7 +958,9 @@ type Conn struct {
 	authorizationUser string
 	// preAuthorizationRoles is the X-Trino-Role value to restore on reset.
 	preAuthorizationRoles string
-	retryLimit            retryLimit
+	// configuredSession holds the sessionStateHeaders values from the DSN.
+	configuredSession http.Header
+	retryLimit        retryLimit
 	// timeZone is sent as X-Trino-Time-Zone; sessionTimeZone is set when the
 	// server reports a SET TIME ZONE and takes precedence while it lasts
 	timeZone        *time.Location
@@ -1167,6 +1174,13 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 		}
 	}
 
+	c.configuredSession = http.Header{}
+	for _, name := range sessionStateHeaders {
+		if v := c.httpHeaders.Values(name); v != nil {
+			c.configuredSession[name] = slices.Clone(v)
+		}
+	}
+
 	return c, nil
 }
 
@@ -1296,13 +1310,24 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 }
 
 // ResetSession implements the driver.SessionResetter interface. It drops
-// the transaction, authorization user and roles of the previous caller.
+// the transaction, authorization user and roles of the previous caller, and
+// restores the catalog, schema, path, session properties, prepared statements
+// and time zone to the values the connection was opened with. State that
+// should carry across statements needs a pinned *sql.Conn.
 func (c *Conn) ResetSession(ctx context.Context) error {
 	c.httpHeadersMu.Lock()
 	defer c.httpHeadersMu.Unlock()
 	c.httpHeaders.Del(trinoTransactionHeader)
 	c.resetAuthorization()
 	c.setConfiguredRolesHeader()
+	for _, name := range sessionStateHeaders {
+		if v, ok := c.configuredSession[name]; ok {
+			c.httpHeaders[name] = slices.Clone(v)
+		} else {
+			c.httpHeaders.Del(name)
+		}
+	}
+	c.sessionTimeZone = nil
 	return nil
 }
 

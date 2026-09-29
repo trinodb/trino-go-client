@@ -1,6 +1,7 @@
 package integration
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"math"
@@ -1083,26 +1084,31 @@ func TestIntegrationTimeZone(t *testing.T) {
 
 	t.Run("SET TIME ZONE", func(t *testing.T) {
 		db := integrationOpen(t, integrationDSN(t)+"?timezone=UTC")
-		db.SetMaxOpenConns(1)
+		ctx := context.Background()
+		conn, err := db.Conn(ctx)
+		require.NoError(t, err)
+		defer conn.Close()
 		tokyo, err := time.LoadLocation("Asia/Tokyo")
 		require.NoError(t, err)
 
-		_, err = db.Exec("SET TIME ZONE 'Asia/Tokyo'")
+		_, err = conn.ExecContext(ctx, "SET TIME ZONE 'Asia/Tokyo'")
 		require.NoError(t, err)
 		var zone string
-		require.NoError(t, db.QueryRow("SELECT current_timezone()").Scan(&zone))
+		require.NoError(t, conn.QueryRowContext(ctx, "SELECT current_timezone()").Scan(&zone))
 
 		assert.Equal(t, "Asia/Tokyo", zone)
-		assertTimestampIn(t, db, tokyo)
+		assertTimestampIn(t, conn, tokyo)
 	})
 }
 
 // assertTimestampIn checks that a timestamp without a zone is read on the
 // wall clock of location, the zone the server was told to use.
-func assertTimestampIn(t *testing.T, db *sql.DB, location *time.Location) {
+func assertTimestampIn(t *testing.T, db interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, location *time.Location) {
 	t.Helper()
 	var got time.Time
-	require.NoError(t, db.QueryRow("SELECT TIMESTAMP '2017-07-10 01:02:03'").Scan(&got))
+	require.NoError(t, db.QueryRowContext(context.Background(), "SELECT TIMESTAMP '2017-07-10 01:02:03'").Scan(&got))
 
 	assert.True(t, got.Equal(time.Date(2017, 7, 10, 1, 2, 3, 0, location)), "got %v", got)
 	assert.Equal(t, location.String(), got.Location().String())
