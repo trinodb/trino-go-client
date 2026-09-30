@@ -42,7 +42,7 @@ func testIntegrationTypeConversion(t *testing.T, db *sql.DB, args ...any) {
 		nullFloat64Slice3 trino.NullSlice3Float64
 		goMap             map[string]interface{}
 		nullMap           trino.NullMap
-		goRow             []interface{}
+		goRow             trino.Row
 	)
 	err := db.QueryRow(`
 		SELECT
@@ -115,7 +115,13 @@ func testIntegrationTypeConversion(t *testing.T, db *sql.DB, args ...any) {
 
 	assert.Equal(t, map[string]interface{}{"a": "c", "b": "d"}, goMap, "GoMap")
 	assert.False(t, nullMap.Valid, "NullMap.Valid")
-	assert.Equal(t, []interface{}{json.Number("1"), "a", "2017-07-10 01:02:03.004000 UTC", []interface{}{"c"}}, goRow, "GoRow")
+	assert.True(t, goRow.Valid, "GoRow.Valid")
+	assert.Equal(t, []rowField{
+		{"field0", int64(1)},
+		{"field1", "a"},
+		{"field2", time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC)},
+		{"field3", []interface{}{"c"}},
+	}, rowFields(goRow), "GoRow")
 }
 
 // TestIntegrationNonStandardTypes covers the types Trino serializes without
@@ -168,12 +174,12 @@ func TestIntegrationNonStandardTypes(t *testing.T) {
 }
 
 // TestComplexTypes pins down how ROW and MAP values decode when nested,
-// which TestIntegrationTypeConversion does not exercise: the driver does not
-// parse these into structured Go types, it passes through whatever shape the
-// JSON response used. A VARBINARY column decodes to []byte at the top level
-// (see TestIntegrationTypeConversion), but the same VARBINARY nested inside a
-// ROW stays a base64 string, because ConvertValue never recurses into a row
-// or map to convert its elements.
+// which TestIntegrationTypeConversion does not exercise. A ROW converts into
+// a trino.Row at any depth, including inside another ROW or a MAP, with
+// every field converted the way a plain column of that type would be: a
+// VARBINARY field decodes to []byte even nested inside a ROW, unlike at the
+// top level of a MAP or ARRAY that never contains a ROW, which keeps
+// whatever raw shape the JSON response used (see the scalar map case below).
 func TestComplexTypes(t *testing.T) {
 	db := integrationOpen(t)
 
@@ -185,14 +191,14 @@ func TestComplexTypes(t *testing.T) {
 		{
 			name:     "row containing a binary value",
 			query:    `SELECT ROW(1, 'a', X'0000')`,
-			expected: []interface{}{json.Number("1"), "a", "AAA="},
+			expected: []rowField{{"field0", int64(1)}, {"field1", "a"}, {"field2", []byte{0, 0}}},
 		},
 		{
 			name:  "nested row",
 			query: `SELECT ROW(ROW(1, 'a'), ROW(2, 'b'))`,
-			expected: []interface{}{
-				[]interface{}{json.Number("1"), "a"},
-				[]interface{}{json.Number("2"), "b"},
+			expected: []rowField{
+				{"field0", []rowField{{"field0", int64(1)}, {"field1", "a"}}},
+				{"field1", []rowField{{"field0", int64(2)}, {"field1", "b"}}},
 			},
 		},
 		{
@@ -204,8 +210,8 @@ func TestComplexTypes(t *testing.T) {
 			name:  "map with row values",
 			query: `SELECT MAP(ARRAY['a', 'b'], ARRAY[ROW(1, 'a'), ROW(2, 'b')])`,
 			expected: map[string]interface{}{
-				"a": []interface{}{json.Number("1"), "a"},
-				"b": []interface{}{json.Number("2"), "b"},
+				"a": []rowField{{"field0", int64(1)}, {"field1", "a"}},
+				"b": []rowField{{"field0", int64(2)}, {"field1", "b"}},
 			},
 		},
 	} {
@@ -213,9 +219,64 @@ func TestComplexTypes(t *testing.T) {
 			var result interface{}
 			require.NoError(t, db.QueryRow(tt.query).Scan(&result))
 
-			assert.Equal(t, tt.expected, result)
+			assert.Equal(t, tt.expected, rowFields(result))
 		})
 	}
+}
+
+// rowField is one ROW field as read through trino.Row's accessors.
+type rowField struct {
+	Name  string
+	Value interface{}
+}
+
+// rowFields replaces every trino.Row in v, at any depth, with its fields,
+// so an expected value can be written without access to Row's internals.
+func rowFields(v interface{}) interface{} {
+	switch v := v.(type) {
+	case trino.Row:
+		fields := make([]rowField, v.Len())
+		for i := range fields {
+			fields[i] = rowField{v.Name(i), rowFields(v.Value(i))}
+		}
+		return fields
+	case []interface{}:
+		converted := make([]interface{}, len(v))
+		for i, elem := range v {
+			converted[i] = rowFields(elem)
+		}
+		return converted
+	case map[string]interface{}:
+		converted := make(map[string]interface{}, len(v))
+		for k, elem := range v {
+			converted[k] = rowFields(elem)
+		}
+		return converted
+	}
+	return v
+}
+
+// TestIntegrationNamedRowScan checks a ROW with a named field type against a
+// real coordinator, including its DatabaseTypeName and ScanType reporting.
+func TestIntegrationNamedRowScan(t *testing.T) {
+	db := integrationOpen(t)
+
+	rows, err := db.Query(`SELECT CAST(ROW(1, 'a') AS ROW(x INTEGER, y VARCHAR))`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err)
+	assert.Equal(t, "ROW(X INTEGER, Y VARCHAR)", columnTypes[0].DatabaseTypeName())
+	assert.Equal(t, reflect.TypeOf(trino.Row{}), columnTypes[0].ScanType())
+
+	require.True(t, rows.Next())
+	var got trino.Row
+	require.NoError(t, rows.Scan(&got))
+	assert.True(t, got.Valid)
+	assert.Equal(t, []rowField{{"x", int64(1)}, {"y", "a"}}, rowFields(got))
+	require.False(t, rows.Next())
+	require.NoError(t, rows.Err())
 }
 
 func TestIntegrationArgsConversion(t *testing.T) {
@@ -780,7 +841,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(new(interface{})).Elem(),
+			reflect.TypeOf(trino.Row{}),
 		},
 		{
 			"ROW(X VARCHAR, Y DOUBLE)",
@@ -789,7 +850,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(new(interface{})).Elem(),
+			reflect.TypeOf(trino.Row{}),
 		},
 		{
 			"IPADDRESS",

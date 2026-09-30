@@ -399,6 +399,29 @@ func timestampColumn(name string) queryColumn {
 	}
 }
 
+// rowColumn builds a ROW column whose field arguments travel as the raw JSON
+// the server sends, decoded back by the same unmarshalArguments path a real
+// response goes through.
+func rowColumn(name, dataType string, fields ...typeArgument) queryColumn {
+	return queryColumn{
+		Name:          name,
+		Type:          dataType,
+		TypeSignature: typeSignature{RawType: "row", Arguments: fields},
+	}
+}
+
+// namedField builds one ROW field argument; an empty name is an anonymous field.
+func namedField(name string, fieldType typeSignature) typeArgument {
+	value, err := json.Marshal(namedTypeSignature{
+		FieldName:     rowFieldName{Name: name},
+		TypeSignature: fieldType,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return typeArgument{Kind: KIND_NAMED_TYPE, Value: value}
+}
+
 // spooledSegment describes a segment downloaded from the fake under name.
 func spooledSegment(name string, metadata any) map[string]any {
 	return map[string]any{
