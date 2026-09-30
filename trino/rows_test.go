@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"runtime/debug"
 	"sync/atomic"
 	"testing"
@@ -496,6 +497,45 @@ func TestQueryWarningsIgnoredWithoutSink(t *testing.T) {
 	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
 	assert.Equal(t, []int{1}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+}
+
+// TestRowColumnScansThroughTheWireFormat exercises a ROW column end to end,
+// through the same JSON encoding and decoding a real coordinator response
+// goes through, covering a named field, an anonymous field, and a NULL row.
+func TestRowColumnScansThroughTheWireFormat(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	col := rowColumn("_col0", "row(x integer, varchar)",
+		namedField("x", typeSignature{RawType: "integer"}),
+		namedField("", typeSignature{RawType: "varchar"}),
+	)
+	fc.respond(statementPage(), columnsPage([]queryColumn{col}, [][]any{
+		{[]any{1, "a"}},
+		{nil},
+	}))
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT x")
+	require.NoError(t, err)
+	defer rows.Close()
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err)
+	assert.Equal(t, "ROW(X INTEGER, VARCHAR)", columnTypes[0].DatabaseTypeName())
+	assert.Equal(t, reflect.TypeOf(Row{}), columnTypes[0].ScanType())
+
+	require.True(t, rows.Next())
+	var got Row
+	require.NoError(t, rows.Scan(&got))
+	assert.Equal(t, Row{names: []string{"x", "field1"}, values: []interface{}{int64(1), "a"}, Valid: true}, got)
+
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&got))
+	assert.Equal(t, Row{}, got, "a NULL row scans as a zero Row")
+	assert.False(t, got.Valid, "a NULL row is not valid")
+
+	assert.False(t, rows.Next())
 	require.NoError(t, rows.Err())
 }
 

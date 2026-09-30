@@ -3737,13 +3737,15 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 }
 
 type typeConverter struct {
-	typeName   string
-	parsedType []string
-	scanType   reflect.Type
-	precision  optionalInt64
-	scale      optionalInt64
-	size       optionalInt64
-	location   *time.Location
+	typeName    string
+	parsedType  []string
+	scanType    reflect.Type
+	precision   optionalInt64
+	scale       optionalInt64
+	size        optionalInt64
+	location    *time.Location
+	signature   typeSignature
+	containsRow bool
 }
 
 type optionalInt64 struct {
@@ -3759,9 +3761,11 @@ func newOptionalInt64(value int64) optionalInt64 {
 // a time zone are interpreted in location.
 func newTypeConverter(typeName string, signature typeSignature, location *time.Location) (*typeConverter, error) {
 	result := &typeConverter{
-		typeName:   typeName,
-		parsedType: getNestedTypes([]string{}, signature),
-		location:   location,
+		typeName:    typeName,
+		parsedType:  getNestedTypes([]string{}, signature),
+		location:    location,
+		signature:   signature,
+		containsRow: containsRow(signature),
 	}
 	var err error
 	result.scanType, err = getScanType(result.parsedType)
@@ -3812,6 +3816,27 @@ func getNestedTypes(types []string, signature typeSignature) []string {
 		}
 	}
 	return types
+}
+
+// containsRow reports whether a type is, or contains, a ROW, including
+// through ARRAY and MAP.
+func containsRow(signature typeSignature) bool {
+	if signature.RawType == "row" {
+		return true
+	}
+	for _, arg := range signature.Arguments {
+		switch arg.Kind {
+		case KIND_TYPE:
+			if containsRow(arg.typeSignature) {
+				return true
+			}
+		case KIND_NAMED_TYPE:
+			if containsRow(arg.namedTypeSignature.TypeSignature) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func getScanType(typeNames []string) (reflect.Type, error) {
@@ -3890,7 +3915,9 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				// if this is a 4 or more dimensional array, scan type will be an empty interface
 			}
 		}
-	case "row", "KdbTree", "BingTile":
+	case "row":
+		v = Row{}
+	case "KdbTree", "BingTile":
 		// passed through in the shape the JSON response used, so there is no dedicated scan type
 	default:
 		// every type without a textual form, like HyperLogLog or SetDigest, arrives as base64 like varbinary
@@ -3905,6 +3932,33 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 // ConvertValue implements the driver.ValueConverter interface.
 func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 	switch c.parsedType[0] {
+	case "row":
+		return convertRows(c.signature, v, c.location)
+	case "map":
+		if c.containsRow {
+			return convertRows(c.signature, v, c.location)
+		}
+		if err := validateMap(v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "array":
+		if c.containsRow {
+			return convertRows(c.signature, v, c.location)
+		}
+		if err := validateSlice(v); err != nil {
+			return nil, err
+		}
+		return v, nil
+	default:
+		return convertScalar(c.parsedType[0], v, c.location)
+	}
+}
+
+// convertScalar converts a single decoded JSON value to the Go value a plain
+// column of rawType would produce.
+func convertScalar(rawType string, v interface{}, location *time.Location) (interface{}, error) {
+	switch rawType {
 	case "boolean":
 		vv, err := scanNullBool(v)
 		if !vv.Valid {
@@ -3930,26 +3984,11 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 		}
 		return vv.Float64, err
 	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
-		vv, err := scanNullTime(v, c.location)
+		vv, err := scanNullTime(v, location)
 		if !vv.Valid {
 			return nil, err
 		}
 		return vv.Time, err
-	case "map":
-		if err := validateMap(v); err != nil {
-			return nil, err
-		}
-		return v, nil
-	case "array":
-		if err := validateSlice(v); err != nil {
-			return nil, err
-		}
-		return v, nil
-	case "row":
-		if err := validateSlice(v); err != nil {
-			return nil, err
-		}
-		return v, nil
 	case "KdbTree", "BingTile":
 		if err := validateMap(v); err != nil {
 			return nil, err
@@ -3962,6 +4001,70 @@ func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 			return nil, err
 		}
 		return vv.Bytes, err
+	}
+}
+
+// convertRows walks a value that is, or contains, a ROW, converting each
+// field the way convertScalar would and turning every ROW into a Row.
+// Values that don't contain a ROW are never passed here; they keep the
+// plain pass-through behavior in ConvertValue.
+func convertRows(signature typeSignature, v interface{}, location *time.Location) (interface{}, error) {
+	if v == nil {
+		return nil, nil
+	}
+	switch signature.RawType {
+	case "row":
+		fields, ok := v.([]interface{})
+		if !ok {
+			return nil, fmt.Errorf("cannot convert %v (%T) to row", v, v)
+		}
+		if len(fields) != len(signature.Arguments) {
+			return nil, fmt.Errorf("row has %d fields but its type has %d", len(fields), len(signature.Arguments))
+		}
+		row := Row{names: make([]string, len(fields)), values: make([]interface{}, len(fields)), Valid: true}
+		for i, field := range fields {
+			arg := signature.Arguments[i].namedTypeSignature
+			row.names[i] = arg.FieldName.Name
+			if row.names[i] == "" {
+				row.names[i] = "field" + strconv.Itoa(i)
+			}
+			converted, err := convertRows(arg.TypeSignature, field, location)
+			if err != nil {
+				return nil, err
+			}
+			row.values[i] = converted
+		}
+		return row, nil
+	case "array":
+		if err := validateSlice(v); err != nil {
+			return nil, err
+		}
+		elems := v.([]interface{})
+		elementType := signature.Arguments[0].typeSignature
+		converted := make([]interface{}, len(elems))
+		for i, elem := range elems {
+			var err error
+			if converted[i], err = convertRows(elementType, elem, location); err != nil {
+				return nil, err
+			}
+		}
+		return converted, nil
+	case "map":
+		if err := validateMap(v); err != nil {
+			return nil, err
+		}
+		m := v.(map[string]interface{})
+		valueType := signature.Arguments[1].typeSignature
+		converted := make(map[string]interface{}, len(m))
+		for k, elem := range m {
+			var err error
+			if converted[k], err = convertRows(valueType, elem, location); err != nil {
+				return nil, err
+			}
+		}
+		return converted, nil
+	default:
+		return convertScalar(signature.RawType, v, location)
 	}
 }
 
@@ -4753,6 +4856,58 @@ func (s *NullSlice3Map) Scan(value interface{}) error {
 	}
 	s.Slice3Map = slice
 	s.Valid = true
+	return nil
+}
+
+// Row represents a ROW value. Its fields are read by position with Name and
+// Value, or by name with Field. An anonymous field is named field<i>, where
+// i is its zero-based position, as in the Java client. Valid is false for a
+// NULL row.
+type Row struct {
+	names  []string
+	values []interface{}
+	Valid  bool
+}
+
+// Len returns the number of fields in the row.
+func (r Row) Len() int {
+	return len(r.values)
+}
+
+// Name returns the name of the field at position i. It panics if i is out
+// of range.
+func (r Row) Name(i int) string {
+	return r.names[i]
+}
+
+// Value returns the value of the field at position i, converted the way a
+// plain column of the field's type would be. It panics if i is out of range.
+func (r Row) Value(i int) interface{} {
+	return r.values[i]
+}
+
+// Field returns the value of the first field called name, and whether the
+// row has such a field.
+func (r Row) Field(name string) (interface{}, bool) {
+	for i, n := range r.names {
+		if n == name {
+			return r.values[i], true
+		}
+	}
+	return nil, false
+}
+
+// Scan implements the sql.Scanner interface.
+func (r *Row) Scan(value interface{}) error {
+	if value == nil {
+		*r = Row{}
+		return nil
+	}
+	vv, ok := value.(Row)
+	if !ok {
+		return fmt.Errorf("trino: cannot convert %v (%T) to Row", value, value)
+	}
+	*r = vv
 	return nil
 }
 
