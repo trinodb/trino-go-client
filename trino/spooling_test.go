@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -371,15 +372,6 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 			wantErr: "invalid 'headers' field in spooled segment at index 0: expected map[string]interface{}",
 		},
 		{
-			name: "HeadersWithMultipleValues",
-			segment: withField(spooledSegment("seg", validMetadata), "headers", map[string]any{
-				"x-amz-server-side-encryption-customer-algorithm": []any{"AES256"},
-				"x-amz-server-side-encryption-customer-key":       []any{"key"},
-				"x-amz-server-side-encryption-customer-key-md5":   []any{"md5", "md5"}, // wrong, more then one
-			}),
-			wantErr: "multiple values for header x-amz-server-side-encryption-customer-key-md5",
-		},
-		{
 			name: "HeaderValueWrongType",
 			segment: withField(spooledSegment("seg", validMetadata), "headers", map[string]any{
 				"x-amz-server-side-encryption-customer-algorithm": []any{"AES256"},
@@ -509,6 +501,73 @@ func TestSpoolingProtocolAcknowledgesSegments(t *testing.T) {
 		acked := fc.ackedSegments()
 		return slices.Contains(acked, "seg0") && slices.Contains(acked, "seg1")
 	}, 5*time.Second, time.Millisecond, "every downloaded segment must be acknowledged")
+}
+
+func TestSpoolingProtocolSendsSegmentHeaders(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		headers any
+		want    http.Header
+	}{
+		{
+			name: "multipleValues",
+			headers: map[string]any{
+				"x-amz-server-side-encryption-customer-algorithm": []any{"AES256"},
+				"x-trino-segment-token":                           []any{"first", "second"},
+				"x-trino-empty":                                   []any{},
+			},
+			want: http.Header{
+				"X-Amz-Server-Side-Encryption-Customer-Algorithm": {"AES256"},
+				"X-Trino-Segment-Token":                           {"first", "second"},
+				"X-Trino-Empty":                                   nil,
+			},
+		},
+		{
+			name:    "singleValue",
+			headers: map[string]any{"x-trino-segment-token": []any{"only"}},
+			want:    http.Header{"X-Trino-Segment-Token": {"only"}},
+		},
+		{
+			name: "absent",
+			want: http.Header{"Test": nil},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			segment := withoutField(spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}), "headers")
+			if tc.headers != nil {
+				segment = withField(segment, "headers", tc.headers)
+			}
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json", segment))
+			fc.serveSegment("seg", []byte("[[1000]]"))
+			db := fc.open(t, "")
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			assert.Equal(t, []int{1000}, collectInts(t, rows))
+			require.NoError(t, rows.Err())
+			require.Eventually(t, func() bool {
+				return slices.Contains(fc.ackedSegments(), "seg")
+			}, 5*time.Second, time.Millisecond, "the downloaded segment must be acknowledged")
+
+			sent := map[string]http.Header{}
+			for _, r := range fc.capturedRequests() {
+				if strings.HasPrefix(r.path, "/v1/spooled/") {
+					sent[r.path] = r.header
+				}
+			}
+			for _, path := range []string{"/v1/spooled/download/seg", "/v1/spooled/ack/seg"} {
+				require.Contains(t, sent, path)
+				for name, values := range tc.want {
+					assert.Equal(t, values, sent[path].Values(name), "header %s on %s", name, path)
+				}
+			}
+		})
+	}
 }
 
 type recordingProgressUpdater struct {
