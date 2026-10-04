@@ -1,11 +1,14 @@
 package trino
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/jcmturner/gokrb5/v8/client"
 	"github.com/jcmturner/gokrb5/v8/config"
@@ -17,6 +20,7 @@ import (
 const (
 	kerberosCredentialCachePathConfig     = "KerberosCredentialCachePath"
 	kerberosServicePrincipalPatternConfig = "KerberosServicePrincipalPattern"
+	kerberosUseCanonicalHostnameConfig    = "KerberosUseCanonicalHostname"
 
 	defaultKerberosServicePrincipalPattern = "${SERVICE}@${HOST}"
 	servicePlaceholder                     = "${SERVICE}"
@@ -139,8 +143,11 @@ func (c *Config) checkCredentialCachePrincipal(ccache *credentials.CCache) error
 }
 
 func (c *Conn) setSPNEGOHeader(req *http.Request) error {
-	principal := c.kerberosServicePrincipal.forHost(req.URL.Hostname())
-	err := spnego.SetSPNEGOHeader(c.kerberosClient, req, principal)
+	principal, err := c.kerberosServicePrincipal.forHost(req.Context(), req.URL.Hostname())
+	if err != nil {
+		return err
+	}
+	err = spnego.SetSPNEGOHeader(c.kerberosClient, req, principal)
 	if err != nil {
 		return fmt.Errorf("error setting client SPNEGO header: %w", err)
 	}
@@ -150,6 +157,8 @@ func (c *Conn) setSPNEGOHeader(req *http.Request) error {
 type kerberosServicePrincipal struct {
 	pattern     string
 	serviceName string
+	// canonicalizer is nil when KerberosDisableCanonicalHostname is set
+	canonicalizer *hostnameCanonicalizer
 }
 
 func newKerberosServicePrincipal(conf *Config) kerberosServicePrincipal {
@@ -163,6 +172,9 @@ func newKerberosServicePrincipal(conf *Config) kerberosServicePrincipal {
 	if principal.serviceName == "" {
 		principal.serviceName = defaultKerberosServiceName
 	}
+	if !conf.KerberosDisableCanonicalHostname {
+		principal.canonicalizer = newHostnameCanonicalizer(net.DefaultResolver, os.Hostname)
+	}
 	return principal
 }
 
@@ -170,14 +182,104 @@ func newKerberosServicePrincipal(conf *Config) kerberosServicePrincipal {
 // result as a GSS-API service@host name. gokrb5 takes a Kerberos principal
 // instead, so service@host becomes service/host; a result without @ is
 // already a principal and is used as is.
-func (p kerberosServicePrincipal) forHost(host string) string {
+func (p kerberosServicePrincipal) forHost(ctx context.Context, host string) (string, error) {
+	if p.canonicalizer != nil {
+		canonical, err := p.canonicalizer.canonicalize(ctx, host)
+		if err != nil {
+			return "", err
+		}
+		host = canonical
+	}
 	name := strings.ReplaceAll(p.pattern, hostPlaceholder, strings.ToLower(host))
 	name = strings.ReplaceAll(name, servicePlaceholder, p.serviceName)
 	service, serviceHost, ok := cutLast(name, "@")
 	if !ok {
-		return name
+		return name, nil
 	}
-	return service + "/" + serviceHost
+	return service + "/" + serviceHost, nil
+}
+
+type hostResolver interface {
+	LookupHost(ctx context.Context, host string) ([]string, error)
+	LookupAddr(ctx context.Context, addr string) ([]string, error)
+}
+
+// hostnameCanonicalizer resolves a host the way the JDBC driver does through
+// InetAddress: a forward lookup, which follows CNAME records, then a reverse
+// lookup of the first address. Go's resolver does not cache, and the driver
+// sets the SPNEGO header on every request, so the result is kept for the
+// lifetime of the connection.
+type hostnameCanonicalizer struct {
+	resolver      hostResolver
+	localHostname func() (string, error)
+
+	mu        sync.Mutex
+	canonical map[string]string
+}
+
+func newHostnameCanonicalizer(resolver hostResolver, localHostname func() (string, error)) *hostnameCanonicalizer {
+	return &hostnameCanonicalizer{resolver: resolver, localHostname: localHostname, canonical: map[string]string{}}
+}
+
+func (h *hostnameCanonicalizer) canonicalize(ctx context.Context, host string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if canonical, ok := h.canonical[host]; ok {
+		return canonical, nil
+	}
+	canonical, err := h.resolve(ctx, host)
+	if err != nil {
+		return "", err
+	}
+	h.canonical[host] = canonical
+	return canonical, nil
+}
+
+func (h *hostnameCanonicalizer) resolve(ctx context.Context, host string) (string, error) {
+	name := host
+	if net.ParseIP(host) != nil {
+		name = h.reverseLookup(ctx, host)
+	}
+	// localhost has no useful canonical name, so the JDBC driver uses the
+	// one of the machine instead
+	lookupHost := host
+	if strings.EqualFold(name, "localhost") {
+		localHostname, err := h.localHostname()
+		if err != nil {
+			return "", fmt.Errorf("trino: failed to get the local hostname for the Kerberos service principal: %w", err)
+		}
+		lookupHost = localHostname
+	}
+	canonical, err := h.canonicalName(ctx, lookupHost)
+	if err != nil {
+		return "", err
+	}
+	if strings.EqualFold(canonical, "localhost") {
+		return "", fmt.Errorf("trino: Fully qualified name of localhost should not resolve to 'localhost'. System configuration error? Set %s=false to use the URL host in the Kerberos service principal", kerberosUseCanonicalHostnameConfig)
+	}
+	return canonical, nil
+}
+
+func (h *hostnameCanonicalizer) canonicalName(ctx context.Context, host string) (string, error) {
+	address := host
+	if net.ParseIP(host) == nil {
+		addresses, err := h.resolver.LookupHost(ctx, host)
+		if err != nil {
+			return "", fmt.Errorf("trino: failed to resolve host %s for the Kerberos service principal: %w", host, err)
+		}
+		address = addresses[0]
+	}
+	return h.reverseLookup(ctx, address), nil
+}
+
+// reverseLookup falls back to the address itself, as Java's
+// getCanonicalHostName does.
+func (h *hostnameCanonicalizer) reverseLookup(ctx context.Context, address string) string {
+	names, err := h.resolver.LookupAddr(ctx, address)
+	if err != nil || len(names) == 0 {
+		return address
+	}
+	return strings.TrimSuffix(names[0], ".")
 }
 
 func cutLast(s, sep string) (before, after string, found bool) {
