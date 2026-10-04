@@ -79,7 +79,9 @@ db := sql.OpenDB(connector)
 
 As with the default client, the driver does not follow redirects with
 `HTTPClient`, since they would carry the `X-Trino-*` headers to another host;
-only a registered `custom_client` keeps its own redirect policy. `HTTPClient`
+only a registered `custom_client` keeps its own redirect policy. Spooled
+segment downloads are the exception, see [Spooling
+Protocol](#spooling-protocol). `HTTPClient`
 cannot be combined with `custom_client`, a server or client certificate, or
 `SSLVerification`; `Config.TLSConfig` builds the matching `tls.Config` for its
 transport. `Config.FormatDSN` returns an error when it is set. `NewConnector` copies the `Config`, so later changes to it
@@ -551,7 +553,8 @@ carry the `X-Trino-*` headers, including extra credentials, to a host other
 than the one in the DSN, and a `301`, `302` or `303` response would turn the
 statement `POST` into a `GET` without the query. A redirect response fails the
 query instead. A custom client follows its own `CheckRedirect` policy, which
-allows redirects unless set.
+allows redirects unless set. Spooled segment downloads follow redirects with
+every client, see [Spooling Protocol](#spooling-protocol).
 
 Register your custom client in the driver, then refer to it by name in the DSN,
 on the call to `sql.Open`:
@@ -1300,6 +1303,16 @@ requests to the current `nextUri` (same URL used for result pages) so the
 coordinator treats the client as still active, which helps avoid query
 abandonment when result consumption is slow. The server must support this
 endpoint (Trino 475+).
+
+Segment downloads follow redirects, which the coordinator answers them with in
+the `coordinator_storage_redirect` and `worker_proxy` values of
+`protocol.spooling.retrieval-mode`, sending the client to the storage or to a
+worker. A segment request carries only the headers the server listed for the
+segment, never the `X-Trino-*` session headers or credentials, so following
+the redirect does not leak them; the redirect target needs the segment
+headers, such as the encryption key, so they are kept. The `CheckRedirect`
+policy of an `HTTPClient` or `custom_client` applies, and the default client
+stops after 10 redirects.
 
 Spooled segments stay in storage only until the `expiresAt` time the server
 reports for each of them, so rows read too slowly can outlive their segments.
