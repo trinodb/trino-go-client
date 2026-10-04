@@ -154,8 +154,8 @@ in the
 [Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config)
 struct, or the matching DSN parameters: `KerberosEnabled`,
 `KerberosKeytabPath`, `KerberosCredentialCachePath`, `KerberosPrincipal`,
-`KerberosRealm`, `KerberosConfigPath` and `KerberosRemoteServiceName`.
-Kerberos requires HTTPS.
+`KerberosRealm`, `KerberosConfigPath`, `KerberosRemoteServiceName` and
+`KerberosServicePrincipalPattern`. Kerberos requires HTTPS.
 
 The driver logs in with the keytab in `KerberosKeytabPath`, or reuses a ticket
 from a credential cache, such as the one `kinit` writes. Without a keytab it
@@ -653,6 +653,23 @@ macOS's default `API:`, run `kinit -c FILE:/path` and set this parameter. The
 cache is read when a connection opens, so connections opened after `kinit`
 refreshes it use the new ticket. See [Kerberos
 authentication](#kerberos-authentication).
+
+##### `KerberosServicePrincipalPattern`
+
+```
+Type:           string
+Valid values:   a service principal with optional ${SERVICE} and ${HOST} placeholders
+Default:        ${SERVICE}@${HOST}
+```
+
+The service principal of the coordinator, as in the JDBC driver. `${SERVICE}`
+is replaced with `KerberosRemoteServiceName` (default `trino`) and `${HOST}`
+with the lowercased host of the request URL. A `service@host` result names
+the Kerberos principal `service/host`, so the default asks for a ticket for
+`trino/<host>`; a result without `@`, such as `HTTP/${HOST}`, is used as the
+principal name. The realm of the service comes from `domain_realm` in the
+krb5 configuration, or is the user's realm, and cannot be part of the
+pattern.
 
 ##### `query_timeout`
 

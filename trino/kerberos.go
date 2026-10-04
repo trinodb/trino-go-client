@@ -15,14 +15,23 @@ import (
 )
 
 const (
-	kerberosCredentialCachePathConfig = "KerberosCredentialCachePath"
+	kerberosCredentialCachePathConfig     = "KerberosCredentialCachePath"
+	kerberosServicePrincipalPatternConfig = "KerberosServicePrincipalPattern"
 
-	credentialCacheFilePrefix = "FILE:"
+	defaultKerberosServicePrincipalPattern = "${SERVICE}@${HOST}"
+	servicePlaceholder                     = "${SERVICE}"
+	hostPlaceholder                        = "${HOST}"
+	credentialCacheFilePrefix              = "FILE:"
 )
 
 func (c *Config) validateKerberos() error {
 	if c.KerberosKeytabPath != "" && c.KerberosCredentialCachePath != "" {
 		return fmt.Errorf("trino: client configuration error, %s and %s cannot be specified together", kerberosKeytabPathConfig, kerberosCredentialCachePathConfig)
+	}
+	// gokrb5 finds the realm of a service through domain_realm in krb5.conf
+	// and cannot take it from the principal.
+	if service, _, ok := cutLast(c.KerberosServicePrincipalPattern, "@"); ok && strings.Contains(service, "/") {
+		return fmt.Errorf("trino: client configuration error, %s %q names a realm; use the service@host form and map the host to its realm in domain_realm of krb5.conf", kerberosServicePrincipalPatternConfig, c.KerberosServicePrincipalPattern)
 	}
 	return nil
 }
@@ -130,13 +139,51 @@ func (c *Config) checkCredentialCachePrincipal(ccache *credentials.CCache) error
 }
 
 func (c *Conn) setSPNEGOHeader(req *http.Request) error {
-	remoteServiceName := "trino"
-	if c.kerberosRemoteServiceName != "" {
-		remoteServiceName = c.kerberosRemoteServiceName
-	}
-	err := spnego.SetSPNEGOHeader(c.kerberosClient, req, remoteServiceName+"/"+req.URL.Hostname())
+	principal := c.kerberosServicePrincipal.forHost(req.URL.Hostname())
+	err := spnego.SetSPNEGOHeader(c.kerberosClient, req, principal)
 	if err != nil {
 		return fmt.Errorf("error setting client SPNEGO header: %w", err)
 	}
 	return nil
+}
+
+type kerberosServicePrincipal struct {
+	pattern     string
+	serviceName string
+}
+
+func newKerberosServicePrincipal(conf *Config) kerberosServicePrincipal {
+	principal := kerberosServicePrincipal{
+		pattern:     conf.KerberosServicePrincipalPattern,
+		serviceName: conf.KerberosRemoteServiceName,
+	}
+	if principal.pattern == "" {
+		principal.pattern = defaultKerberosServicePrincipalPattern
+	}
+	if principal.serviceName == "" {
+		principal.serviceName = defaultKerberosServiceName
+	}
+	return principal
+}
+
+// forHost substitutes the pattern like the JDBC driver, which reads the
+// result as a GSS-API service@host name. gokrb5 takes a Kerberos principal
+// instead, so service@host becomes service/host; a result without @ is
+// already a principal and is used as is.
+func (p kerberosServicePrincipal) forHost(host string) string {
+	name := strings.ReplaceAll(p.pattern, hostPlaceholder, strings.ToLower(host))
+	name = strings.ReplaceAll(name, servicePlaceholder, p.serviceName)
+	service, serviceHost, ok := cutLast(name, "@")
+	if !ok {
+		return name
+	}
+	return service + "/" + serviceHost
+}
+
+func cutLast(s, sep string) (before, after string, found bool) {
+	i := strings.LastIndex(s, sep)
+	if i < 0 {
+		return s, "", false
+	}
+	return s[:i], s[i+len(sep):], true
 }
