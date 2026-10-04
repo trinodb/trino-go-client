@@ -50,7 +50,7 @@ func TestSetAuthorizationUserHeader(t *testing.T) {
 	requests := fc.capturedRequests()
 	require.Len(t, requests, 4)
 	assert.Equal(t, "alice", requests[0].header.Get(trinoUserHeader), "the configured user should be sent before the authorization change")
-	assert.Equal(t, "catalog=ROLE{role1}", requests[0].header.Get(trinoRoleHeader), "the configured roles should be sent before the authorization change")
+	assert.Equal(t, "catalog=ROLE%7Brole1%7D", requests[0].header.Get(trinoRoleHeader), "the configured roles should be sent before the authorization change")
 
 	assert.Equal(t, "bob", requests[2].header.Get(trinoUserHeader), "the authorization user should replace X-Trino-User on the next statement")
 	assert.Equal(t, "alice", requests[2].header.Get(trinoOriginalUserHeader), "the configured user should be sent as the original identity")
@@ -89,7 +89,7 @@ func TestResetAuthorizationUserHeader(t *testing.T) {
 	assert.Equal(t, "alice", requests[4].header.Get(trinoUserHeader), "the configured user should be restored on the statement after RESET SESSION AUTHORIZATION")
 	assert.Empty(t, requests[4].header.Values(trinoOriginalUserHeader), "the original identity header should be dropped")
 	assert.Empty(t, requests[4].header.Values(trinoOriginalRolesHeader), "the original roles header should be dropped")
-	assert.Equal(t, "catalog=ROLE{role1}", requests[4].header.Get(trinoRoleHeader), "the roles in effect before the change should be restored")
+	assert.Equal(t, "catalog=ROLE%7Brole1%7D", requests[4].header.Get(trinoRoleHeader), "the roles in effect before the change should be restored")
 }
 
 func TestResetRestoresRolesInEffectBeforeChange(t *testing.T) {
@@ -132,19 +132,19 @@ func TestResetSessionClearsAuthorizationAndRoles(t *testing.T) {
 		trinoSetAuthorizationUserHeader: []string{"bob"},
 		trinoSetOriginalRolesHeader:     []string{"ALL"},
 	})
-	c.setHTTPHeader(trinoRoleHeader, "hive=ROLE{admin}")
+	c.setHTTPHeader(trinoRoleHeader, "hive=ROLE%7Badmin%7D")
 
 	require.NoError(t, c.ResetSession(context.Background()))
 
 	assert.Equal(t, "alice", c.httpHeaderValue(trinoUserHeader), "the configured user should be restored")
 	assert.Empty(t, c.httpHeaderValues(trinoOriginalUserHeader))
 	assert.Empty(t, c.httpHeaderValues(trinoOriginalRolesHeader))
-	assert.Equal(t, "catalog=ROLE{role1}", c.httpHeaderValue(trinoRoleHeader))
+	assert.Equal(t, "catalog=ROLE%7Brole1%7D", c.httpHeaderValue(trinoRoleHeader))
 	assert.Empty(t, c.authorizationUser)
 
 	c.applyResponseHeaders(http.Header{trinoSetRoleHeader: []string{"catalog=ROLE%7Brole2%7D"}})
 	require.NoError(t, c.ResetSession(context.Background()))
-	assert.Equal(t, "catalog=ROLE{role1}", c.httpHeaderValue(trinoRoleHeader), "a role selected without an authorization change should not survive either")
+	assert.Equal(t, "catalog=ROLE%7Brole1%7D", c.httpHeaderValue(trinoRoleHeader), "a role selected without an authorization change should not survive either")
 }
 
 func TestResetSessionRemovesUserHeaderWithoutConfiguredUser(t *testing.T) {
@@ -288,7 +288,7 @@ func TestFailedStatementRevertsAuthorizationChange(t *testing.T) {
 			last := requests[len(requests)-2]
 			assert.Equal(t, "alice", last.header.Get(trinoUserHeader))
 			assert.Empty(t, last.header.Values(trinoOriginalUserHeader))
-			assert.Equal(t, "catalog=ROLE{role1}", last.header.Get(trinoRoleHeader))
+			assert.Equal(t, "catalog=ROLE%7Brole1%7D", last.header.Get(trinoRoleHeader))
 		})
 	}
 }
