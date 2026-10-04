@@ -1048,12 +1048,15 @@ func formatRolesFromMap(rolesMap map[string]string) string {
 	return strings.Join(formattedRoles, commaSeparator)
 }
 
-// formatRoleEntry formats a single catalog role entry into Trino header format
+// formatRoleEntry formats a single catalog role entry into Trino header format.
+// The whole selected role is URL-encoded, like the Java client does, so a role
+// name containing , = or } cannot add or alter entries when the server splits
+// the header.
 func formatRoleEntry(catalog, role string) string {
 	if role == "ALL" || role == "NONE" {
 		return fmt.Sprintf("%s=%s", catalog, role)
 	}
-	return fmt.Sprintf("%s=ROLE{%s}", catalog, role)
+	return catalog + "=" + url.QueryEscape("ROLE{"+role+"}")
 }
 
 // formatHeaderValue converts a named argument value to a string suitable for HTTP headers.

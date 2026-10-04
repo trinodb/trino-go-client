@@ -421,13 +421,23 @@ func TestRoleHeader(t *testing.T) {
 		{
 			name:       "roles from config",
 			roles:      map[string]string{"catalog1": "role1", "catalog2": "role2"},
-			wantHeader: `catalog1=ROLE{role1},catalog2=ROLE{role2}`,
+			wantHeader: `catalog1=ROLE%7Brole1%7D,catalog2=ROLE%7Brole2%7D`,
 		},
 		{
 			name:          "override dsn roles with named argument",
 			roles:         map[string]string{"catalog1": "role1"},
 			namedArgRoles: map[string]string{"catalog3": "role3", "catalog4": "role4", "catalog5": "ALL"},
-			wantHeader:    `catalog3=ROLE{role3},catalog4=ROLE{role4},catalog5=ALL`,
+			wantHeader:    `catalog3=ROLE%7Brole3%7D,catalog4=ROLE%7Brole4%7D,catalog5=ALL`,
+		},
+		{
+			name:       "role name with separators from config",
+			roles:      map[string]string{"hive": "admin},system=ROLE{admin"},
+			wantHeader: `hive=ROLE%7Badmin%7D%2Csystem%3DROLE%7Badmin%7D`,
+		},
+		{
+			name:          "role name with separators from named argument",
+			namedArgRoles: map[string]string{"hive": "admin},system=ROLE{admin"},
+			wantHeader:    `hive=ROLE%7Badmin%7D%2Csystem%3DROLE%7Badmin%7D`,
 		},
 	}
 
@@ -566,10 +576,10 @@ func TestFormatRoles(t *testing.T) {
 		roles map[string]string
 		want  string
 	}{
-		{name: "named role", roles: map[string]string{"hive": "admin"}, want: "hive=ROLE{admin}"},
+		{name: "named role", roles: map[string]string{"hive": "admin"}, want: "hive=ROLE%7Badmin%7D"},
 		{name: "all", roles: map[string]string{"hive": "ALL"}, want: "hive=ALL"},
 		{name: "none", roles: map[string]string{"hive": "NONE"}, want: "hive=NONE"},
-		{name: "sorted by catalog", roles: map[string]string{"tpch": "NONE", "hive": "admin", "memory": "ALL"}, want: "hive=ROLE{admin},memory=ALL,tpch=NONE"},
+		{name: "sorted by catalog", roles: map[string]string{"tpch": "NONE", "hive": "admin", "memory": "ALL"}, want: "hive=ROLE%7Badmin%7D,memory=ALL,tpch=NONE"},
 		{name: "empty", roles: map[string]string{}, want: ""},
 	}
 
@@ -628,7 +638,7 @@ func TestHeaderValuesKeepSeparators(t *testing.T) {
 	header := fc.capturedRequests()[0].header
 	assert.Equal(t, []string{"hive.max_split_size=" + encodedValue}, header.Values(trinoSessionHeader))
 	assert.Equal(t, []string{"aws:access_key=" + encodedValue}, header.Values(trinoExtraCredentialHeader))
-	assert.Equal(t, []string{"hive=ROLE{admin},system=ALL"}, header.Values(trinoRoleHeader))
+	assert.Equal(t, []string{"hive=ROLE%7Badmin%7D,system=ALL"}, header.Values(trinoRoleHeader))
 	assert.Equal(t, []string{"tag1,tag=2"}, header.Values(trinoTagsHeader))
 }
 

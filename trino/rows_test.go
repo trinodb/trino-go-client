@@ -148,9 +148,9 @@ func TestSetRoleHeader(t *testing.T) {
 
 	requests := fc.capturedRequests()
 	require.Len(t, requests, 4)
-	assert.Equal(t, "catalog=ROLE{user}", requests[0].header.Get(trinoRoleHeader), "initial role from DSN should be sent in first request")
-	assert.Equal(t, "catalog=ROLE{user},hive=ROLE%7Badmin%7D", requests[1].header.Get(trinoRoleHeader), "server-set role should be added to the DSN role")
-	assert.Equal(t, "catalog=ROLE{user},hive=ROLE%7Badmin%7D", requests[2].header.Get(trinoRoleHeader), "roles should carry over to the next statement")
+	assert.Equal(t, "catalog=ROLE%7Buser%7D", requests[0].header.Get(trinoRoleHeader), "initial role from DSN should be sent in first request")
+	assert.Equal(t, "catalog=ROLE%7Buser%7D,hive=ROLE%7Badmin%7D", requests[1].header.Get(trinoRoleHeader), "server-set role should be added to the DSN role")
+	assert.Equal(t, "catalog=ROLE%7Buser%7D,hive=ROLE%7Badmin%7D", requests[2].header.Get(trinoRoleHeader), "roles should carry over to the next statement")
 	assert.Equal(t, "catalog=NONE,hive=ROLE%7Badmin%7D,iceberg=ROLE%7Bwriter%7D", requests[3].header.Get(trinoRoleHeader), "every Set-Role value should be applied and roles of other catalogs kept")
 }
 
@@ -172,7 +172,7 @@ func TestPooledQueryDoesNotLeakRole(t *testing.T) {
 
 	requests := fc.capturedRequests()
 	require.Len(t, requests, 4)
-	assert.Equal(t, "catalog=ROLE{user}", requests[2].header.Get(trinoRoleHeader))
+	assert.Equal(t, "catalog=ROLE%7Buser%7D", requests[2].header.Get(trinoRoleHeader))
 }
 
 func TestClientMetadataHeaders(t *testing.T) {

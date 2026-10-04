@@ -158,6 +158,58 @@ func TestRoleHeaderSupport(t *testing.T) {
 	}
 }
 
+// TestRoleNameWithHeaderSeparators selects a role whose name contains the
+// characters the server splits X-Trino-Role on, so it only works when the
+// whole selected role is URL-encoded.
+func TestRoleNameWithHeaderSeparators(t *testing.T) {
+	requireServerVersion(t, 458)
+	const role = "go_client,role=x}y"
+	adminDSN, err := (&trino.Config{ServerURI: integrationDSN(t), Roles: map[string]string{"hive": "admin"}}).FormatDSN()
+	require.NoError(t, err)
+	admin := integrationOpen(t, adminDSN)
+	_, err = admin.Exec(`CREATE ROLE "` + role + `" IN hive`)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, err := admin.Exec(`DROP ROLE "` + role + `" IN hive`)
+		require.NoError(t, err)
+	})
+	_, err = admin.Exec(`GRANT "` + role + `" TO USER test IN hive`)
+	require.NoError(t, err)
+
+	t.Run("Config", func(t *testing.T) {
+		dsn, err := (&trino.Config{ServerURI: integrationDSN(t), Roles: map[string]string{"hive": role}}).FormatDSN()
+		require.NoError(t, err)
+		db := integrationOpen(t, dsn)
+		assert.Contains(t, currentHiveRoles(t, db), role)
+	})
+	t.Run("named argument", func(t *testing.T) {
+		db := integrationOpen(t)
+		assert.Contains(t, currentHiveRoles(t, db, sql.Named("X-Trino-Role", map[string]string{"hive": role})), role)
+	})
+	t.Run("SET ROLE", func(t *testing.T) {
+		db := integrationOpen(t)
+		db.SetMaxOpenConns(1)
+		_, err := db.Exec(`SET ROLE "` + role + `" IN hive`)
+		require.NoError(t, err)
+		assert.Contains(t, currentHiveRoles(t, db), role)
+	})
+}
+
+func currentHiveRoles(t *testing.T, db *sql.DB, args ...any) []string {
+	t.Helper()
+	rows, err := db.Query("SHOW CURRENT ROLES FROM hive", args...)
+	require.NoError(t, err)
+	defer rows.Close()
+	var roles []string
+	for rows.Next() {
+		var role string
+		require.NoError(t, rows.Scan(&role))
+		roles = append(roles, role)
+	}
+	require.NoError(t, rows.Err())
+	return roles
+}
+
 func TestIntegrationAccessToken(t *testing.T) {
 	if tlsServer == "" {
 		t.Skip("Skipping access token test when using a custom integration server.")
