@@ -362,12 +362,26 @@ reports are dropped.
 
 ### DSN (Data Source Name)
 
-The Data Source Name is a URL with a mandatory username, and optional query
-string parameters that are supported by this driver, in the following format:
+The Data Source Name is a URL with a mandatory username, an optional catalog
+and schema path, and optional query string parameters that are supported by
+this driver, in the following format:
 
 ```
-http[s]://user[:pass]@host[:port][?parameters]
+http[s]://user[:pass]@host[:port][/catalog[/schema]][?parameters]
 ```
+
+As in a [JDBC URL](https://trino.io/docs/current/client/jdbc.html#connecting),
+the path sets the catalog, or the catalog and schema:
+`http://user@localhost:8080/tpch/sf1` is the same as
+`http://user@localhost:8080?catalog=tpch&schema=sf1`. An empty path or a lone
+`/` sets neither, and one trailing slash is ignored. A path with more than two
+segments, or with an empty catalog or schema such as `//sf1`, is an error. Set
+each of the catalog and schema either in the path or with the `catalog` and
+`schema` parameters, not both: `/tpch?schema=sf1` is valid, but
+`/tpch?catalog=tpch` is an error. The path is not a prefix for a server behind
+a reverse proxy; requests always go to `/v1/statement` on the host. A
+`Config.ServerURI` must not have a path; `NewConnector` and `FormatDSN` reject
+one, so set `Config.Catalog` and `Config.Schema` instead.
 
 The easiest way to build your DSN is by using the
 [Config.FormatDSN](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config.FormatDSN)
@@ -406,7 +420,7 @@ Default:        empty
 ```
 
 The `catalog` parameter defines the Trino catalog where schemas exist to
-organize tables.
+organize tables. It can also be set as the first segment of the DSN path.
 
 ##### `schema`
 
@@ -417,7 +431,8 @@ Default:        empty
 ```
 
 The `schema` parameter defines the Trino schema where tables exist. This is
-also known as namespace in some environments.
+also known as namespace in some environments. It can also be set as the
+second segment of the DSN path, after the catalog.
 
 ##### `session_properties`
 

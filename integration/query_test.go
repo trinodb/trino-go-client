@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -713,4 +714,20 @@ func TestIntegrationUpdateDelete(t *testing.T) {
 	}
 	require.NoError(t, rows.Err())
 	assert.Equal(t, []string{"1=one", "2=updated"}, remaining)
+}
+
+func TestIntegrationDSNPathSetsCatalogAndSchema(t *testing.T) {
+	dsn, err := url.Parse(integrationDSN(t))
+	require.NoError(t, err)
+	dsn.Path = "/tpch/sf1"
+	query := dsn.Query()
+	query.Del("catalog")
+	query.Del("schema")
+	dsn.RawQuery = query.Encode()
+	db := integrationOpen(t, dsn.String())
+
+	var catalog, schema string
+	require.NoError(t, db.QueryRow("SELECT current_catalog, current_schema").Scan(&catalog, &schema))
+	assert.Equal(t, "tpch", catalog)
+	assert.Equal(t, "sf1", schema)
 }

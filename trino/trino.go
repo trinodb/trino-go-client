@@ -420,8 +420,10 @@ func ParseDSN(dsn string) (*Config, error) {
 	config.ServerURI = serverURI
 	config.Source = query.Get("source")
 
-	config.Catalog = query.Get("catalog")
-	config.Schema = query.Get("schema")
+	config.Catalog, config.Schema, err = parseCatalogAndSchema(serverURL.Path, query)
+	if err != nil {
+		return nil, err
+	}
 
 	if sessionProps := query.Get("session_properties"); sessionProps != "" {
 		var err error
@@ -605,6 +607,11 @@ func (c *Config) validate(serverURL *url.URL) error {
 	if err := requireTLSForPassword(serverURL); err != nil {
 		return err
 	}
+	// ParseDSN moves the DSN path into Catalog and Schema, so only a ServerURI
+	// set directly can carry one, and the driver would otherwise ignore it.
+	if serverURL.Path != "" && serverURL.Path != "/" {
+		return fmt.Errorf("trino: client configuration error, ServerURI must not have a path, got %q; set Config.Catalog and Config.Schema instead", serverURL.Path)
+	}
 	if err := c.validateHeaderKeys(); err != nil {
 		return err
 	}
@@ -704,6 +711,55 @@ func requireTLSForPassword(serverURL *url.URL) error {
 		return fmt.Errorf("trino: TLS/SSL is required for authentication with username and password")
 	}
 	return nil
+}
+
+// parseCatalogAndSchema reads the catalog and schema from the DSN path, as
+// /catalog or /catalog/schema like in a JDBC URL, or from the catalog and
+// schema parameters. Like JDBC, it rejects setting either one both ways.
+func parseCatalogAndSchema(path string, query url.Values) (string, string, error) {
+	catalog, schema, err := parsePathCatalogAndSchema(path)
+	if err != nil {
+		return "", "", err
+	}
+	if catalog != "" && query.Has("catalog") {
+		return "", "", errors.New("trino: catalog is set both in the DSN path and the catalog parameter")
+	}
+	if schema != "" && query.Has("schema") {
+		return "", "", errors.New("trino: schema is set both in the DSN path and the schema parameter")
+	}
+	if catalog == "" {
+		catalog = query.Get("catalog")
+	}
+	if schema == "" {
+		schema = query.Get("schema")
+	}
+	return catalog, schema, nil
+}
+
+// parsePathCatalogAndSchema mirrors TrinoUri.parseCatalogAndSchema of the
+// Java client: an empty path or a lone slash sets nothing, and one trailing
+// slash is ignored.
+func parsePathCatalogAndSchema(path string) (string, string, error) {
+	if path == "" || path == "/" {
+		return "", "", nil
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if parts[len(parts)-1] == "" {
+		parts = parts[:len(parts)-1]
+	}
+	if len(parts) > 2 {
+		return "", "", fmt.Errorf("trino: invalid path segments in DSN, expected /catalog or /catalog/schema: %q", path)
+	}
+	if parts[0] == "" {
+		return "", "", fmt.Errorf("trino: catalog name is empty in DSN path %q", path)
+	}
+	if len(parts) == 1 {
+		return parts[0], "", nil
+	}
+	if parts[1] == "" {
+		return "", "", fmt.Errorf("trino: schema name is empty in DSN path %q", path)
+	}
+	return parts[0], parts[1], nil
 }
 
 func parseMapParameter(value, paramName, entrySeparator, keyValueSeparator string) (map[string]string, error) {
