@@ -1,9 +1,12 @@
 package trino
 
 import (
+	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"os"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -236,6 +239,134 @@ func TestDecodeVariantRejectsMalformedValues(t *testing.T) {
 			assert.EqualError(t, err, tc.wantErr)
 		})
 	}
+}
+
+func TestClientCapabilitiesIncludeVariantBinary(t *testing.T) {
+	t.Parallel()
+	capabilities := strings.Split(clientCapabilities, commaSeparator)
+
+	assert.Contains(t, capabilities, "VARIANT")
+	assert.Contains(t, capabilities, "VARIANT_BINARY")
+}
+
+// TestVariantColumnScansThroughTheWireFormat serves VARIANT values the way
+// Trino 483 does once VARIANT_BINARY is announced, on their own and nested
+// in an ARRAY, a MAP and a ROW.
+func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	variantType := typeSignature{RawType: "variant", Arguments: []typeArgument{}}
+	variantArgument := typeArgument{Kind: KIND_TYPE, Value: json.RawMessage(`{"rawType":"variant","arguments":[]}`)}
+	columns := []queryColumn{
+		{Name: "v", Type: "variant", TypeSignature: variantType},
+		{Name: "a", Type: "array(variant)", TypeSignature: typeSignature{RawType: "array", Arguments: []typeArgument{variantArgument}}},
+		{
+			Name: "m",
+			Type: "map(varchar, variant)",
+			TypeSignature: typeSignature{
+				RawType: "map",
+				Arguments: []typeArgument{
+					{Kind: KIND_TYPE, Value: json.RawMessage(`{"rawType":"varchar","arguments":[]}`)},
+					variantArgument,
+				},
+			},
+		},
+		rowColumn("r", "row(x variant)", namedField("x", variantType)),
+	}
+	object := json.RawMessage(`{"metadata":"EQIAAQJhYg==","value":"AgIAAQAFChQCAAAAFAEAAAA="}`)
+	double := json.RawMessage(`{"metadata":"AQAA","value":"HAAAAAAAAPg/"}`)
+	variantNull := json.RawMessage(`{"metadata":"AQAA","value":"AA=="}`)
+	date := json.RawMessage(`{"metadata":"AQAA","value":"LFdHAAA="}`)
+	uuid := json.RawMessage(`{"metadata":"AQAA","value":"UBIVH9J1hhHpj54qhuQIWlk="}`)
+	fc.respond(statementPage(), columnsPage(columns, [][]any{
+		{object, []any{double, variantNull, nil}, map[string]any{"k": date}, []any{uuid}},
+		{variantNull, nil, nil, []any{nil}},
+		{nil, nil, nil, nil},
+	}))
+	db := fc.open(t, "?timezone=Asia%2FTokyo")
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	require.NoError(t, err)
+
+	rows, err := db.Query("SELECT v, a, m, r")
+	require.NoError(t, err)
+	defer rows.Close()
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err)
+	assert.Equal(t, "VARIANT", columnTypes[0].DatabaseTypeName())
+	assert.Equal(t, reflect.TypeOf(Variant{}), columnTypes[0].ScanType())
+	assert.Equal(t, "ARRAY(VARIANT)", columnTypes[1].DatabaseTypeName())
+	assert.Equal(t, reflect.TypeOf(NullSliceString{}), columnTypes[1].ScanType())
+
+	require.True(t, rows.Next())
+	var value Variant
+	var array NullSliceString
+	var arrayElements interface{}
+	var mapValue NullMap
+	var row Row
+	require.NoError(t, rows.Scan(&value, &array, &mapValue, &row))
+	assert.True(t, value.Valid)
+	assert.Equal(t, VariantObject, value.Type())
+	assert.Equal(t, map[string]interface{}{"a": int64(2), "b": int64(1)}, value.Value())
+	assert.Equal(t, `{"a":2,"b":1}`, value.String())
+	assert.Equal(t, NullSliceString{
+		SliceString: []sql.NullString{{String: "1.5", Valid: true}, {String: "null", Valid: true}, {}},
+		Valid:       true,
+	}, array, "ARRAY(VARIANT) still scans into the JSON text of each element")
+	require.NoError(t, rows.Scan(new(Variant), &arrayElements, new(NullMap), new(Row)))
+	require.IsType(t, []interface{}{}, arrayElements)
+	elements := arrayElements.([]interface{})
+	require.Len(t, elements, 3)
+	assert.Equal(t, 1.5, elements[0].(Variant).Value())
+	assert.Equal(t, VariantNull, elements[1].(Variant).Type())
+	assert.Nil(t, elements[2], "an SQL NULL element")
+	require.IsType(t, Variant{}, mapValue.Map["k"])
+	assert.Equal(t, time.Date(2020, 1, 2, 0, 0, 0, 0, tokyo), mapValue.Map["k"].(Variant).Value(), "a date is in the connection's time zone")
+	field, ok := row.Field("x")
+	require.True(t, ok)
+	require.IsType(t, Variant{}, field)
+	assert.Equal(t, VariantUUID, field.(Variant).Type())
+	assert.Equal(t, "12151fd2-7586-11e9-8f9e-2a86e4085a59", field.(Variant).Value())
+
+	var text sql.NullString
+	assert.ErrorContains(t, rows.Scan(&text, new(interface{}), new(interface{}), new(interface{})), "unsupported Scan",
+		"database/sql only converts strings and numbers into a string, so a VARIANT column no longer scans into one")
+
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&value, &array, &mapValue, &row))
+	assert.True(t, value.Valid, "a VARIANT null is not SQL NULL")
+	assert.Equal(t, VariantNull, value.Type())
+	assert.Nil(t, value.Value())
+	assert.False(t, array.Valid)
+	assert.False(t, mapValue.Valid)
+	assert.Equal(t, Row{names: []string{"x"}, values: []interface{}{nil}, Valid: true}, row)
+
+	require.True(t, rows.Next())
+	require.NoError(t, rows.Scan(&value, &array, &mapValue, &row))
+	assert.False(t, value.Valid, "SQL NULL")
+	assert.False(t, row.Valid)
+
+	assert.False(t, rows.Next())
+	require.NoError(t, rows.Err())
+
+	requests := fc.capturedRequests()
+	require.NotEmpty(t, requests)
+	assert.Contains(t, strings.Split(requests[0].header.Get(trinoClientCapabilitiesHeader), commaSeparator), "VARIANT_BINARY")
+}
+
+func TestVariantColumnRejectsMalformedValues(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	columns := []queryColumn{{Name: "v", Type: "variant", TypeSignature: typeSignature{RawType: "variant", Arguments: []typeArgument{}}}}
+	fc.respond(statementPage(), columnsPage(columns, [][]any{{json.RawMessage(`{"metadata":"AQAA","value":"GAE="}`)}}))
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT v")
+	require.NoError(t, err)
+	defer rows.Close()
+
+	assert.False(t, rows.Next())
+	assert.ErrorContains(t, rows.Err(), "variant value is truncated")
 }
 
 // FuzzNewVariant checks that whatever newVariant accepts can be read without

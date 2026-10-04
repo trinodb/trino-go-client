@@ -767,6 +767,8 @@ It's not yet possible to pass:
 * `byte`
 * `json.RawMessage`
 * maps
+* `VARIANT` values; pass the JSON text as a string and convert it with
+  `CAST(json_parse(?) AS VARIANT)`
 
 To use the unsupported types, pass them as strings and use casts in the query,
 like so:
@@ -795,6 +797,7 @@ When reading response rows, the driver supports most Trino data types, except:
 * `IPADDRESS` - returned as string
 * `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string
 * `UUID` - returned as string
+* `VARIANT` (Trino 481+) - returned as `trino.Variant`, see below
 * `Geometry`, `SphericalGeography` and `color` - returned as string
 * `BingTile` and `KdbTree` - returned as `map[string]interface{}`, the JSON
   object the server sent
@@ -839,9 +842,56 @@ type would be, including a nested `ROW`, which converts into another
 well: scan an `ARRAY(ROW(...))` into an `interface{}`, which holds a
 `[]interface{}` of `trino.Row` values, or `nil` for a `NULL` array, and a
 `MAP` with `ROW` values holds `trino.Row` values in its `trino.NullMap.Map`.
-An `ARRAY` or `MAP` that never contains a `ROW` is unaffected: its elements
+`VARIANT` elements and fields are also converted at any depth, into
+`trino.Variant` values. An `ARRAY` or `MAP` that never contains a `ROW`
+or a `VARIANT` is unaffected: its elements
 keep the raw shape the JSON response used, as described above, including
 `VARBINARY` staying a base64-encoded string.
+
+To read a `VARIANT` value, scan into a `trino.Variant`:
+
+```go
+var v trino.Variant
+err := db.QueryRow(`SELECT CAST(JSON '{"a": 1, "b": [true, null]}' AS VARIANT)`).Scan(&v)
+// v.Valid == true
+// v.Type() == trino.VariantObject
+// v.Value() == map[string]interface{}{"a": int64(1), "b": []interface{}{true, nil}}
+// v.String() == `{"a":1,"b":[true,null]}`
+```
+
+The driver announces the `VARIANT_BINARY` client capability, like the
+JDBC driver, so the server sends each value in its binary encoding and
+`Variant` keeps the value's type. `Type` returns one of the `Variant*`
+constants, named like the JDBC driver's `Variant.ValueType`, and `Value`
+converts the value into a Go value:
+* `nil` for a `VARIANT` null
+* `bool`
+* `int64` for every integer width
+* `float32` and `float64`
+* `trino.Numeric` for a decimal, in plain notation like `-12.345`
+* `string`, and a string like `12151fd2-7586-11e9-8f9e-2a86e4085a59` for a
+  UUID
+* `[]byte`
+* `time.Time` for dates, times and timestamps. Those without a time zone are
+  in the zone of the connection, like `DATE`, `TIME` and `TIMESTAMP`
+  columns, and timestamps with a time zone are in UTC
+* `[]interface{}` for an array and `map[string]interface{}` for an object,
+  holding converted values
+
+`String` and `MarshalJSON` return the JSON text the server returns for
+`CAST(v AS JSON)`, writing types JSON has no equivalent for as strings,
+like `"2020-01-02"` for a date. A SQL `NULL` scans with `Valid` set to
+`false`, while a `VARIANT` null, like `CAST(JSON 'null' AS VARIANT)`, is
+valid and has the type `trino.VariantNull`.
+
+A `VARIANT` column no longer scans into a `string` or `sql.NullString`,
+as it did when the driver did not announce the `VARIANT` capabilities and
+the server sent `VARIANT` columns as `JSON`: `database/sql` only converts
+strings, byte slices and numbers into a string. Scan into a
+`trino.Variant` and call `String`, or use `CAST(v AS JSON)` in the query.
+An `ARRAY(VARIANT)` still scans into a `trino.NullSliceString`, holding
+the JSON text of each element, so `null` for a `VARIANT` null element and
+an invalid `sql.NullString` for a SQL `NULL` one.
 
 ## Transactions
 
