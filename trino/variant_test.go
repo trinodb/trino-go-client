@@ -302,11 +302,11 @@ func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
 	var value Variant
 	var array NullSlice[sql.NullString]
 	var arrayElements interface{}
-	var mapValue NullMapOf[string, interface{}]
+	var mapValue NullMap[string, interface{}]
 	var row Row
 	require.NoError(t, rows.Scan(&value, &array, &mapValue, &row))
 	var genericArray NullSlice[Variant]
-	require.NoError(t, rows.Scan(new(Variant), &genericArray, new(NullMapOf[string, interface{}]), new(Row)))
+	require.NoError(t, rows.Scan(new(Variant), &genericArray, new(NullMap[string, interface{}]), new(Row)))
 	require.True(t, genericArray.Valid)
 	require.Len(t, genericArray.Slice, 3)
 	assert.Equal(t, 1.5, genericArray.Slice[0].Value())
@@ -320,7 +320,7 @@ func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
 		Slice: []sql.NullString{{String: "1.5", Valid: true}, {String: "null", Valid: true}, {}},
 		Valid: true,
 	}, array, "ARRAY(VARIANT) still scans into the JSON text of each element")
-	require.NoError(t, rows.Scan(new(Variant), &arrayElements, new(NullMapOf[string, interface{}]), new(Row)))
+	require.NoError(t, rows.Scan(new(Variant), &arrayElements, new(NullMap[string, interface{}]), new(Row)))
 	require.IsType(t, []interface{}{}, arrayElements)
 	elements := arrayElements.([]interface{})
 	require.Len(t, elements, 3)

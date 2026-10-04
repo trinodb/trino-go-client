@@ -24,7 +24,7 @@ import (
 //   - sql.NullBool, sql.NullString, sql.NullInt64, sql.NullInt32,
 //     sql.NullInt16, sql.NullFloat64, sql.NullTime, NullTime or NullBinary,
 //     which keep a NULL element as not valid
-//   - NullSlice, NullMapOf or NullRow, for nested arrays, maps and rows
+//   - NullSlice, NullMap or NullRow, for nested arrays, maps and rows
 //   - any other type whose pointer implements sql.Scanner, like Row; its
 //     Scan receives the element in the shape the JSON response used, like a
 //     json.Number for a number, or converted the way a plain column would be
@@ -34,7 +34,7 @@ import (
 // in. Elements without a time zone are interpreted in Location, or in
 // time.Local when Location is nil; set it to the zone of the connection,
 // which the server used to produce them. Location is passed down to nested
-// NullSlice and NullMapOf values.
+// NullSlice and NullMap values.
 type NullSlice[T any] struct {
 	Slice    []T
 	Valid    bool
@@ -65,25 +65,25 @@ func (s *NullSlice[T]) scanValue(value interface{}, location *time.Location) err
 	return nil
 }
 
-// NullMapOf represents a MAP value that may be null, with keys scanned into
+// NullMap represents a MAP value that may be null, with keys scanned into
 // K and values into V. V can be any element type NullSlice accepts. K can be
 // string, bool, any of the integer and floating point types NullSlice
 // accepts, time.Time, or any other comparable type whose pointer implements
 // sql.Scanner, which receives the key as a string. A NULL map scans with
 // Valid set to false and a nil Map. Location is used and passed down the
 // same way as in NullSlice.
-type NullMapOf[K comparable, V any] struct {
+type NullMap[K comparable, V any] struct {
 	Map      map[K]V
 	Valid    bool
 	Location *time.Location
 }
 
 // Scan implements the sql.Scanner interface.
-func (m *NullMapOf[K, V]) Scan(value interface{}) error {
+func (m *NullMap[K, V]) Scan(value interface{}) error {
 	return wrapScanError(m.scanValue(value, m.Location))
 }
 
-func (m *NullMapOf[K, V]) scanValue(value interface{}, location *time.Location) error {
+func (m *NullMap[K, V]) scanValue(value interface{}, location *time.Location) error {
 	if value == nil {
 		m.Map, m.Valid = nil, false
 		return nil

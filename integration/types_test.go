@@ -42,7 +42,7 @@ func testIntegrationTypeConversion(t *testing.T, db *sql.DB, args ...any) {
 		nullFloat64Slice2 trino.NullSlice[trino.NullSlice[sql.NullFloat64]]
 		nullFloat64Slice3 trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullFloat64]]]
 		goMap             map[string]interface{}
-		nullMap           trino.NullMapOf[string, interface{}]
+		nullMap           trino.NullMap[string, interface{}]
 		goRow             trino.Row
 	)
 	err := db.QueryRow(`
@@ -321,8 +321,8 @@ func TestIntegrationGenericScanners(t *testing.T) {
 		{
 			name:  "map with integer keys and array values",
 			query: `SELECT MAP(ARRAY[1, 2], ARRAY[ARRAY[BIGINT '1', NULL], NULL])`,
-			dest:  &trino.NullMapOf[int32, trino.NullSlice[sql.NullInt64]]{},
-			want: &trino.NullMapOf[int32, trino.NullSlice[sql.NullInt64]]{Map: map[int32]trino.NullSlice[sql.NullInt64]{
+			dest:  &trino.NullMap[int32, trino.NullSlice[sql.NullInt64]]{},
+			want: &trino.NullMap[int32, trino.NullSlice[sql.NullInt64]]{Map: map[int32]trino.NullSlice[sql.NullInt64]{
 				1: {Slice: []sql.NullInt64{{Int64: 1, Valid: true}, {}}, Valid: true},
 				2: {},
 			}, Valid: true},
@@ -330,8 +330,8 @@ func TestIntegrationGenericScanners(t *testing.T) {
 		{
 			name:  "map with double and boolean keys",
 			query: `SELECT MAP(ARRAY[1.5e0, -2e0], ARRAY[MAP(ARRAY[true], ARRAY['a']), NULL])`,
-			dest:  &trino.NullMapOf[float64, trino.NullMapOf[bool, string]]{},
-			want: &trino.NullMapOf[float64, trino.NullMapOf[bool, string]]{Map: map[float64]trino.NullMapOf[bool, string]{
+			dest:  &trino.NullMap[float64, trino.NullMap[bool, string]]{},
+			want: &trino.NullMap[float64, trino.NullMap[bool, string]]{Map: map[float64]trino.NullMap[bool, string]{
 				1.5: {Map: map[bool]string{true: "a"}, Valid: true},
 				-2:  {},
 			}, Valid: true},
@@ -996,7 +996,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(trino.NullMapOf[sql.NullString, sql.NullInt32]{}),
+			reflect.TypeOf(trino.NullMap[sql.NullString, sql.NullInt32]{}),
 		},
 		{
 			"ARRAY(MAP(VARCHAR(1), INTEGER))",
@@ -1005,7 +1005,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(trino.NullSlice[trino.NullMapOf[sql.NullString, sql.NullInt32]]{}),
+			reflect.TypeOf(trino.NullSlice[trino.NullMap[sql.NullString, sql.NullInt32]]{}),
 		},
 		{
 			"ROW(VARCHAR(1), INTEGER)",
@@ -1060,10 +1060,10 @@ func TestQueryColumns(t *testing.T) {
 		dests[i] = reflect.New(column.ScanType()).Interface()
 	}
 	require.NoError(t, rows.Scan(dests...), "every scan type must accept the value of its column")
-	assert.Equal(t, trino.NullSlice[trino.NullMapOf[sql.NullString, sql.NullInt32]]{Slice: []trino.NullMapOf[sql.NullString, sql.NullInt32]{
+	assert.Equal(t, trino.NullSlice[trino.NullMap[sql.NullString, sql.NullInt32]]{Slice: []trino.NullMap[sql.NullString, sql.NullInt32]{
 		{Map: map[sql.NullString]sql.NullInt32{{String: "a", Valid: true}: {Int32: 1, Valid: true}}, Valid: true},
 		{Map: map[sql.NullString]sql.NullInt32{{String: "b", Valid: true}: {Int32: 2, Valid: true}}, Valid: true},
-	}, Valid: true}, *dests[28].(*trino.NullSlice[trino.NullMapOf[sql.NullString, sql.NullInt32]]))
+	}, Valid: true}, *dests[28].(*trino.NullSlice[trino.NullMap[sql.NullString, sql.NullInt32]]))
 }
 
 func TestMaxGoPrecisionDateTime(t *testing.T) {

@@ -51,38 +51,38 @@ func TestGetScanType(t *testing.T) {
 			signature: arrayType(arrayType(arrayType(arrayType(scalarType("bigint"))))),
 			want:      reflect.TypeFor[NullSlice[NullSlice[NullSlice[interface{}]]]](),
 		},
-		{name: "map of varchar to bigint", signature: mapType(scalarType("varchar"), scalarType("bigint")), want: reflect.TypeFor[NullMapOf[sql.NullString, sql.NullInt64]]()},
-		{name: "map of integer to varchar", signature: mapType(scalarType("integer"), scalarType("varchar")), want: reflect.TypeFor[NullMapOf[sql.NullInt32, sql.NullString]]()},
-		{name: "map of boolean to double", signature: mapType(scalarType("boolean"), scalarType("double")), want: reflect.TypeFor[NullMapOf[sql.NullBool, sql.NullFloat64]]()},
-		{name: "map of date to varbinary", signature: mapType(scalarType("date"), scalarType("varbinary")), want: reflect.TypeFor[NullMapOf[sql.NullTime, []byte]]()},
-		{name: "map of varchar to row", signature: mapType(scalarType("varchar"), pointType), want: reflect.TypeFor[NullMapOf[sql.NullString, Row]]()},
-		{name: "map with a varbinary key", signature: mapType(scalarType("varbinary"), scalarType("varchar")), want: reflect.TypeFor[NullMapOf[interface{}, sql.NullString]]()},
-		{name: "map with an array key", signature: mapType(arrayType(scalarType("integer")), scalarType("varchar")), want: reflect.TypeFor[NullMapOf[interface{}, sql.NullString]]()},
-		{name: "map with a row key", signature: mapType(pointType, scalarType("varchar")), want: reflect.TypeFor[NullMapOf[interface{}, sql.NullString]]()},
+		{name: "map of varchar to bigint", signature: mapType(scalarType("varchar"), scalarType("bigint")), want: reflect.TypeFor[NullMap[sql.NullString, sql.NullInt64]]()},
+		{name: "map of integer to varchar", signature: mapType(scalarType("integer"), scalarType("varchar")), want: reflect.TypeFor[NullMap[sql.NullInt32, sql.NullString]]()},
+		{name: "map of boolean to double", signature: mapType(scalarType("boolean"), scalarType("double")), want: reflect.TypeFor[NullMap[sql.NullBool, sql.NullFloat64]]()},
+		{name: "map of date to varbinary", signature: mapType(scalarType("date"), scalarType("varbinary")), want: reflect.TypeFor[NullMap[sql.NullTime, []byte]]()},
+		{name: "map of varchar to row", signature: mapType(scalarType("varchar"), pointType), want: reflect.TypeFor[NullMap[sql.NullString, Row]]()},
+		{name: "map with a varbinary key", signature: mapType(scalarType("varbinary"), scalarType("varchar")), want: reflect.TypeFor[NullMap[interface{}, sql.NullString]]()},
+		{name: "map with an array key", signature: mapType(arrayType(scalarType("integer")), scalarType("varchar")), want: reflect.TypeFor[NullMap[interface{}, sql.NullString]]()},
+		{name: "map with a row key", signature: mapType(pointType, scalarType("varchar")), want: reflect.TypeFor[NullMap[interface{}, sql.NullString]]()},
 		{
 			name:      "map with named type arguments",
 			signature: typeSignature{RawType: "map", Arguments: []typeArgument{namedField("", scalarType("varchar")), namedField("", scalarType("bigint"))}},
-			want:      reflect.TypeFor[NullMapOf[sql.NullString, sql.NullInt64]](),
+			want:      reflect.TypeFor[NullMap[sql.NullString, sql.NullInt64]](),
 		},
 		{
 			name:      "map of varchar to array reports interface{} values",
 			signature: mapType(scalarType("varchar"), arrayType(scalarType("bigint"))),
-			want:      reflect.TypeFor[NullMapOf[sql.NullString, interface{}]](),
+			want:      reflect.TypeFor[NullMap[sql.NullString, interface{}]](),
 		},
 		{
 			name:      "map of maps reports interface{} values",
 			signature: mapType(scalarType("varchar"), mapType(scalarType("varchar"), scalarType("bigint"))),
-			want:      reflect.TypeFor[NullMapOf[sql.NullString, interface{}]](),
+			want:      reflect.TypeFor[NullMap[sql.NullString, interface{}]](),
 		},
 		{
 			name:      "array of map",
 			signature: arrayType(mapType(scalarType("varchar"), scalarType("bigint"))),
-			want:      reflect.TypeFor[NullSlice[NullMapOf[sql.NullString, sql.NullInt64]]](),
+			want:      reflect.TypeFor[NullSlice[NullMap[sql.NullString, sql.NullInt64]]](),
 		},
 		{
 			name:      "array of map of varchar to array reports interface{} values",
 			signature: arrayType(mapType(scalarType("varchar"), arrayType(scalarType("bigint")))),
-			want:      reflect.TypeFor[NullSlice[NullMapOf[sql.NullString, interface{}]]](),
+			want:      reflect.TypeFor[NullSlice[NullMap[sql.NullString, interface{}]]](),
 		},
 		{
 			name:      "array of array of map reports interface{} elements",
@@ -201,7 +201,7 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 		{
 			signature: mapType(scalarType("varchar"), scalarType("bigint")),
 			value:     map[string]any{"a": 1, "b": nil},
-			want: NullMapOf[sql.NullString, sql.NullInt64]{Map: map[sql.NullString]sql.NullInt64{
+			want: NullMap[sql.NullString, sql.NullInt64]{Map: map[sql.NullString]sql.NullInt64{
 				{String: "a", Valid: true}: {Int64: 1, Valid: true},
 				{String: "b", Valid: true}: {},
 			}, Valid: true},
@@ -209,37 +209,37 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 		{
 			signature: mapType(scalarType("integer"), scalarType("varchar")),
 			value:     map[string]any{"1": "a"},
-			want:      NullMapOf[sql.NullInt32, sql.NullString]{Map: map[sql.NullInt32]sql.NullString{{Int32: 1, Valid: true}: {String: "a", Valid: true}}, Valid: true},
+			want:      NullMap[sql.NullInt32, sql.NullString]{Map: map[sql.NullInt32]sql.NullString{{Int32: 1, Valid: true}: {String: "a", Valid: true}}, Valid: true},
 		},
 		{
 			signature: mapType(scalarType("boolean"), scalarType("double")),
 			value:     map[string]any{"true": 1.5},
-			want:      NullMapOf[sql.NullBool, sql.NullFloat64]{Map: map[sql.NullBool]sql.NullFloat64{{Bool: true, Valid: true}: {Float64: 1.5, Valid: true}}, Valid: true},
+			want:      NullMap[sql.NullBool, sql.NullFloat64]{Map: map[sql.NullBool]sql.NullFloat64{{Bool: true, Valid: true}: {Float64: 1.5, Valid: true}}, Valid: true},
 		},
 		{
 			signature: mapType(scalarType("double"), scalarType("boolean")),
 			value:     map[string]any{"1.5": true},
-			want:      NullMapOf[sql.NullFloat64, sql.NullBool]{Map: map[sql.NullFloat64]sql.NullBool{{Float64: 1.5, Valid: true}: {Bool: true, Valid: true}}, Valid: true},
+			want:      NullMap[sql.NullFloat64, sql.NullBool]{Map: map[sql.NullFloat64]sql.NullBool{{Float64: 1.5, Valid: true}: {Bool: true, Valid: true}}, Valid: true},
 		},
 		{
 			signature: mapType(scalarType("date"), scalarType("varbinary")),
 			value:     map[string]any{"2017-07-10": "YQ=="},
-			want:      NullMapOf[sql.NullTime, []byte]{Map: map[sql.NullTime][]byte{{Time: date, Valid: true}: []byte("a")}, Valid: true},
+			want:      NullMap[sql.NullTime, []byte]{Map: map[sql.NullTime][]byte{{Time: date, Valid: true}: []byte("a")}, Valid: true},
 		},
 		{
 			signature: mapType(scalarType("varbinary"), scalarType("varchar")),
 			value:     map[string]any{"YQ==": "a"},
-			want:      NullMapOf[interface{}, sql.NullString]{Map: map[interface{}]sql.NullString{"YQ==": {String: "a", Valid: true}}, Valid: true},
+			want:      NullMap[interface{}, sql.NullString]{Map: map[interface{}]sql.NullString{"YQ==": {String: "a", Valid: true}}, Valid: true},
 		},
 		{
 			signature: mapType(scalarType("varchar"), pointType),
 			value:     map[string]any{"a": []any{1}},
-			want:      NullMapOf[sql.NullString, Row]{Map: map[sql.NullString]Row{{String: "a", Valid: true}: point}, Valid: true},
+			want:      NullMap[sql.NullString, Row]{Map: map[sql.NullString]Row{{String: "a", Valid: true}: point}, Valid: true},
 		},
 		{
 			signature: mapType(scalarType("varchar"), arrayType(scalarType("bigint"))),
 			value:     map[string]any{"a": []any{1}, "b": nil},
-			want: NullMapOf[sql.NullString, interface{}]{Map: map[sql.NullString]interface{}{
+			want: NullMap[sql.NullString, interface{}]{Map: map[sql.NullString]interface{}{
 				{String: "a", Valid: true}: []interface{}{json.Number("1")},
 				{String: "b", Valid: true}: nil,
 			}, Valid: true},
@@ -247,14 +247,14 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 		{
 			signature: mapType(scalarType("varchar"), mapType(scalarType("varchar"), scalarType("bigint"))),
 			value:     map[string]any{"a": map[string]any{"b": 1}},
-			want: NullMapOf[sql.NullString, interface{}]{Map: map[sql.NullString]interface{}{
+			want: NullMap[sql.NullString, interface{}]{Map: map[sql.NullString]interface{}{
 				{String: "a", Valid: true}: map[string]interface{}{"b": json.Number("1")},
 			}, Valid: true},
 		},
 		{
 			signature: arrayType(mapType(scalarType("varchar"), scalarType("bigint"))),
 			value:     []any{map[string]any{"a": 1}, nil},
-			want: NullSlice[NullMapOf[sql.NullString, sql.NullInt64]]{Slice: []NullMapOf[sql.NullString, sql.NullInt64]{
+			want: NullSlice[NullMap[sql.NullString, sql.NullInt64]]{Slice: []NullMap[sql.NullString, sql.NullInt64]{
 				{Map: map[sql.NullString]sql.NullInt64{{String: "a", Valid: true}: {Int64: 1, Valid: true}}, Valid: true},
 				{},
 			}, Valid: true},
