@@ -1001,3 +1001,18 @@ func TestSSLVerificationModes(t *testing.T) {
 		})
 	}
 }
+
+// http.ProxyFromEnvironment reads the environment once per process and skips
+// loopback hosts, so a request through an environment proxy cannot be tested.
+func TestTLSTransportKeepsDefaultTransportSettings(t *testing.T) {
+	t.Parallel()
+	conn, err := newConnFromConfig(&Config{ServerURI: "https://localhost:8443", SSLVerification: SSLVerificationNone}, nil)
+	require.NoError(t, err)
+
+	transport, ok := conn.httpClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.NotNil(t, transport.Proxy)
+	assert.True(t, transport.ForceAttemptHTTP2)
+	assert.Equal(t, http.DefaultTransport.(*http.Transport).TLSHandshakeTimeout, transport.TLSHandshakeTimeout)
+	assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
+}
