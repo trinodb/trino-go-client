@@ -1065,6 +1065,21 @@ ones, but keep working:
   `trino.NullSlice3Bool`, replaced by nested `trino.NullSlice` values; unlike
   the generic ones, they turn a `NULL` inner array into an empty one
 
+`sql.ColumnType.ScanType()` reports the generic scanners, instantiated with
+the scan types of the elements, keys and values, like
+`trino.NullSlice[sql.NullInt32]` for an `ARRAY(INTEGER)`,
+`trino.NullMapOf[sql.NullString, sql.NullInt64]` for a
+`MAP(VARCHAR, BIGINT)` and `trino.NullSlice[trino.Row]` for an
+`ARRAY(ROW(...))`, so a value created with `reflect.New` from it can be
+passed to `Scan()`. A `ROW` reports `trino.Row`, as `trino.NullRow` needs a
+struct type. The reported types cover arrays of up to three dimensions, maps
+of scalar values, and arrays of such maps; a column nested deeper reports
+`interface{}` for the values below the deepest level covered, like
+`trino.NullMapOf[sql.NullString, interface{}]` for a
+`MAP(VARCHAR, ARRAY(BIGINT))`. A map key that is not comparable in
+Go, like `VARBINARY`, is reported as `interface{}`. The deprecated scanners
+are no longer reported.
+
 To read a `ROW` value, scan into a `trino.Row`:
 
 ```go

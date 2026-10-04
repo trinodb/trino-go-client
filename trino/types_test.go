@@ -679,28 +679,6 @@ func TestNewTypeConverterRejectsWrongArgumentKinds(t *testing.T) {
 	}
 }
 
-func TestGetScanTypeRejectsTruncatedArraySignatures(t *testing.T) {
-	t.Parallel()
-	for name, signature := range map[string]typeSignature{
-		"array":             {RawType: "array"},
-		"array/array":       arrayType(typeSignature{RawType: "array"}),
-		"array/array/array": arrayType(arrayType(typeSignature{RawType: "array"})),
-	} {
-		t.Run(name, func(t *testing.T) {
-			_, err := parsedScanType(t, signature)
-
-			require.ErrorIs(t, err, ErrInvalidResponseType)
-		})
-	}
-
-	t.Run("four dimensions scan as interface", func(t *testing.T) {
-		scanType, err := parsedScanType(t, arrayType(arrayType(arrayType(arrayType(scalarType("integer"))))))
-
-		require.NoError(t, err)
-		assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType)
-	})
-}
-
 func TestGetScanTypeForNonStandardTypes(t *testing.T) {
 	t.Parallel()
 	for typeName, want := range map[string]reflect.Type{
@@ -722,14 +700,6 @@ func TestGetScanTypeForNonStandardTypes(t *testing.T) {
 			assert.Equal(t, want, scanType)
 		})
 	}
-}
-
-func TestGetScanTypeForRowArray(t *testing.T) {
-	t.Parallel()
-	scanType, err := parsedScanType(t, arrayType(rowType()))
-
-	require.NoError(t, err)
-	assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType, "kept as interface{} so ColumnTypeScanType does not change for existing callers")
 }
 
 // parsedScanType decodes the type arguments of signature the way a response

@@ -296,7 +296,7 @@ func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
 	assert.Equal(t, "VARIANT", columnTypes[0].DatabaseTypeName())
 	assert.Equal(t, reflect.TypeOf(Variant{}), columnTypes[0].ScanType())
 	assert.Equal(t, "ARRAY(VARIANT)", columnTypes[1].DatabaseTypeName())
-	assert.Equal(t, reflect.TypeOf(NullSliceString{}), columnTypes[1].ScanType())
+	assert.Equal(t, reflect.TypeOf(NullSlice[Variant]{}), columnTypes[1].ScanType())
 
 	require.True(t, rows.Next())
 	var value Variant
@@ -305,6 +305,13 @@ func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
 	var mapValue NullMap
 	var row Row
 	require.NoError(t, rows.Scan(&value, &array, &mapValue, &row))
+	var genericArray NullSlice[Variant]
+	require.NoError(t, rows.Scan(new(Variant), &genericArray, new(NullMap), new(Row)))
+	require.True(t, genericArray.Valid)
+	require.Len(t, genericArray.Slice, 3)
+	assert.Equal(t, 1.5, genericArray.Slice[0].Value())
+	assert.Equal(t, VariantNull, genericArray.Slice[1].Type())
+	assert.False(t, genericArray.Slice[2].Valid, "an SQL NULL element")
 	assert.True(t, value.Valid)
 	assert.Equal(t, VariantObject, value.Type())
 	assert.Equal(t, map[string]interface{}{"a": int64(2), "b": int64(1)}, value.Value())

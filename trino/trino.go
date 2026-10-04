@@ -4232,78 +4232,94 @@ func needsNestedConversion(signature typeSignature) bool {
 	return false
 }
 
+// getScanType returns the type ColumnTypeScanType reports. An ARRAY or MAP
+// reports the generic scanner instantiated with the scan types of its
+// elements, or keys and values, recursively, so the scan type names the
+// scanner to use. When the column nests deeper than containerScanTypes
+// covers, the deepest instantiation it covers is reported, with
+// interface{} below that level.
 func getScanType(signature typeSignature) (reflect.Type, error) {
-	typeNames := getNestedTypes([]string{}, signature)
-	var v interface{}
-	switch typeNames[0] {
-	case "map":
-		v = NullMap{}
+	depth, err := containerDepth(signature)
+	if err != nil {
+		return nil, err
+	}
+	for levels := depth; levels > 0; levels-- {
+		if scanType, ok := containerScanType(signature, levels); ok {
+			return scanType, nil
+		}
+	}
+	return scalarScanType(signature.RawType), nil
+}
+
+// containerDepth returns how many levels of ARRAY and MAP a type nests,
+// rejecting signatures without the arguments an ARRAY or MAP needs.
+func containerDepth(signature typeSignature) (int, error) {
+	var arguments int
+	switch signature.RawType {
 	case "array":
-		if len(typeNames) <= 1 {
-			return nil, ErrInvalidResponseType
-		}
-		switch typeNames[1] {
-		case "boolean":
-			v = NullSliceBool{}
-		case "json", "variant", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
-			v = NullSliceString{}
-		case "tinyint", "smallint", "integer", "bigint":
-			v = NullSliceInt64{}
-		case "real", "double":
-			v = NullSliceFloat64{}
-		case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
-			v = NullSliceTime{}
-		case "map":
-			v = NullSliceMap{}
-		case "array":
-			if len(typeNames) <= 2 {
-				return nil, ErrInvalidResponseType
-			}
-			switch typeNames[2] {
-			case "boolean":
-				v = NullSlice2Bool{}
-			case "json", "variant", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
-				v = NullSlice2String{}
-			case "tinyint", "smallint", "integer", "bigint":
-				v = NullSlice2Int64{}
-			case "real", "double":
-				v = NullSlice2Float64{}
-			case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
-				v = NullSlice2Time{}
-			case "map":
-				v = NullSlice2Map{}
-			case "array":
-				if len(typeNames) <= 3 {
-					return nil, ErrInvalidResponseType
-				}
-				switch typeNames[3] {
-				case "boolean":
-					v = NullSlice3Bool{}
-				case "json", "variant", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
-					v = NullSlice3String{}
-				case "tinyint", "smallint", "integer", "bigint":
-					v = NullSlice3Int64{}
-				case "real", "double":
-					v = NullSlice3Float64{}
-				case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
-					v = NullSlice3Time{}
-				case "map":
-					v = NullSlice3Map{}
-				}
-				// if this is a 4 or more dimensional array, scan type will be an empty interface
-			}
-		}
+		arguments = 1
+	case "map":
+		arguments = 2
 	default:
-		return scalarScanType(typeNames[0]), nil
+		return 0, nil
 	}
-	if v == nil {
-		return reflect.TypeOf(new(interface{})).Elem(), nil
+	if len(signature.Arguments) != arguments {
+		return 0, ErrInvalidResponseType
 	}
-	return reflect.TypeOf(v), nil
+	depth := 0
+	for _, argument := range signature.Arguments {
+		argumentSignature, err := typeArgumentSignature(argument)
+		if err != nil {
+			return 0, err
+		}
+		argumentDepth, err := containerDepth(argumentSignature)
+		if err != nil {
+			return 0, err
+		}
+		depth = max(depth, argumentDepth)
+	}
+	return depth + 1, nil
+}
+
+// containerScanType returns the scan type of a type whose signature
+// containerDepth accepted, with interface{} for anything nested more than
+// levels deep, or false if containerScanTypes does not cover it.
+func containerScanType(signature typeSignature, levels int) (reflect.Type, bool) {
+	if signature.RawType != "array" && signature.RawType != "map" {
+		return scalarScanType(signature.RawType), true
+	}
+	if levels == 0 {
+		return anyScanType, true
+	}
+	argumentTypes := make([]reflect.Type, len(signature.Arguments))
+	for i, argument := range signature.Arguments {
+		argumentSignature, _ := typeArgumentSignature(argument)
+		argumentType, ok := containerScanType(argumentSignature, levels-1)
+		if !ok {
+			return nil, false
+		}
+		argumentTypes[i] = argumentType
+	}
+	if signature.RawType == "array" {
+		return containerScanTypes.slice(argumentTypes[0])
+	}
+	return containerScanTypes.mapOf(argumentTypes[0], argumentTypes[1])
+}
+
+func typeArgumentSignature(argument typeArgument) (typeSignature, error) {
+	switch argument.Kind {
+	case KIND_TYPE:
+		return argument.typeSignature, nil
+	case KIND_NAMED_TYPE:
+		return argument.namedTypeSignature.TypeSignature, nil
+	default:
+		return typeSignature{}, ErrInvalidResponseType
+	}
 }
 
 // scalarScanType returns the type a column of rawType, other than ARRAY and
-// MAP, scans into.
+// MAP, scans into. A ROW reports Row, as NullRow needs a struct type that
+// only the caller knows.
 func scalarScanType(rawType string) reflect.Type {
 	var v interface{}
 	switch rawType {
