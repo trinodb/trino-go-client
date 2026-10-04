@@ -206,6 +206,26 @@ func TestSpoolingProtocolSegmentDownloadRetryMaxAttempts(t *testing.T) {
 	assert.EqualValues(t, 3, failures.Load())
 }
 
+func TestSpoolingProtocolSegmentDownloadErrorKeepsResponseStatus(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+
+	var queryFailed *ErrQueryFailed
+	require.ErrorAs(t, rows.Err(), &queryFailed)
+	assert.Equal(t, http.StatusNotFound, queryFailed.StatusCode)
+}
+
 // shortenSegmentDownloadRetries keeps the retry tests from waiting for the
 // real backoff, which adds up to seconds once the retries are exhausted.
 func shortenSegmentDownloadRetries(t testing.TB) {
