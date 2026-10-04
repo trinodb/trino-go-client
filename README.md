@@ -1029,6 +1029,14 @@ coordinator treats the client as still active, which helps avoid query
 abandonment when result consumption is slow. The server must support this
 endpoint (Trino 475+).
 
+Spooled segments stay in storage only until the `expiresAt` time the server
+reports for each of them, so rows read too slowly can outlive their segments.
+When a segment download fails after that time, the error is a
+`*trino.SegmentExpiredError` carrying the expiration time and wrapping the
+download error, so `errors.As` still finds the `*trino.ErrQueryFailed` with the
+HTTP status. A download that fails before the segment expires returns the
+download error as before.
+
 You can configure other encodings:
 
 - Supported encodings: `json`, `json+lz4`, `json+zstd`

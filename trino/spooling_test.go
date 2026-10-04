@@ -3,6 +3,7 @@ package trino
 import (
 	"database/sql"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -224,6 +225,95 @@ func TestSpoolingProtocolSegmentDownloadErrorKeepsResponseStatus(t *testing.T) {
 	var queryFailed *ErrQueryFailed
 	require.ErrorAs(t, rows.Err(), &queryFailed)
 	assert.Equal(t, http.StatusNotFound, queryFailed.StatusCode)
+}
+
+func TestSpoolingProtocolExpiredSegment(t *testing.T) {
+	t.Parallel()
+	warsaw, err := time.LoadLocation("Europe/Warsaw")
+	require.NoError(t, err)
+	expired := time.Date(2020, time.July, 1, 12, 30, 15, 0, warsaw)
+	notExpired := time.Now().Add(time.Hour).In(warsaw)
+	cases := []struct {
+		name        string
+		expiresAt   any
+		status      int
+		wantExpired bool
+	}{
+		{name: "expired and missing", expiresAt: expired.Format("2006-01-02T15:04:05"), status: http.StatusNotFound, wantExpired: true},
+		{name: "expired but still served", expiresAt: expired.Format("2006-01-02T15:04:05"), status: http.StatusOK},
+		{name: "not expired and missing", expiresAt: notExpired.Format("2006-01-02T15:04:05.000"), status: http.StatusNotFound},
+		{name: "malformed and missing", expiresAt: "yesterday", status: http.StatusNotFound},
+		{name: "malformed but served", expiresAt: "yesterday", status: http.StatusOK},
+		{name: "not a string", expiresAt: 1593599415, status: http.StatusNotFound},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json",
+				spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1, "expiresAt": tc.expiresAt}),
+			))
+			fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte("[[1000]]"))
+			})
+			db := fc.open(t, "?timezone=Europe/Warsaw")
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			results := collectInts(t, rows)
+
+			if tc.status == http.StatusOK {
+				require.NoError(t, rows.Err())
+				assert.Equal(t, []int{1000}, results)
+				return
+			}
+			var queryFailed *ErrQueryFailed
+			require.ErrorAs(t, rows.Err(), &queryFailed)
+			assert.Equal(t, http.StatusNotFound, queryFailed.StatusCode)
+			var segmentExpired *SegmentExpiredError
+			if !tc.wantExpired {
+				assert.False(t, errors.As(rows.Err(), &segmentExpired), "unexpected %v", rows.Err())
+				assert.ErrorContains(t, rows.Err(), "error fetching segment from uri")
+				return
+			}
+			require.ErrorAs(t, rows.Err(), &segmentExpired)
+			assert.True(t, expired.Equal(segmentExpired.ExpiresAt), "expires at %v, want %v", segmentExpired.ExpiresAt, expired)
+			assert.ErrorContains(t, rows.Err(), "expired at 2020-07-01T12:30:15+02:00")
+		})
+	}
+}
+
+func TestParseSegmentExpiresAt(t *testing.T) {
+	t.Parallel()
+	warsaw, err := time.LoadLocation("Europe/Warsaw")
+	require.NoError(t, err)
+	cases := []struct {
+		name      string
+		expiresAt any
+		want      time.Time
+	}{
+		{name: "seconds", expiresAt: "2020-07-01T12:30:15", want: time.Date(2020, time.July, 1, 12, 30, 15, 0, warsaw)},
+		{name: "fraction", expiresAt: "2020-07-01T12:30:15.123456789", want: time.Date(2020, time.July, 1, 12, 30, 15, 123456789, warsaw)},
+		{name: "no seconds", expiresAt: "2020-07-01T12:30", want: time.Date(2020, time.July, 1, 12, 30, 0, 0, warsaw)},
+		{name: "offset", expiresAt: "2020-07-01T12:30:15Z", want: time.Date(2020, time.July, 1, 12, 30, 15, 0, time.UTC)},
+		{name: "malformed", expiresAt: "2020-07-01 12:30:15"},
+		{name: "not a string", expiresAt: 1593599415},
+		{name: "missing"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			metadata := map[string]interface{}{}
+			if tc.expiresAt != nil {
+				metadata["expiresAt"] = tc.expiresAt
+			}
+			got := parseSegmentExpiresAt(metadata, warsaw)
+			assert.True(t, tc.want.Equal(got), "got %v, want %v", got, tc.want)
+		})
+	}
 }
 
 // shortenSegmentDownloadRetries keeps the retry tests from waiting for the

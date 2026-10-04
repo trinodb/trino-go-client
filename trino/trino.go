@@ -2802,6 +2802,26 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	return &sr, handleResponseError(resp.StatusCode, sr.Error)
 }
 
+// SegmentExpiredError reports a spooled segment download that failed after
+// the time the server said the segment may be removed from storage, which
+// happens when the rows are read too slowly. Err is the download error.
+type SegmentExpiredError struct {
+	URI       string
+	ExpiresAt time.Time
+	Err       error
+}
+
+// Error implements the error interface.
+func (e *SegmentExpiredError) Error() string {
+	return fmt.Sprintf("trino: spooled segment from uri '%s' expired at %s: %v",
+		e.URI, e.ExpiresAt.Format(time.RFC3339Nano), e.Err)
+}
+
+// Unwrap implements the unwrap interface.
+func (e *SegmentExpiredError) Unwrap() error {
+	return e.Err
+}
+
 type SegmentFetcher struct {
 	ctx             context.Context
 	httpClient      http.Client
@@ -2847,6 +2867,9 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 
 	resp, err := sf.roundTrip(req)
 	if err != nil {
+		if sf.expired() {
+			return nil, &SegmentExpiredError{URI: sf.spooledMetadata.uri, ExpiresAt: sf.spooledMetadata.expiresAt, Err: err}
+		}
 		return nil, fmt.Errorf("error fetching segment from uri '%s': %w", sf.spooledMetadata.uri, err)
 	}
 
@@ -2893,6 +2916,13 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 	}()
 
 	return data, nil
+}
+
+// expired reports whether a failed download is explained by the segment's
+// expiration. A cancelled query is not, even if the segment expired meanwhile.
+func (sf *SegmentFetcher) expired() bool {
+	expiresAt := sf.spooledMetadata.expiresAt
+	return !expiresAt.IsZero() && sf.ctx.Err() == nil && time.Now().After(expiresAt)
 }
 
 func (sf *SegmentFetcher) ackFailed() {
@@ -3198,11 +3228,12 @@ type segmentMetadata struct {
 }
 
 type spooledMetadata struct {
-	uri      string
-	ackUri   string
-	encoding string
-	headers  map[string]interface{}
-	metadata segmentMetadata
+	uri       string
+	ackUri    string
+	encoding  string
+	headers   map[string]interface{}
+	metadata  segmentMetadata
+	expiresAt time.Time
 }
 
 func parseSpooledMetadata(segment map[string]interface{}, segmentIndex int, segmentMetadata segmentMetadata, encoding string) (spooledMetadata, error) {
@@ -3231,6 +3262,28 @@ func parseSpooledMetadata(segment map[string]interface{}, segmentIndex int, segm
 	}
 
 	return result, nil
+}
+
+// parseSegmentExpiresAt reads the time after which a spooled segment may be
+// gone from storage. The server formats it as a local date-time in the
+// session time zone. It only explains a failed download, so a missing or
+// malformed value is ignored and returns the zero time.
+func parseSegmentExpiresAt(metadata map[string]interface{}, location *time.Location) time.Time {
+	value, ok := metadata["expiresAt"].(string)
+	if !ok {
+		return time.Time{}
+	}
+	if expiresAt, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return expiresAt
+	}
+	// Java's LocalDateTime.toString omits the seconds when they and the
+	// fraction are zero; Go accepts a fraction after the seconds on its own.
+	for _, layout := range []string{"2006-01-02T15:04:05", "2006-01-02T15:04"} {
+		if expiresAt, err := time.ParseInLocation(layout, value, location); err == nil {
+			return expiresAt
+		}
+	}
+	return time.Time{}
 }
 
 func parseSegmentMetadata(metadata map[string]interface{}) (segmentMetadata, error) {
@@ -3742,6 +3795,7 @@ func (st *driverStmt) startSegmentDispatcher() {
 						st.errors <- err
 						return
 					}
+					spooledMetadata.expiresAt = parseSegmentExpiresAt(typedMetadata, st.location())
 
 					st.spooledSegmentsMetadata <- spooledMetadata
 				}
