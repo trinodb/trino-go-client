@@ -125,6 +125,7 @@ func TestSpoolingProtocolSegmentDownloadRetryFails(t *testing.T) {
 		name   string
 		status int
 	}{
+		{name: "retry 429 Too Many Requests", status: http.StatusTooManyRequests},
 		{name: "retry 502 Bad Gateway", status: http.StatusBadGateway},
 		{name: "retry 503 Service Unavailable", status: http.StatusServiceUnavailable},
 		{name: "retry 504 Gateway Timeout", status: http.StatusGatewayTimeout},

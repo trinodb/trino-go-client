@@ -556,9 +556,12 @@ Default:        2m (trino.DefaultRequestRetryTimeout)
 ```
 
 The `request_retry_timeout` parameter sets how long a single HTTP request is
-retried on a `502`, `503` or `504` response or a network error before the query
-fails. Only idempotent requests are retried on network errors after the
-connection is established. The value must be positive.
+retried on a `429`, `502`, `503` or `504` response or a network error before
+the query fails. Only idempotent requests are retried on network errors after
+the connection is established. A `Retry-After` header on a `429` or `503`
+response, in seconds or as an HTTP date, sets the wait before the next attempt
+instead of the default backoff; the wait never extends past this timeout. The
+value must be positive.
 
 ##### `request_retry_max_attempts`
 
