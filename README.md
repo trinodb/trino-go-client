@@ -1045,6 +1045,13 @@ successful ping does not prove the credentials are accepted. With [external
 authentication](#external-authentication), that request starts the login flow
 when no valid token is cached, so a ping can open the browser.
 
+Before returning a connection to the pool, `database/sql` asks the driver
+whether it can be reused, without contacting the server. A connection whose
+Kerberos client failed to authenticate a request is dropped, so the next one
+reloads the keytab or credential cache, for example after `kinit` renewed an
+expired ticket; a statement that failed that way before reaching the server
+is retried on a new connection.
+
 The same information, including the server version, is available from
 `trino.Conn.ServerInfo` through
 [`sql.Conn.Raw`](https://godoc.org/database/sql#Conn.Raw):

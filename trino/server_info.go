@@ -45,7 +45,7 @@ func (c *Conn) Ping(ctx context.Context) error {
 func (c *Conn) ServerInfo(ctx context.Context) (ServerInfo, error) {
 	req, err := c.newRequest(ctx, http.MethodGet, c.baseURL+"/v1/info", nil, nil)
 	if err != nil {
-		return ServerInfo{}, err
+		return ServerInfo{}, c.unsentRequestError(err)
 	}
 	resp, err := c.roundTrip(ctx, req)
 	if err != nil {
@@ -87,7 +87,7 @@ func (c *Conn) ServerInfo(ctx context.Context) (ServerInfo, error) {
 func (c *Conn) validateCredentials(ctx context.Context) error {
 	req, err := c.newRequest(ctx, http.MethodHead, c.baseURL+"/v1/statement", nil, nil)
 	if err != nil {
-		return err
+		return c.unsentRequestError(err)
 	}
 	resp, err := c.roundTrip(ctx, req)
 	var queryFailed *ErrQueryFailed
