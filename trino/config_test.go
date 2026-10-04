@@ -774,6 +774,39 @@ func TestConnErrorDSN(t *testing.T) {
 	}
 }
 
+// A custom client uses its own transport, so TLS settings in the DSN would be
+// silently ignored on sql.Open.
+func TestCustomClientTLSConflicts(t *testing.T) {
+	t.Parallel()
+	require.NoError(t, RegisterCustomClient("tls-conflict", &http.Client{}))
+	t.Cleanup(func() { DeregisterCustomClient("tls-conflict") })
+	const wantErr = "SSLCert, SSLCertPath, client certificates and SSLVerification cannot be combined with a custom client"
+
+	for name, query := range map[string]string{
+		"SSL cert":         "SSLCert=PEM",
+		"SSL cert path":    "SSLCertPath=%2Fcert.pem",
+		"client cert":      "SSLClientCert=PEM&SSLClientKey=PEM",
+		"client cert path": "SSLClientCertPath=%2Fclient.pem&SSLClientKeyPath=%2Fclient-key.pem",
+		"client key only":  "SSLClientKeyPath=%2Fclient-key.pem",
+		"verification":     "SSLVerification=NONE",
+	} {
+		t.Run(name, func(t *testing.T) {
+			dsn := "https://localhost:8443?custom_client=tls-conflict&" + query
+			db, err := sql.Open("trino", dsn)
+			require.NoError(t, err)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+			assert.ErrorContains(t, db.Ping(), wantErr)
+
+			conf, err := ParseDSN(dsn)
+			require.NoError(t, err)
+			_, err = NewConnector(conf)
+			assert.ErrorContains(t, err, wantErr)
+			_, err = conf.FormatDSN()
+			assert.ErrorContains(t, err, wantErr)
+		})
+	}
+}
+
 func TestRegisterCustomClientReserved(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []string{"true", "false"} {
