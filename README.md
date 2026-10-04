@@ -172,6 +172,25 @@ db, err := sql.Open("trino", "https://user@localhost:8443"+
     "&KerberosCredentialCachePath=/tmp/krb5cc_1000")
 ```
 
+A program that already holds a logged-in
+[gokrb5](https://pkg.go.dev/github.com/jcmturner/gokrb5/v8/client) client, for
+example one that authenticates its own users, can pass it in
+`Config.KerberosClient` with `trino.NewConnector`, the counterpart of the JDBC
+driver's `KerberosDelegation`. All connections of the `Connector` share it and
+the driver never logs it in, renews or destroys it. It requires
+`KerberosEnabled` and cannot be combined with `KerberosKeytabPath` or
+`KerberosCredentialCachePath`; `Config.FormatDSN` returns an error when it is
+set. When `KerberosPrincipal` or `KerberosRealm` are set, they must match the
+client's credentials.
+
+```go
+connector, err := trino.NewConnector(&trino.Config{
+	ServerURI:       "https://user@localhost:8443",
+	KerberosEnabled: true,
+	KerberosClient:  kerberosClient,
+})
+```
+
 Please refer to the [Coordinator Kerberos
 Authentication](https://trino.io/docs/current/security/server.html) for
 server-side configuration.

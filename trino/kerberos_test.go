@@ -16,6 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jcmturner/gokrb5/v8/client"
+	"github.com/jcmturner/gokrb5/v8/config"
+	"github.com/jcmturner/gokrb5/v8/credentials"
 	"github.com/jcmturner/gokrb5/v8/iana/etypeID"
 	"github.com/jcmturner/gokrb5/v8/iana/nametype"
 	"github.com/jcmturner/gokrb5/v8/messages"
@@ -56,6 +59,104 @@ func TestKerberosCredentialCacheFromEnvironment(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []int{1}, collectInts(t, rows))
 	assert.Equal(t, "trino/127.0.0.1", requestedServicePrincipal(t, fc.capturedRequests()[0].header))
+}
+
+// KRB5CCNAME names a missing cache, so the request can only succeed with
+// the caller's client.
+func TestKerberosClient(t *testing.T) {
+	fc := newFakeTLSCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	krb5Files := newKerberosTestFiles(t, "alice", "trino/127.0.0.1")
+	t.Setenv("KRB5CCNAME", filepath.Join(t.TempDir(), "missing"))
+
+	db := openKerberos(t, fc, Config{KerberosClient: newTestKerberosClient(t, krb5Files)})
+	rows, err := db.Query("SELECT 1")
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{1}, collectInts(t, rows))
+	assert.Equal(t, "trino/127.0.0.1", requestedServicePrincipal(t, fc.capturedRequests()[0].header))
+}
+
+func TestKerberosClientPrincipal(t *testing.T) {
+	t.Parallel()
+	kerberosClient := newTestKerberosClient(t, newKerberosTestFiles(t, "alice", "trino/127.0.0.1"))
+
+	cases := []struct {
+		name      string
+		principal string
+		realm     string
+		wantErr   string
+	}{
+		{name: "matching name", principal: "alice"},
+		{name: "matching name with realm", principal: "alice@" + testRealm, realm: testRealm},
+		{name: "other principal", principal: "bob", wantErr: "KerberosClient holds credentials for alice@EXAMPLE.COM, not for bob"},
+		{name: "other principal with realm", principal: "alice@OTHER.COM", wantErr: "KerberosClient holds credentials for alice@EXAMPLE.COM, not for alice@OTHER.COM"},
+		{name: "other realm", realm: "OTHER.COM", wantErr: "KerberosClient holds credentials for realm EXAMPLE.COM, not for OTHER.COM"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := newKerberosClient(&Config{
+				KerberosClient:    kerberosClient,
+				KerberosPrincipal: tc.principal,
+				KerberosRealm:     tc.realm,
+			})
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Same(t, kerberosClient, got)
+		})
+	}
+}
+
+func TestKerberosClientWithoutCredentials(t *testing.T) {
+	t.Parallel()
+	_, err := newKerberosClient(&Config{KerberosClient: &client.Client{}})
+	require.ErrorContains(t, err, "KerberosClient has no credentials")
+}
+
+func TestKerberosClientValidation(t *testing.T) {
+	t.Parallel()
+	kerberosClient := &client.Client{}
+	cases := []struct {
+		name    string
+		config  Config
+		wantErr string
+	}{
+		{
+			name:    "without KerberosEnabled",
+			config:  Config{KerberosClient: kerberosClient},
+			wantErr: "KerberosClient requires KerberosEnabled",
+		},
+		{
+			name:    "with keytab",
+			config:  Config{KerberosEnabled: true, KerberosClient: kerberosClient, KerberosKeytabPath: "/etc/trino.keytab"},
+			wantErr: "KerberosClient cannot be specified together with KerberosKeytabPath or KerberosCredentialCachePath",
+		},
+		{
+			name:    "with credential cache",
+			config:  Config{KerberosEnabled: true, KerberosClient: kerberosClient, KerberosCredentialCachePath: "/tmp/krb5cc_1000"},
+			wantErr: "KerberosClient cannot be specified together with KerberosKeytabPath or KerberosCredentialCachePath",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.config.ServerURI = "https://localhost:8443"
+			_, err := NewConnector(&tc.config)
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
+func TestFormatDSNRejectsKerberosClient(t *testing.T) {
+	t.Parallel()
+	conf := &Config{ServerURI: "https://localhost:8443", KerberosEnabled: true, KerberosClient: &client.Client{}}
+
+	_, err := conf.FormatDSN()
+	require.ErrorContains(t, err, "KerberosClient cannot be expressed in a DSN")
 }
 
 func TestKerberosCredentialCachePrincipal(t *testing.T) {
@@ -368,6 +469,17 @@ func openKerberos(t *testing.T, fc *fakeCoordinator, conf Config) *sql.DB {
 	db := sql.OpenDB(connector)
 	t.Cleanup(func() { require.NoError(t, db.Close()) })
 	return db
+}
+
+func newTestKerberosClient(t *testing.T, krb5Files kerberosTestFiles) *client.Client {
+	t.Helper()
+	krb5Config, err := config.Load(krb5Files.config)
+	require.NoError(t, err)
+	ccache, err := credentials.LoadCCache(krb5Files.credentialCache)
+	require.NoError(t, err)
+	kerberosClient, err := client.NewFromCCache(ccache, krb5Config)
+	require.NoError(t, err)
+	return kerberosClient
 }
 
 type kerberosTestFiles struct {

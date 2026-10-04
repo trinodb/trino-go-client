@@ -21,6 +21,7 @@ const (
 	kerberosCredentialCachePathConfig     = "KerberosCredentialCachePath"
 	kerberosServicePrincipalPatternConfig = "KerberosServicePrincipalPattern"
 	kerberosUseCanonicalHostnameConfig    = "KerberosUseCanonicalHostname"
+	kerberosClientConfig                  = "KerberosClient"
 
 	defaultKerberosServicePrincipalPattern = "${SERVICE}@${HOST}"
 	servicePlaceholder                     = "${SERVICE}"
@@ -32,6 +33,14 @@ func (c *Config) validateKerberos() error {
 	if c.KerberosKeytabPath != "" && c.KerberosCredentialCachePath != "" {
 		return fmt.Errorf("trino: client configuration error, %s and %s cannot be specified together", kerberosKeytabPathConfig, kerberosCredentialCachePathConfig)
 	}
+	if c.KerberosClient != nil {
+		if !c.KerberosEnabled {
+			return fmt.Errorf("trino: client configuration error, %s requires %s", kerberosClientConfig, kerberosEnabledConfig)
+		}
+		if c.KerberosKeytabPath != "" || c.KerberosCredentialCachePath != "" {
+			return fmt.Errorf("trino: client configuration error, %s cannot be specified together with %s or %s", kerberosClientConfig, kerberosKeytabPathConfig, kerberosCredentialCachePathConfig)
+		}
+	}
 	// gokrb5 finds the realm of a service through domain_realm in krb5.conf
 	// and cannot take it from the principal.
 	if service, _, ok := cutLast(c.KerberosServicePrincipalPattern, "@"); ok && strings.Contains(service, "/") {
@@ -41,6 +50,11 @@ func (c *Config) validateKerberos() error {
 }
 
 func newKerberosClient(conf *Config) (*client.Client, error) {
+	// The caller logged the client in and owns it, like the JAAS Subject the
+	// JDBC driver uses with KerberosDelegation.
+	if conf.KerberosClient != nil {
+		return conf.checkedKerberosClient()
+	}
 	confKerb, err := config.Load(conf.KerberosConfigPath)
 	if err != nil {
 		return nil, fmt.Errorf("trino: Error loading krb config: %w", err)
@@ -80,7 +94,7 @@ func newKerberosClientFromCredentialCache(conf *Config, confKerb *config.Config)
 	if err != nil {
 		return nil, fmt.Errorf("trino: Error loading Kerberos credential cache %s: %w", path, err)
 	}
-	if err := conf.checkCredentialCachePrincipal(ccache); err != nil {
+	if err := conf.checkPrincipal("Kerberos credential cache holds a ticket", ccache.GetClientPrincipalName().PrincipalNameString(), ccache.GetClientRealm()); err != nil {
 		return nil, err
 	}
 	kerberosClient, err := client.NewFromCCache(ccache, confKerb)
@@ -130,14 +144,25 @@ func loadCredentialCache(path string) (ccache *credentials.CCache, err error) {
 	return credentials.LoadCCache(path)
 }
 
-func (c *Config) checkCredentialCachePrincipal(ccache *credentials.CCache) error {
-	name := ccache.GetClientPrincipalName().PrincipalNameString()
-	realm := ccache.GetClientRealm()
+func (c *Config) checkedKerberosClient() (*client.Client, error) {
+	creds := c.KerberosClient.Credentials
+	if creds == nil {
+		return nil, fmt.Errorf("trino: %s has no credentials, log it in before passing it", kerberosClientConfig)
+	}
+	if err := c.checkPrincipal(kerberosClientConfig+" holds credentials", creds.UserName(), creds.Realm()); err != nil {
+		return nil, err
+	}
+	return c.KerberosClient, nil
+}
+
+// checkPrincipal makes sure the driver never authenticates as another user
+// than KerberosPrincipal and KerberosRealm name.
+func (c *Config) checkPrincipal(source, name, realm string) error {
 	if c.KerberosPrincipal != "" && c.KerberosPrincipal != name && c.KerberosPrincipal != name+"@"+realm {
-		return fmt.Errorf("trino: Kerberos credential cache holds a ticket for %s@%s, not for %s", name, realm, c.KerberosPrincipal)
+		return fmt.Errorf("trino: %s for %s@%s, not for %s", source, name, realm, c.KerberosPrincipal)
 	}
 	if c.KerberosRealm != "" && c.KerberosRealm != realm {
-		return fmt.Errorf("trino: Kerberos credential cache holds a ticket for realm %s, not for %s", realm, c.KerberosRealm)
+		return fmt.Errorf("trino: %s for realm %s, not for %s", source, realm, c.KerberosRealm)
 	}
 	return nil
 }
