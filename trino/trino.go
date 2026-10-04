@@ -1184,11 +1184,9 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 			return nil, err
 		}
 		if tlsConfig != nil {
-			httpClient = &http.Client{
-				Transport: &http.Transport{
-					TLSClientConfig: tlsConfig,
-				},
-			}
+			transport := newDefaultTransport()
+			transport.TLSClientConfig = tlsConfig
+			httpClient = &http.Client{Transport: transport}
 		}
 	}
 	if conf.CustomClientName == "" {
@@ -1664,6 +1662,12 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 		req.SetBasicAuth(c.auth.Username(), pass)
 	}
 	return req, nil
+}
+
+// newDefaultTransport copies http.DefaultTransport, so a transport the driver
+// configures keeps its proxy from the environment, timeouts and HTTP/2.
+func newDefaultTransport() *http.Transport {
+	return http.DefaultTransport.(*http.Transport).Clone()
 }
 
 // withoutRedirects returns a copy of client that hands redirects back to the
