@@ -601,19 +601,9 @@ func TestInvalidExtraCredentials(t *testing.T) {
 		wantErr     string
 	}{
 		{
-			name:        "empty key",
-			credentials: map[string]string{"": "emptyKey"},
-			wantErr:     "trino: extra_credentials key is empty",
-		},
-		{
 			name:        "empty value",
 			credentials: map[string]string{"valid": "a", "emptyValue": ""},
 			wantErr:     "trino: extra_credentials value is empty",
-		},
-		{
-			name:        "unprintable key",
-			credentials: map[string]string{"😊": "unprintableKey"},
-			wantErr:     "trino: extra_credentials key '😊' contains spaces or is not printable ASCII",
 		},
 		{
 			name:        "unprintable value",
@@ -639,6 +629,72 @@ func TestInvalidExtraCredentials(t *testing.T) {
 			assert.EqualError(t, err, tc.wantErr)
 		})
 	}
+}
+
+func TestInvalidHeaderKeys(t *testing.T) {
+	t.Parallel()
+	invalidKeys := []struct {
+		name    string
+		key     string
+		wantErr string
+	}{
+		{name: "empty", key: "", wantErr: "key is empty"},
+		{name: "equals sign", key: "a=b", wantErr: `key "a=b" must not contain '='`},
+		{name: "comma", key: "a,b", wantErr: `key "a,b" must not contain ','`},
+		{name: "injected pair", key: "a=1,b", wantErr: `key "a=1,b" must not contain '='`},
+		{name: "space", key: "a b", wantErr: `key "a b" contains spaces or is not printable ASCII`},
+		{name: "tab", key: "a\tb", wantErr: `key "a\tb" contains spaces or is not printable ASCII`},
+		{name: "carriage return", key: "a\rb", wantErr: `key "a\rb" contains spaces or is not printable ASCII`},
+		{name: "newline", key: "a\nb", wantErr: `key "a\nb" contains spaces or is not printable ASCII`},
+		{name: "delete", key: "a\x7fb", wantErr: `key "a\x7fb" contains spaces or is not printable ASCII`},
+		{name: "non-ASCII", key: "😊", wantErr: `key "😊" contains spaces or is not printable ASCII`},
+	}
+	parameters := []struct {
+		name string
+		set  func(*Config, map[string]string)
+	}{
+		{name: "session_properties", set: func(c *Config, m map[string]string) { c.SessionProperties = m }},
+		{name: "extra_credentials", set: func(c *Config, m map[string]string) { c.ExtraCredentials = m }},
+		{name: "roles", set: func(c *Config, m map[string]string) { c.Roles = m }},
+	}
+
+	for _, parameter := range parameters {
+		for _, tc := range invalidKeys {
+			t.Run(parameter.name+"/"+tc.name, func(t *testing.T) {
+				wantErr := "trino: " + parameter.name + " " + tc.wantErr
+				newConfig := func() *Config {
+					c := &Config{ServerURI: "http://foobar@localhost:8080"}
+					parameter.set(c, map[string]string{"valid": "v", tc.key: "v"})
+					return c
+				}
+
+				_, err := NewConnector(newConfig())
+				assert.EqualError(t, err, wantErr, "NewConnector")
+
+				_, err = newConfig().FormatDSN()
+				assert.EqualError(t, err, wantErr, "FormatDSN")
+
+				dsn := "http://foobar@localhost:8080?" + url.Values{parameter.name: {"valid:v;" + tc.key + ":v"}}.Encode()
+				_, err = ParseDSN(dsn)
+				assert.EqualError(t, err, wantErr, "ParseDSN")
+			})
+		}
+	}
+}
+
+func TestInvalidClientTags(t *testing.T) {
+	t.Parallel()
+	conf := &Config{
+		ServerURI:  "http://foobar@localhost:8080",
+		ClientTags: []string{"valid", "a,b"},
+	}
+	wantErr := `trino: clientTags tag "a,b" must not contain ','`
+
+	_, err := NewConnector(conf)
+	assert.EqualError(t, err, wantErr, "NewConnector")
+
+	_, err = conf.FormatDSN()
+	assert.EqualError(t, err, wantErr, "FormatDSN")
 }
 
 func TestConnErrorDSN(t *testing.T) {

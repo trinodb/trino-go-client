@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -588,6 +589,60 @@ func TestNamedRoleArgumentMustBeMap(t *testing.T) {
 
 	require.EqualError(t, err, "X-Trino-Role must be a map[string]string, got string")
 	assert.Empty(t, fc.capturedRequests(), "the query must be rejected before anything is sent")
+}
+
+func TestNamedRoleArgumentRejectsInvalidCatalog(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "")
+
+	_, err := db.Query("SELECT 1", sql.Named(trinoRoleHeader, map[string]string{"hive=ALL,system": "admin"}))
+
+	require.EqualError(t, err, `trino: X-Trino-Role key "hive=ALL,system" must not contain '='`)
+	assert.Empty(t, fc.capturedRequests(), "the query must be rejected before anything is sent")
+}
+
+// Only names are restricted; values are URL-encoded, so the separators the
+// server splits on are safe in them.
+func TestHeaderValuesKeepSeparators(t *testing.T) {
+	t.Parallel()
+	const value = "a=b,c%d&e+f;g:h"
+	const encodedValue = "a%3Db%2Cc%25d%26e%2Bf%3Bg%3Ah"
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	connector, err := NewConnector(&Config{
+		ServerURI:         fc.url(),
+		SessionProperties: map[string]string{"hive.max_split_size": value},
+		ExtraCredentials:  map[string]string{"aws:access_key": value},
+		Roles:             map[string]string{"hive": "admin", "system": "ALL"},
+		ClientTags:        []string{"tag1", "tag=2"},
+	})
+	require.NoError(t, err)
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+
+	header := fc.capturedRequests()[0].header
+	assert.Equal(t, []string{"hive.max_split_size=" + encodedValue}, header.Values(trinoSessionHeader))
+	assert.Equal(t, []string{"aws:access_key=" + encodedValue}, header.Values(trinoExtraCredentialHeader))
+	assert.Equal(t, []string{"hive=ROLE{admin},system=ALL"}, header.Values(trinoRoleHeader))
+	assert.Equal(t, []string{"tag1,tag=2"}, header.Values(trinoTagsHeader))
+}
+
+func TestDSNHeaderValuesKeepSeparators(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	db := fc.open(t, "?"+url.Values{"session_properties": {"query_max_run_time:a=b,c"}}.Encode())
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+
+	assert.Equal(t, []string{"query_max_run_time=a%3Db%2Cc"}, fc.capturedRequests()[0].header.Values(trinoSessionHeader))
 }
 
 func TestQueryFailedWrapsTrinoError(t *testing.T) {
