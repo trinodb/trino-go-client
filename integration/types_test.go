@@ -441,6 +441,93 @@ func TestIntgrationNumberType(t *testing.T) {
 	assert.False(t, nullNum.Valid, "nullNum.Valid")
 }
 
+func TestIntegrationVariantType(t *testing.T) {
+	requireServerVersion(t, 481)
+
+	db := integrationOpen(t)
+	for _, protocol := range queryProtocols() {
+		t.Run(protocol.name, func(t *testing.T) {
+			rows, err := db.Query(`SELECT
+				CAST(JSON '{"a": 1, "b": [true, null], "c": "x<y"}' AS VARIANT),
+				CAST(JSON 'null' AS VARIANT),
+				CAST(NULL AS VARIANT),
+				CAST(DATE '2020-01-02' AS VARIANT),
+				CAST(TIMESTAMP '2020-01-02 03:04:05.123456789 +02:00' AS VARIANT),
+				CAST(DECIMAL '-12345678901234567890.123456789012345678' AS VARIANT),
+				CAST(UUID '12151fd2-7586-11e9-8f9e-2a86e4085a59' AS VARIANT),
+				CAST(X'00ff' AS VARIANT),
+				ARRAY[CAST(JSON '1.5' AS VARIANT), CAST(JSON 'null' AS VARIANT), NULL],
+				CAST(ROW(CAST(JSON '[1]' AS VARIANT)) AS ROW(x VARIANT))`, protocol.args...)
+			require.NoError(t, err)
+			defer rows.Close()
+
+			columnTypes, err := rows.ColumnTypes()
+			require.NoError(t, err)
+			for _, col := range columnTypes[:8] {
+				assert.Equal(t, "VARIANT", col.DatabaseTypeName(), "DatabaseTypeName of column %s", col.Name())
+			}
+			assert.Equal(t, "ARRAY(VARIANT)", columnTypes[8].DatabaseTypeName())
+
+			require.True(t, rows.Next(), "expected one row")
+			var object, variantNull, sqlNull, date, timestamp, decimal, uuid, binary trino.Variant
+			var array trino.NullSliceString
+			var row trino.Row
+			require.NoError(t, rows.Scan(&object, &variantNull, &sqlNull, &date, &timestamp, &decimal, &uuid, &binary, &array, &row))
+
+			assert.Equal(t, map[string]interface{}{"a": int64(1), "b": []interface{}{true, nil}, "c": "x<y"}, object.Value())
+			assert.Equal(t, `{"a":1,"b":[true,null],"c":"x<y"}`, object.String())
+			assert.True(t, variantNull.Valid, "a VARIANT null is not SQL NULL")
+			assert.Equal(t, trino.VariantNull, variantNull.Type())
+			assert.False(t, sqlNull.Valid)
+			assert.Equal(t, trino.VariantDate, date.Type())
+			assert.Equal(t, `"2020-01-02"`, date.String())
+			assert.Equal(t, trino.VariantTimestampUTCNanos, timestamp.Type())
+			assert.Equal(t, time.Date(2020, 1, 2, 1, 4, 5, 123456789, time.UTC), timestamp.Value())
+			assert.Equal(t, trino.Numeric("-12345678901234567890.123456789012345678"), decimal.Value())
+			assert.Equal(t, trino.VariantUUID, uuid.Type())
+			assert.Equal(t, "12151fd2-7586-11e9-8f9e-2a86e4085a59", uuid.Value())
+			assert.Equal(t, []byte{0x00, 0xff}, binary.Value())
+			assert.Equal(t, trino.NullSliceString{SliceString: []sql.NullString{{String: "1.5", Valid: true}, {String: "null", Valid: true}, {}}, Valid: true}, array)
+			value, ok := row.Field("x")
+			assert.True(t, ok)
+			require.IsType(t, trino.Variant{}, value)
+			assert.Equal(t, []interface{}{int64(1)}, value.(trino.Variant).Value())
+			require.NoError(t, rows.Err())
+		})
+	}
+}
+
+// TestIntegrationVariantMatchesJSON decodes values whose encoding needs
+// 3-byte offsets, 4-byte element counts and 2-byte field IDs and metadata
+// offsets, and checks they read the same as the server's own JSON form.
+func TestIntegrationVariantMatchesJSON(t *testing.T) {
+	requireServerVersion(t, 481)
+
+	db := integrationOpen(t)
+	for _, protocol := range queryProtocols() {
+		t.Run(protocol.name, func(t *testing.T) {
+			rows, err := db.Query(`WITH t(v) AS (VALUES
+				CAST(ARRAY[rpad('', 70000, 'x'), 'y'] AS VARIANT),
+				CAST(sequence(1, 300) AS VARIANT),
+				CAST(map(transform(sequence(1, 300), i -> 'key' || format('%03d', i)), transform(sequence(1, 300), i -> CAST(i AS DOUBLE) / 7)) AS VARIANT))
+				SELECT v, CAST(v AS JSON) FROM t`, protocol.args...)
+			require.NoError(t, err)
+			defer rows.Close()
+
+			count := 0
+			for rows.Next() {
+				var value trino.Variant
+				var text string
+				require.NoError(t, rows.Scan(&value, &text))
+				assert.Equal(t, text, value.String())
+				count++
+			}
+			require.NoError(t, rows.Err())
+			assert.Equal(t, 3, count)
+		})
+	}
+}
+
 func TestIntegrationDayToHourIntervalMilliPrecision(t *testing.T) {
 	db := integrationOpen(t)
 	cases := []struct {

@@ -186,7 +186,7 @@ const (
 	trinoClientCapabilitiesHeader = trinoHeaderPrefix + `Client-Capabilities`
 	// clientCapabilities lists what the driver can decode; the server falls
 	// back to a plainer representation for every capability left out.
-	clientCapabilities = "PARAMETRIC_DATETIME,NUMBER,PATH,SESSION_AUTHORIZATION"
+	clientCapabilities = "PARAMETRIC_DATETIME,NUMBER,VARIANT,VARIANT_BINARY,PATH,SESSION_AUTHORIZATION"
 	trinoEncoding      = "encoding"
 	trinoWarningsParam = "warnings"
 
@@ -4150,9 +4150,9 @@ func getNestedTypes(types []string, signature typeSignature) []string {
 
 // needsNestedConversion reports whether a type is, or contains through ARRAY
 // and MAP, a type whose values the JSON response does not carry in the shape
-// the driver returns: a ROW.
+// the driver returns: a ROW or a VARIANT.
 func needsNestedConversion(signature typeSignature) bool {
-	if signature.RawType == "row" {
+	if signature.RawType == "row" || signature.RawType == "variant" {
 		return true
 	}
 	for _, arg := range signature.Arguments {
@@ -4177,6 +4177,8 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		v = sql.NullBool{}
 	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "color", "unknown":
 		v = sql.NullString{}
+	case "variant":
+		v = Variant{}
 	case "varbinary":
 		v = []byte{}
 	case "tinyint", "smallint":
@@ -4198,7 +4200,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		switch typeNames[1] {
 		case "boolean":
 			v = NullSliceBool{}
-		case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
+		case "json", "variant", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
 			v = NullSliceString{}
 		case "tinyint", "smallint", "integer", "bigint":
 			v = NullSliceInt64{}
@@ -4215,7 +4217,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 			switch typeNames[2] {
 			case "boolean":
 				v = NullSlice2Bool{}
-			case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
+			case "json", "variant", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
 				v = NullSlice2String{}
 			case "tinyint", "smallint", "integer", "bigint":
 				v = NullSlice2Int64{}
@@ -4232,7 +4234,7 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				switch typeNames[3] {
 				case "boolean":
 					v = NullSlice3Bool{}
-				case "json", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
+				case "json", "variant", "char", "varchar", "varbinary", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "unknown":
 					v = NullSlice3String{}
 				case "tinyint", "smallint", "integer", "bigint":
 					v = NullSlice3Int64{}
@@ -4302,6 +4304,8 @@ func convertScalar(rawType string, v interface{}, location *time.Location) (inte
 			return nil, err
 		}
 		return vv.String, err
+	case "variant":
+		return decodeVariant(v, location)
 	case "tinyint", "smallint", "integer", "bigint":
 		vv, err := scanNullInt64(v)
 		if !vv.Valid {
@@ -4521,6 +4525,11 @@ func (s *NullSlice3Bool) Scan(value interface{}) error {
 func scanNullString(v interface{}) (sql.NullString, error) {
 	if v == nil {
 		return sql.NullString{}, nil
+	}
+	// An ARRAY(VARIANT) element, which scans into the JSON text a VARIANT
+	// column held before the driver decoded VARIANT values.
+	if variant, ok := v.(Variant); ok {
+		return sql.NullString{Valid: true, String: variant.String()}, nil
 	}
 	vv, ok := v.(string)
 	if !ok {
