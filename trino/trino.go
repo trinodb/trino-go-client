@@ -2602,12 +2602,12 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 
 	resp, err := sf.roundTrip(req)
 	if err != nil {
-		return nil, fmt.Errorf("error fetching segment from uri '%s': %v", sf.spooledMetadata.uri, err)
+		return nil, fmt.Errorf("error fetching segment from uri '%s': %w", sf.spooledMetadata.uri, err)
 	}
 
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("error reading response body: %v", err)
+		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
 
 	// A failed acknowledgment leaves the segment in storage until it expires
