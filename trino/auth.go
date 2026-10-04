@@ -338,7 +338,7 @@ func (a *externalAuthenticator) pollToken(ctx context.Context, client *http.Clie
 		switch {
 		case poll.Token != "":
 			// Tell the server the token arrived; a failure only delays its cleanup.
-			if req, err := http.NewRequestWithContext(ctx, http.MethodDelete, uri.String(), nil); err == nil {
+			if req, err := newTokenServerRequest(ctx, http.MethodDelete, uri.String()); err == nil {
 				if resp, err := client.Do(req); err == nil {
 					resp.Body.Close()
 				}
@@ -385,7 +385,7 @@ func (e *retryableError) Error() string { return e.err.Error() }
 // getTokenPoll reads one token server response. Its errors leave out the URL,
 // which identifies the login, and the response body.
 func getTokenPoll(ctx context.Context, client *http.Client, uri string) (*tokenPollResponse, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, uri, nil)
+	req, err := newTokenServerRequest(ctx, http.MethodGet, uri)
 	if err != nil {
 		return nil, errors.New("trino: invalid token server URL")
 	}
@@ -416,6 +416,15 @@ func getTokenPoll(ctx context.Context, client *http.Client, uri string) (*tokenP
 	default:
 		return nil, fmt.Errorf("trino: token server returned %s", resp.Status)
 	}
+}
+
+func newTokenServerRequest(ctx context.Context, method, uri string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, uri, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set(userAgentHeader, userAgent)
+	return req, nil
 }
 
 // decodeTokenPoll matches field names exactly, as the Java client does;

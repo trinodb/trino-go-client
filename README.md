@@ -85,6 +85,11 @@ cannot be combined with `custom_client`, a server or client certificate, or
 transport. `Config.FormatDSN` returns an error when it is set. `NewConnector` copies the `Config`, so later changes to it
 have no effect.
 
+Every request the driver sends carries a `User-Agent` such as
+`trino-go-client/v0.333.0 os=linux arch=amd64 lang/go=go1.25.5`, with the
+driver version taken from the module build information (`unknown` when it is
+not available).
+
 ### Authentication
 
 HTTP Basic, Kerberos, JWT, and OAuth2 authentication are supported.

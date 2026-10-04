@@ -1504,6 +1504,7 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 	if err != nil {
 		return nil, fmt.Errorf("trino: %w", err)
 	}
+	req.Header.Set(userAgentHeader, userAgent)
 
 	if c.kerberosEnabled {
 		remoteServiceName := "trino"
@@ -2578,6 +2579,8 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The acknowledgment copies these headers, so it carries the User-Agent too.
+	req.Header.Set(userAgentHeader, userAgent)
 
 	for k, v := range sf.spooledMetadata.headers {
 		headerSlice, ok := v.([]interface{})
