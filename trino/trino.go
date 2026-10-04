@@ -4498,6 +4498,8 @@ func scanNullBool(v interface{}) (sql.NullBool, error) {
 }
 
 // NullSliceBool represents a slice of bool that may be null.
+//
+// Deprecated: Use NullSlice[sql.NullBool] instead.
 type NullSliceBool struct {
 	SliceBool []sql.NullBool
 	Valid     bool
@@ -4527,6 +4529,9 @@ func (s *NullSliceBool) Scan(value interface{}) error {
 }
 
 // NullSlice2Bool represents a two-dimensional slice of bool that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[sql.NullBool]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice2Bool struct {
 	Slice2Bool [][]sql.NullBool
 	Valid      bool
@@ -4556,6 +4561,9 @@ func (s *NullSlice2Bool) Scan(value interface{}) error {
 }
 
 // NullSlice3Bool implements a three-dimensional slice of bool that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[NullSlice[sql.NullBool]]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice3Bool struct {
 	Slice3Bool [][][]sql.NullBool
 	Valid      bool
@@ -4629,6 +4637,8 @@ func scanNullBytes(v interface{}) (NullBinary, error) {
 }
 
 // NullSliceString represents a slice of string that may be null.
+//
+// Deprecated: Use NullSlice[sql.NullString] instead.
 type NullSliceString struct {
 	SliceString []sql.NullString
 	Valid       bool
@@ -4658,6 +4668,9 @@ func (s *NullSliceString) Scan(value interface{}) error {
 }
 
 // NullSlice2String represents a two-dimensional slice of string that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[sql.NullString]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice2String struct {
 	Slice2String [][]sql.NullString
 	Valid        bool
@@ -4687,6 +4700,9 @@ func (s *NullSlice2String) Scan(value interface{}) error {
 }
 
 // NullSlice3String implements a three-dimensional slice of string that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[NullSlice[sql.NullString]]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice3String struct {
 	Slice3String [][][]sql.NullString
 	Valid        bool
@@ -4733,6 +4749,8 @@ func scanNullInt64(v interface{}) (sql.NullInt64, error) {
 }
 
 // NullSliceInt64 represents a slice of int64 that may be null.
+//
+// Deprecated: Use NullSlice[sql.NullInt64] instead.
 type NullSliceInt64 struct {
 	SliceInt64 []sql.NullInt64
 	Valid      bool
@@ -4762,6 +4780,9 @@ func (s *NullSliceInt64) Scan(value interface{}) error {
 }
 
 // NullSlice2Int64 represents a two-dimensional slice of int64 that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[sql.NullInt64]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice2Int64 struct {
 	Slice2Int64 [][]sql.NullInt64
 	Valid       bool
@@ -4791,6 +4812,9 @@ func (s *NullSlice2Int64) Scan(value interface{}) error {
 }
 
 // NullSlice3Int64 implements a three-dimensional slice of int64 that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[NullSlice[sql.NullInt64]]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice3Int64 struct {
 	Slice3Int64 [][][]sql.NullInt64
 	Valid       bool
@@ -4852,6 +4876,8 @@ func scanNullFloat64(v interface{}) (sql.NullFloat64, error) {
 }
 
 // NullSliceFloat64 represents a slice of float64 that may be null.
+//
+// Deprecated: Use NullSlice[sql.NullFloat64] instead.
 type NullSliceFloat64 struct {
 	SliceFloat64 []sql.NullFloat64
 	Valid        bool
@@ -4881,6 +4907,9 @@ func (s *NullSliceFloat64) Scan(value interface{}) error {
 }
 
 // NullSlice2Float64 represents a two-dimensional slice of float64 that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[sql.NullFloat64]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice2Float64 struct {
 	Slice2Float64 [][]sql.NullFloat64
 	Valid         bool
@@ -4910,6 +4939,9 @@ func (s *NullSlice2Float64) Scan(value interface{}) error {
 }
 
 // NullSlice3Float64 represents a three-dimensional slice of float64 that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[NullSlice[sql.NullFloat64]]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice3Float64 struct {
 	Slice3Float64 [][][]sql.NullFloat64
 	Valid         bool
@@ -5056,6 +5088,8 @@ func (s *NullTime) Scan(value interface{}) error {
 // NullSliceTime represents a slice of time.Time that may be null.
 // Elements without a time zone are interpreted in Location, or in time.Local
 // when Location is nil.
+//
+// Deprecated: Use NullSlice[NullTime] instead.
 type NullSliceTime struct {
 	SliceTime []NullTime
 	Valid     bool
@@ -5095,6 +5129,9 @@ func (s *NullSliceTime) location() *time.Location {
 // NullSlice2Time represents a two-dimensional slice of time.Time that may be null.
 // Elements without a time zone are interpreted in Location, or in time.Local
 // when Location is nil.
+//
+// Deprecated: Use NullSlice[NullSlice[NullTime]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice2Time struct {
 	Slice2Time [][]NullTime
 	Valid      bool
@@ -5127,6 +5164,9 @@ func (s *NullSlice2Time) Scan(value interface{}) error {
 // NullSlice3Time represents a three-dimensional slice of time.Time that may be null.
 // Elements without a time zone are interpreted in Location, or in time.Local
 // when Location is nil.
+//
+// Deprecated: Use NullSlice[NullSlice[NullSlice[NullTime]]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice3Time struct {
 	Slice3Time [][][]NullTime
 	Valid      bool
@@ -5157,6 +5197,8 @@ func (s *NullSlice3Time) Scan(value interface{}) error {
 }
 
 // NullMap represents a map type that may be null.
+//
+// Deprecated: Use NullMapOf[string, interface{}] instead.
 type NullMap struct {
 	Map   map[string]interface{}
 	Valid bool
@@ -5173,6 +5215,8 @@ func (m *NullMap) Scan(v interface{}) error {
 }
 
 // NullSliceMap represents a slice of NullMap that may be null.
+//
+// Deprecated: Use NullSlice[NullMapOf[string, interface{}]] instead.
 type NullSliceMap struct {
 	SliceMap []NullMap
 	Valid    bool
@@ -5204,6 +5248,9 @@ func (s *NullSliceMap) Scan(value interface{}) error {
 }
 
 // NullSlice2Map represents a two-dimensional slice of NullMap that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[NullMapOf[string, interface{}]]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice2Map struct {
 	Slice2Map [][]NullMap
 	Valid     bool
@@ -5233,6 +5280,9 @@ func (s *NullSlice2Map) Scan(value interface{}) error {
 }
 
 // NullSlice3Map represents a three-dimensional slice of NullMap that may be null.
+//
+// Deprecated: Use NullSlice[NullSlice[NullSlice[NullMapOf[string, interface{}]]]] instead,
+// which also keeps the Valid flag of every inner array.
 type NullSlice3Map struct {
 	Slice3Map [][][]NullMap
 	Valid     bool

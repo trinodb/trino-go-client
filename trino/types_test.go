@@ -730,7 +730,7 @@ func TestGetScanTypeForRowArray(t *testing.T) {
 	scanType, err := getScanType([]string{"array", "row"})
 
 	require.NoError(t, err)
-	assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType, "no dedicated scan type until a generic NullSlice exists")
+	assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType, "kept as interface{} so ColumnTypeScanType does not change for existing callers")
 }
 
 func TestRowScan(t *testing.T) {
