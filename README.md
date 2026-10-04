@@ -114,7 +114,7 @@ must be configured there, for example with
 
 ### DNS resolution
 
-The JDBC driver's `dnsResolver` property has no DSN equivalent. To resolve
+There is no DSN parameter for DNS resolution. To resolve
 the coordinator's host name differently, for example with a specific DNS
 server, give the transport of an `HTTPClient` a dialer with its own
 [`net.Resolver`](https://pkg.go.dev/net#Resolver):
@@ -177,9 +177,9 @@ db, err := sql.Open("trino", "https://user@localhost:8443"+
 A program that already holds a logged-in
 [gokrb5](https://pkg.go.dev/github.com/jcmturner/gokrb5/v8/client) client, for
 example one that authenticates its own users, can pass it in
-`Config.KerberosClient` with `trino.NewConnector`, the counterpart of the JDBC
-driver's `KerberosDelegation`. All connections of the `Connector` share it and
-the driver never logs it in, renews or destroys it. It requires
+`Config.KerberosClient` with `trino.NewConnector`. All connections of the
+`Connector` share it and the driver never logs it in, renews or destroys it.
+It requires
 `KerberosEnabled` and cannot be combined with `KerberosKeytabPath` or
 `KerberosCredentialCachePath`; `Config.FormatDSN` returns an error when it is
 set. When `KerberosPrincipal` or `KerberosRealm` are set, they must match the
@@ -212,7 +212,7 @@ server-side configuration.
 
 With `externalAuthentication=true`, a coordinator that uses
 [OAuth2 authentication](https://trino.io/docs/current/security/oauth2.html)
-logs the user in through the browser, like the JDBC driver does. When the
+logs the user in through the browser. When the
 coordinator rejects a request, the driver passes the login URL to
 `Config.RedirectHandler`, waits for the token until
 `externalAuthenticationTimeout` (default 2m) passes, and retries the request
@@ -351,7 +351,7 @@ Opening a connection does not contact the server. `db.PingContext` fetches the
 coordinator's `/v1/info` and fails when the server cannot be reached, answers
 with an error, or is still starting up. Since that endpoint does not require
 authentication, the ping then sends `HEAD /v1/statement` with the connection's
-credentials, like the JDBC driver does with `validateConnection=true`, and
+credentials and
 fails when the server rejects them. No query is started. Servers older than
 Trino 469 do not support that request, so for them a successful ping does not
 prove the credentials are accepted. With
@@ -454,8 +454,8 @@ this driver, in the following format:
 http[s]://user[:pass]@host[:port][/catalog[/schema]][?parameters]
 ```
 
-As in a [JDBC URL](https://trino.io/docs/current/client/jdbc.html#connecting),
-the path sets the catalog, or the catalog and schema:
+The path sets the catalog, or the catalog and schema, with the same syntax as
+a [JDBC URL](https://trino.io/docs/current/client/jdbc.html#connecting):
 `http://user@localhost:8080/tpch/sf1` is the same as
 `http://user@localhost:8080?catalog=tpch&schema=sf1`. An empty path or a lone
 `/` sets neither, and one trailing slash is ignored. A path with more than two
@@ -634,9 +634,9 @@ Valid values:   "FULL", "CA", "NONE"
 Default:        "FULL"
 ```
 
-Controls how the driver validates the coordinator's TLS certificate, matching
-the JDBC driver's `SSLVerification` property. `FULL` validates the
-certificate chain and the hostname. `CA` validates the certificate chain but
+Controls how the driver validates the coordinator's TLS certificate. `FULL`
+validates the certificate chain and the hostname. `CA` validates the
+certificate chain but
 not the hostname. `NONE` disables certificate validation entirely and must
 only be used for development, since it also allows a network attacker to
 intercept the connection. Requires HTTPS, and cannot be combined with
@@ -651,11 +651,10 @@ Default:        empty (the proxy environment variables apply)
 ```
 
 Sends every request through an HTTP proxy (`httpProxy`) or a SOCKS5 proxy
-(`socksProxy`), matching the JDBC driver's properties of the same names.
-Only one of the two may be set. HTTPS requests reach the coordinator
-through an HTTP `CONNECT` tunnel, and the SOCKS5 proxy resolves the
-coordinator's host name. Neither can be combined with `custom_client` or
-`Config.HTTPClient`; see [Proxy](#proxy).
+(`socksProxy`). Only one of the two may be set. HTTPS requests reach the
+coordinator through an HTTP `CONNECT` tunnel, and the SOCKS5 proxy resolves
+the coordinator's host name. Neither can be combined with `custom_client`
+or `Config.HTTPClient`; see [Proxy](#proxy).
 
 ```go
 db, err := sql.Open("trino", "http://user@localhost:8080?socksProxy=localhost:1080")
@@ -685,7 +684,7 @@ Valid values:   a service principal with optional ${SERVICE} and ${HOST} placeho
 Default:        ${SERVICE}@${HOST}
 ```
 
-The service principal of the coordinator, as in the JDBC driver. `${SERVICE}`
+The service principal of the coordinator. `${SERVICE}`
 is replaced with `KerberosRemoteServiceName` (default `trino`) and `${HOST}`
 with the lowercased host of the request URL. A `service@host` result names
 the Kerberos principal `service/host`, so the default asks for a ticket for
@@ -705,8 +704,8 @@ Default:        true
 `${HOST}` in
 [`KerberosServicePrincipalPattern`](#kerberosserviceprincipalpattern) is the
 canonical name of the coordinator host instead of the host in the URL, for a
-coordinator reached through a DNS alias or a load balancer. As in the JDBC
-driver, the host is resolved to an address, following CNAME records, and the
+coordinator reached through a DNS alias or a load balancer. The host is
+resolved to an address, following CNAME records, and the
 first address is looked up in reverse DNS; without a reverse record the
 address itself is used. `localhost` and loopback addresses are replaced with
 the canonical name of the local machine, and requests fail with
@@ -1089,7 +1088,7 @@ When reading response rows, the driver supports most Trino data types, except:
   object the server sent
 * any other type, like `HyperLogLog`, `SetDigest`, `QDigest`, and `TDigest` -
   returned as `[]byte`, decoded from the base64 form the server sends, the
-  same as `VARBINARY` and as the Java client does
+  same as `VARBINARY`
 
 For reading nullable columns, use `trino.NullTime` or similar structs from
 the `database/sql` package, like `sql.NullInt64`.
@@ -1191,7 +1190,7 @@ err := db.QueryRow("SELECT CAST(ROW(1, 'a') AS ROW(x INTEGER, y VARCHAR))").Scan
 ```
 
 An anonymous field is named `field<i>`, where `i` is its zero-based
-position, as in the Java client. A `NULL` row scans with `Valid` set to
+position. A `NULL` row scans with `Valid` set to
 `false`. Each field value is converted the same way a plain column of that
 type would be, including a nested `ROW`, which converts into another
 `trino.Row`. This applies at any depth, and through `ARRAY` and `MAP` as
@@ -1216,10 +1215,9 @@ err := db.QueryRow(`SELECT CAST(JSON '{"a": 1, "b": [true, null]}' AS VARIANT)`)
 // v.String() == `{"a":1,"b":[true,null]}`
 ```
 
-The driver announces the `VARIANT_BINARY` client capability, like the
-JDBC driver, so the server sends each value in its binary encoding and
-`Variant` keeps the value's type. `Type` returns one of the `Variant*`
-constants, named like the JDBC driver's `Variant.ValueType`, and `Value`
+The driver announces the `VARIANT_BINARY` client capability, so the server
+sends each value in its binary encoding and `Variant` keeps the value's
+type. `Type` returns one of the `Variant*` constants and `Value`
 converts the value into a Go value:
 * `nil` for a `VARIANT` null
 * `bool`
