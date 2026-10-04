@@ -278,6 +278,10 @@ func (fc *fakeCoordinator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case r.Method == http.MethodHead && r.URL.Path == "/v1/statement":
+		// Like StatementResource, accept the credentials check without
+		// starting a query.
+		w.WriteHeader(http.StatusOK)
 	case r.Method == http.MethodHead:
 		if heartbeat == nil {
 			w.WriteHeader(http.StatusOK)
