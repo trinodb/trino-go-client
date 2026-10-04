@@ -90,6 +90,51 @@ Every request the driver sends carries a `User-Agent` such as
 driver version taken from the module build information (`unknown` when it is
 not available).
 
+### Proxy
+
+By default the driver takes its proxy from the `HTTP_PROXY`, `HTTPS_PROXY`
+and `NO_PROXY` environment variables, as described for
+[`http.ProxyFromEnvironment`](https://pkg.go.dev/net/http#ProxyFromEnvironment);
+they are the Go equivalent of the JVM's `http.proxyHost` and
+`socksProxyHost` system properties. Requests to `localhost` and loopback
+addresses never use them. To send every request through a specific proxy
+instead, set the [`httpProxy` or `socksProxy`](#httpproxy--socksproxy)
+parameter, or `Config.HTTPProxy` or `Config.SOCKSProxy`:
+
+```go
+db, err := sql.Open("trino", "https://user@trino.example.com:8443?httpProxy=proxy.example.com:3128")
+```
+
+An `HTTPClient` or a `custom_client` uses its own transport, so its proxy
+must be configured there, for example with
+[`http.ProxyURL`](https://pkg.go.dev/net/http#ProxyURL); the driver rejects
+`httpProxy` and `socksProxy` combined with either.
+
+### DNS resolution
+
+The JDBC driver's `dnsResolver` property has no DSN equivalent. To resolve
+the coordinator's host name differently, for example with a specific DNS
+server, give the transport of an `HTTPClient` a dialer with its own
+[`net.Resolver`](https://pkg.go.dev/net#Resolver):
+
+```go
+resolver := &net.Resolver{
+	PreferGo: true,
+	Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, network, "10.0.0.53:53")
+	},
+}
+transport := http.DefaultTransport.(*http.Transport).Clone()
+transport.DialContext = (&net.Dialer{Resolver: resolver}).DialContext
+connector, err := trino.NewConnector(&trino.Config{
+	ServerURI:  "https://user@trino.example.com:8443",
+	HTTPClient: &http.Client{Transport: transport},
+})
+```
+
+A dialer that maps host names to addresses on its own can replace
+`DialContext` in the same way.
+
 ### Authentication
 
 HTTP Basic, Kerberos, JWT, and OAuth2 authentication are supported.
@@ -549,6 +594,25 @@ certificate chain and the hostname. `CA` validates the certificate chain but
 not the hostname. `NONE` disables certificate validation entirely and must
 only be used for development, since it also allows a network attacker to
 intercept the connection. Requires HTTPS.
+
+##### `httpProxy` / `socksProxy`
+
+```
+Type:           string
+Valid values:   host:port
+Default:        empty (the proxy environment variables apply)
+```
+
+Sends every request through an HTTP proxy (`httpProxy`) or a SOCKS5 proxy
+(`socksProxy`), matching the JDBC driver's properties of the same names.
+Only one of the two may be set. HTTPS requests reach the coordinator
+through an HTTP `CONNECT` tunnel, and the SOCKS5 proxy resolves the
+coordinator's host name. Neither can be combined with `custom_client` or
+`Config.HTTPClient`; see [Proxy](#proxy).
+
+```go
+db, err := sql.Open("trino", "http://user@localhost:8080?socksProxy=localhost:1080")
+```
 
 ##### `query_timeout`
 

@@ -208,6 +208,8 @@ const (
 	sslClientKeyPathConfig           = "SSLClientKeyPath"
 	sslClientKeyConfig               = "SSLClientKey"
 	sslVerificationConfig            = "SSLVerification"
+	httpProxyConfig                  = "httpProxy"
+	socksProxyConfig                 = "socksProxy"
 	accessTokenConfig                = "accessToken"
 	explicitPrepareConfig            = "explicitPrepare"
 	forwardAuthorizationHeaderConfig = "forwardAuthorizationHeader"
@@ -369,6 +371,8 @@ type Config struct {
 	SSLClientKeyPath           string            // Path to the PEM private key of the client certificate (optional)
 	SSLClientKey               string            // PEM private key of the client certificate (optional)
 	SSLVerification            string            // FULL, CA or NONE (optional, default FULL)
+	HTTPProxy                  string            // host:port of an HTTP proxy for every request, instead of the proxy environment variables (optional; DSN: httpProxy)
+	SOCKSProxy                 string            // host:port of a SOCKS5 proxy for every request, instead of the proxy environment variables (optional; DSN: socksProxy)
 	AccessToken                string            // An access token (JWT) for authentication (optional)
 	DisableExplicitPrepare     bool              // Disable the use of explicit prepared statements (optional, default is false)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
@@ -598,6 +602,15 @@ func ParseDSN(dsn string) (*Config, error) {
 		return nil, err
 	}
 
+	config.HTTPProxy = query.Get(httpProxyConfig)
+	if err := validateProxyAddress(httpProxyConfig, config.HTTPProxy); err != nil {
+		return nil, err
+	}
+	config.SOCKSProxy = query.Get(socksProxyConfig)
+	if err := validateProxyAddress(socksProxyConfig, config.SOCKSProxy); err != nil {
+		return nil, err
+	}
+
 	config.applyDefaults()
 	return config, nil
 }
@@ -652,6 +665,9 @@ func (c *Config) validate(serverURL *url.URL) error {
 			return err
 		}
 	}
+	if err := c.validateProxy(); err != nil {
+		return err
+	}
 	if c.KerberosEnabled && !isSSL {
 		return errors.New("trino: client configuration error, SSL must be enabled for secure env")
 	}
@@ -701,6 +717,38 @@ func validateMapKeys(parameter string, entries map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// validateProxy mirrors the JDBC driver, where httpProxy and socksProxy are
+// mutually exclusive. A proxy is rejected rather than ignored with a client
+// of the caller's, so requests cannot silently bypass it.
+func (c *Config) validateProxy() error {
+	if c.HTTPProxy == "" && c.SOCKSProxy == "" {
+		return nil
+	}
+	if c.HTTPProxy != "" && c.SOCKSProxy != "" {
+		return fmt.Errorf("trino: client configuration error, %s cannot be used when %s is set", socksProxyConfig, httpProxyConfig)
+	}
+	if c.HTTPClient != nil || c.CustomClientName != "" {
+		return fmt.Errorf("trino: client configuration error, %s and %s cannot be combined with HTTPClient or a custom client; configure the proxy on its transport instead", httpProxyConfig, socksProxyConfig)
+	}
+	if err := validateProxyAddress(httpProxyConfig, c.HTTPProxy); err != nil {
+		return err
+	}
+	return validateProxyAddress(socksProxyConfig, c.SOCKSProxy)
+}
+
+func validateProxyAddress(param, address string) error {
+	if address == "" {
+		return nil
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err == nil && host != "" {
+		if _, err = strconv.ParseUint(port, 10, 16); err == nil {
+			return nil
+		}
+	}
+	return fmt.Errorf("trino: %s must be host:port, got %q", param, address)
 }
 
 func requireTLSForPassword(serverURL *url.URL) error {
@@ -842,6 +890,12 @@ func (c *Config) FormatDSN() (string, error) {
 	addPEMParam(query, sslClientKeyPathConfig, c.SSLClientKeyPath, sslClientKeyConfig, c.SSLClientKey)
 	if c.SSLVerification != "" {
 		query.Add(sslVerificationConfig, c.SSLVerification)
+	}
+	if c.HTTPProxy != "" {
+		query.Add(httpProxyConfig, c.HTTPProxy)
+	}
+	if c.SOCKSProxy != "" {
+		query.Add(socksProxyConfig, c.SOCKSProxy)
 	}
 
 	if c.KerberosEnabled {
@@ -1151,6 +1205,9 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 	if err := conf.validateExternalAuthentication(serverURL); err != nil {
 		return nil, err
 	}
+	if err := conf.validateProxy(); err != nil {
+		return nil, err
+	}
 
 	var kerberosClient *client.Client
 	if conf.KerberosEnabled {
@@ -1178,14 +1235,12 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 		if httpClient == nil {
 			return nil, fmt.Errorf("trino: custom client not registered: %q", clientKey)
 		}
-	} else if serverURL.Scheme == "https" {
-		tlsConfig, err := conf.TLSConfig()
+	} else {
+		transport, err := conf.transport(serverURL)
 		if err != nil {
 			return nil, err
 		}
-		if tlsConfig != nil {
-			transport := newDefaultTransport()
-			transport.TLSClientConfig = tlsConfig
+		if transport != nil {
 			httpClient = &http.Client{Transport: transport}
 		}
 	}
@@ -1662,6 +1717,41 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 		req.SetBasicAuth(c.auth.Username(), pass)
 	}
 	return req, nil
+}
+
+// transport returns nil when http.DefaultTransport applies, which takes the
+// proxy from the HTTP_PROXY, HTTPS_PROXY and NO_PROXY environment variables.
+func (c *Config) transport(serverURL *url.URL) (*http.Transport, error) {
+	var tlsConfig *tls.Config
+	if serverURL.Scheme == "https" {
+		var err error
+		if tlsConfig, err = c.TLSConfig(); err != nil {
+			return nil, err
+		}
+	}
+	proxyURL := c.proxyURL()
+	if tlsConfig == nil && proxyURL == nil {
+		return nil, nil
+	}
+	transport := newDefaultTransport()
+	transport.TLSClientConfig = tlsConfig
+	if proxyURL != nil {
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	return transport, nil
+}
+
+// proxyURL returns nil when no proxy is configured. The SOCKS5 proxy resolves
+// the coordinator's host name, as the JDBC driver's unresolved proxy address
+// does.
+func (c *Config) proxyURL() *url.URL {
+	switch {
+	case c.HTTPProxy != "":
+		return &url.URL{Scheme: "http", Host: c.HTTPProxy}
+	case c.SOCKSProxy != "":
+		return &url.URL{Scheme: "socks5", Host: c.SOCKSProxy}
+	}
+	return nil
 }
 
 // newDefaultTransport copies http.DefaultTransport, so a transport the driver
