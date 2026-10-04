@@ -386,6 +386,8 @@ type Config struct {
 	ExternalAuthentication        bool           // Obtain a token through the server's external authentication, e.g. OAuth2, when it rejects a request (optional; DSN: externalAuthentication)
 	ExternalAuthenticationTimeout *time.Duration // Time the user has to authenticate (optional, default is 2m; DSN: externalAuthenticationTimeout)
 
+	KerberosCredentialCachePath string // Credential cache holding a ticket from kinit, used instead of a keytab (optional, default is KRB5CCNAME, then /tmp/krb5cc_<uid>, when no keytab is given)
+
 	// Fields below cannot be expressed in a DSN; pass them with NewConnector.
 
 	HTTPClient      *http.Client    `dsn:"-"` // Client for every request, which never follows redirects (optional)
@@ -580,6 +582,10 @@ func ParseDSN(dsn string) (*Config, error) {
 		config.KerberosRemoteServiceName = rsn
 	}
 
+	if ccache := query.Get(kerberosCredentialCachePathConfig); ccache != "" {
+		config.KerberosCredentialCachePath = ccache
+	}
+
 	if sslCertPath := query.Get(sslCertPathConfig); sslCertPath != "" {
 		config.SSLCertPath = sslCertPath
 	}
@@ -682,6 +688,9 @@ func (c *Config) validate(serverURL *url.URL) error {
 	}
 	if c.KerberosEnabled && !isSSL {
 		return errors.New("trino: client configuration error, SSL must be enabled for secure env")
+	}
+	if err := c.validateKerberos(); err != nil {
+		return err
 	}
 	if err := c.validateExternalAuthentication(serverURL); err != nil {
 		return err
@@ -938,6 +947,9 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add(kerberosRealmConfig, c.KerberosRealm)
 		query.Add(kerberosConfigPathConfig, c.KerberosConfigPath)
 		query.Add(kerberosRemoteServiceNameConfig, c.KerberosRemoteServiceName)
+		if c.KerberosCredentialCachePath != "" {
+			query.Add(kerberosCredentialCachePathConfig, c.KerberosCredentialCachePath)
+		}
 	}
 
 	// ensure consistent order of items
@@ -1248,6 +1260,9 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 		return nil, err
 	}
 	if err := conf.validateProxy(); err != nil {
+		return nil, err
+	}
+	if err := conf.validateKerberos(); err != nil {
 		return nil, err
 	}
 
