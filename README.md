@@ -261,6 +261,41 @@ if _, err := conn.ExecContext(ctx, "USE tpch.tiny"); err != nil {
 rows, err := conn.QueryContext(ctx, "SELECT * FROM nation")
 ```
 
+#### Connection validation and server version
+
+Opening a connection does not contact the server. `db.PingContext` fetches the
+coordinator's `/v1/info` and fails when the server cannot be reached, answers
+with an error, or is still starting up. Since that endpoint does not require
+authentication, the ping then sends `HEAD /v1/statement` with the connection's
+credentials, like the JDBC driver does with `validateConnection=true`, and
+fails when the server rejects them. No query is started. Servers older than
+Trino 469 do not support that request, so for them a successful ping does not
+prove the credentials are accepted. With
+[external authentication](#external-authentication), that request starts the
+login flow when no valid token is cached, so a ping can open the browser.
+
+The same information, including the server version, is available from
+`trino.Conn.ServerInfo` through
+[`sql.Conn.Raw`](https://godoc.org/database/sql#Conn.Raw):
+
+```go
+conn, err := db.Conn(ctx)
+if err != nil {
+	return err
+}
+defer conn.Close()
+
+var info trino.ServerInfo
+err = conn.Raw(func(driverConn any) error {
+	info, err = driverConn.(*trino.Conn).ServerInfo(ctx)
+	return err
+})
+if err != nil {
+	return err
+}
+log.Printf("Trino %s in %s, up for %s", info.NodeVersion, info.Environment, info.Uptime)
+```
+
 #### Query id and progress
 
 `database/sql` has no way to expose the Trino query id or the statistics the

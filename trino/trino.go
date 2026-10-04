@@ -973,6 +973,7 @@ var (
 	_ driver.ConnPrepareContext = &Conn{}
 	_ driver.ConnBeginTx        = &Conn{}
 	_ driver.SessionResetter    = &Conn{}
+	_ driver.Pinger             = &Conn{}
 )
 
 // formatRolesFromMap formats roles from a map into the Trino header format
