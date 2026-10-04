@@ -592,6 +592,9 @@ func ParseDSN(dsn string) (*Config, error) {
 	if _, err := config.sslVerificationMode(); err != nil {
 		return nil, err
 	}
+	if err := config.validateHeaderKeys(); err != nil {
+		return nil, err
+	}
 
 	config.applyDefaults()
 	return config, nil
@@ -600,6 +603,9 @@ func ParseDSN(dsn string) (*Config, error) {
 // validate checks the settings that do not depend on DSN syntax.
 func (c *Config) validate(serverURL *url.URL) error {
 	if err := requireTLSForPassword(serverURL); err != nil {
+		return err
+	}
+	if err := c.validateHeaderKeys(); err != nil {
 		return err
 	}
 	isSSL := serverURL.Scheme == "https"
@@ -650,6 +656,42 @@ func (c *Config) validate(serverURL *url.URL) error {
 	}
 	if c.HeartbeatInterval != nil && *c.HeartbeatInterval <= 0 {
 		return fmt.Errorf("trino: heartbeat_interval must be positive, got %s", *c.HeartbeatInterval)
+	}
+	return nil
+}
+
+// validateHeaderKeys rejects names the server would split differently than
+// intended, since entries are sent as comma-separated name=value pairs and
+// only values are URL-encoded.
+func (c *Config) validateHeaderKeys() error {
+	if err := validateMapKeys("session_properties", c.SessionProperties); err != nil {
+		return err
+	}
+	if err := validateMapKeys("extra_credentials", c.ExtraCredentials); err != nil {
+		return err
+	}
+	if err := validateMapKeys("roles", c.Roles); err != nil {
+		return err
+	}
+	for _, tag := range c.ClientTags {
+		if strings.Contains(tag, commaSeparator) {
+			return fmt.Errorf("trino: clientTags tag %q must not contain ','", tag)
+		}
+	}
+	return nil
+}
+
+func validateMapKeys(parameter string, entries map[string]string) error {
+	for _, key := range slices.Sorted(maps.Keys(entries)) {
+		if key == "" {
+			return fmt.Errorf("trino: %s key is empty", parameter)
+		}
+		if i := strings.IndexAny(key, "=,"); i >= 0 {
+			return fmt.Errorf("trino: %s key %q must not contain %q", parameter, key, key[i])
+		}
+		if !isASCII(key) {
+			return fmt.Errorf("trino: %s key %q contains spaces or is not printable ASCII", parameter, key)
+		}
 	}
 	return nil
 }
@@ -1020,6 +1062,9 @@ func formatHeaderValue(headerName string, value interface{}) (string, error) {
 		if !ok {
 			return "", fmt.Errorf("%s must be a map[string]string, got %T", trinoRoleHeader, value)
 		}
+		if err := validateMapKeys(trinoRoleHeader, rolesMap); err != nil {
+			return "", err
+		}
 		return formatRolesFromMap(rolesMap), nil
 	}
 
@@ -1187,14 +1232,8 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 func decodeMapHeader(name string, m map[string]string) ([]string, error) {
 	result := make([]string, 0, len(m))
 	for key, value := range m {
-		if len(key) == 0 {
-			return nil, fmt.Errorf("trino: %s key is empty", name)
-		}
 		if len(value) == 0 {
 			return nil, fmt.Errorf("trino: %s value is empty", name)
-		}
-		if !isASCII(key) {
-			return nil, fmt.Errorf("trino: %s key '%s' contains spaces or is not printable ASCII", name, key)
 		}
 		if !isASCII(value) {
 			return nil, fmt.Errorf("trino: %s value for key '%s' contains spaces or is not printable ASCII", name, key)

@@ -389,6 +389,9 @@ Default:        empty
 
 The `session_properties` parameter must contain valid parameters accepted by
 the Trino server. Run `SHOW SESSION` in Trino to get the current list.
+Property names, like `extra_credentials` and `roles` keys, must be non-empty
+printable ASCII without spaces, `=` or `,`; values are URL-encoded, so they
+may contain `=` and `,`.
 
 ##### `custom_client`
 
