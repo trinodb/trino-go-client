@@ -22,8 +22,8 @@ import (
 //   - []byte, map[string]interface{}, []interface{} or interface{}, which
 //     hold nil for a NULL element
 //   - sql.NullBool, sql.NullString, sql.NullInt64, sql.NullInt32,
-//     sql.NullInt16, sql.NullFloat64, sql.NullTime, NullTime, NullBinary or
-//     NullMap, which keep a NULL element as not valid
+//     sql.NullInt16, sql.NullFloat64, sql.NullTime, NullTime or NullBinary,
+//     which keep a NULL element as not valid
 //   - NullSlice, NullMapOf or NullRow, for nested arrays, maps and rows
 //   - any other type whose pointer implements sql.Scanner, like Row; its
 //     Scan receives the element in the shape the JSON response used, like a
@@ -72,9 +72,6 @@ func (s *NullSlice[T]) scanValue(value interface{}, location *time.Location) err
 // sql.Scanner, which receives the key as a string. A NULL map scans with
 // Valid set to false and a nil Map. Location is used and passed down the
 // same way as in NullSlice.
-//
-// It is not called NullMap because that name already belongs to the map
-// scanner that predates generics.
 type NullMapOf[K comparable, V any] struct {
 	Map      map[K]V
 	Valid    bool
@@ -284,12 +281,6 @@ func scanElement(dest interface{}, value interface{}, location *time.Location) e
 		}
 		*d, _ = value.([]interface{})
 		return nil
-	case *NullMap:
-		// NullMap.Scan leaves anything that is not a map invalid instead of failing
-		if err := validateMap(value); err != nil {
-			return err
-		}
-		return d.Scan(value)
 	case sql.Scanner:
 		return d.Scan(value)
 	default:

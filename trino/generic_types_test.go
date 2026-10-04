@@ -438,11 +438,6 @@ func TestGenericScannersScanDirectly(t *testing.T) {
 	assert.Equal(t, NullRow[point]{Row: point{X: 1}, Valid: true}, row)
 	require.NoError(t, row.Scan(Row{}))
 	assert.Equal(t, NullRow[point]{}, row, "a zero Row is a NULL row")
-
-	var oldMaps NullSlice[NullMap]
-	require.NoError(t, oldMaps.Scan([]interface{}{map[string]interface{}{"a": "b"}, nil}))
-	assert.Equal(t, NullSlice[NullMap]{Slice: []NullMap{{Map: map[string]interface{}{"a": "b"}, Valid: true}, {Map: map[string]interface{}{}}}, Valid: true}, oldMaps)
-	require.ErrorContains(t, oldMaps.Scan([]interface{}{"a"}), "trino: element 0: cannot convert a (string) to map")
 }
 
 // scanOneValue serves a single row with a single column holding value from a

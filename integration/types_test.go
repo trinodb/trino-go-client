@@ -32,17 +32,17 @@ func testIntegrationTypeConversion(t *testing.T, db *sql.DB, args ...any) {
 		nullBytes         []byte
 		goString          string
 		nullString        sql.NullString
-		nullStringSlice   trino.NullSliceString
-		nullStringSlice2  trino.NullSlice2String
-		nullStringSlice3  trino.NullSlice3String
-		nullInt64Slice    trino.NullSliceInt64
-		nullInt64Slice2   trino.NullSlice2Int64
-		nullInt64Slice3   trino.NullSlice3Int64
-		nullFloat64Slice  trino.NullSliceFloat64
-		nullFloat64Slice2 trino.NullSlice2Float64
-		nullFloat64Slice3 trino.NullSlice3Float64
+		nullStringSlice   trino.NullSlice[sql.NullString]
+		nullStringSlice2  trino.NullSlice[trino.NullSlice[sql.NullString]]
+		nullStringSlice3  trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullString]]]
+		nullInt64Slice    trino.NullSlice[sql.NullInt64]
+		nullInt64Slice2   trino.NullSlice[trino.NullSlice[sql.NullInt64]]
+		nullInt64Slice3   trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullInt64]]]
+		nullFloat64Slice  trino.NullSlice[sql.NullFloat64]
+		nullFloat64Slice2 trino.NullSlice[trino.NullSlice[sql.NullFloat64]]
+		nullFloat64Slice3 trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullFloat64]]]
 		goMap             map[string]interface{}
-		nullMap           trino.NullMap
+		nullMap           trino.NullMapOf[string, interface{}]
 		goRow             trino.Row
 	)
 	err := db.QueryRow(`
@@ -93,26 +93,23 @@ func testIntegrationTypeConversion(t *testing.T, db *sql.DB, args ...any) {
 	assert.Equal(t, "string", goString, "GoString")
 	assert.False(t, nullString.Valid, "NullString.Valid")
 
-	assert.Equal(t, []sql.NullString{{String: "A", Valid: true}, {String: "B", Valid: true}, {Valid: false}}, nullStringSlice.SliceString)
-	assert.True(t, nullStringSlice.Valid, "NullStringSlice.Valid")
-	assert.Equal(t, [][]sql.NullString{{{String: "A", Valid: true}}, {}}, nullStringSlice2.Slice2String)
-	assert.True(t, nullStringSlice2.Valid, "NullStringSlice2.Valid")
-	assert.Equal(t, [][][]sql.NullString{{{{String: "A", Valid: true}}, {}}, {}}, nullStringSlice3.Slice3String)
-	assert.True(t, nullStringSlice3.Valid, "NullStringSlice3.Valid")
+	stringA := trino.NullSlice[sql.NullString]{Slice: []sql.NullString{{String: "A", Valid: true}}, Valid: true}
+	assert.Equal(t, trino.NullSlice[sql.NullString]{Slice: []sql.NullString{{String: "A", Valid: true}, {String: "B", Valid: true}, {Valid: false}}, Valid: true}, nullStringSlice, "NullStringSlice")
+	stringA2 := trino.NullSlice[trino.NullSlice[sql.NullString]]{Slice: []trino.NullSlice[sql.NullString]{stringA, {}}, Valid: true}
+	assert.Equal(t, stringA2, nullStringSlice2, "NullStringSlice2")
+	assert.Equal(t, trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullString]]]{Slice: []trino.NullSlice[trino.NullSlice[sql.NullString]]{stringA2, {}}, Valid: true}, nullStringSlice3, "NullStringSlice3")
 
-	assert.Equal(t, []sql.NullInt64{{Int64: 1, Valid: true}, {Int64: 2, Valid: true}, {Valid: false}}, nullInt64Slice.SliceInt64)
-	assert.True(t, nullInt64Slice.Valid, "NullInt64Slice.Valid")
-	assert.Equal(t, [][]sql.NullInt64{{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, {}}, nullInt64Slice2.Slice2Int64)
-	assert.True(t, nullInt64Slice2.Valid, "NullInt64Slice2.Valid")
-	assert.Equal(t, [][][]sql.NullInt64{{{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, {}}, {}}, nullInt64Slice3.Slice3Int64)
-	assert.True(t, nullInt64Slice3.Valid, "NullInt64Slice3.Valid")
+	assert.Equal(t, trino.NullSlice[sql.NullInt64]{Slice: []sql.NullInt64{{Int64: 1, Valid: true}, {Int64: 2, Valid: true}, {Valid: false}}, Valid: true}, nullInt64Slice, "NullInt64Slice")
+	ones := trino.NullSlice[sql.NullInt64]{Slice: []sql.NullInt64{{Int64: 1, Valid: true}, {Int64: 1, Valid: true}, {Int64: 1, Valid: true}}, Valid: true}
+	ones2 := trino.NullSlice[trino.NullSlice[sql.NullInt64]]{Slice: []trino.NullSlice[sql.NullInt64]{ones, {}}, Valid: true}
+	assert.Equal(t, ones2, nullInt64Slice2, "NullInt64Slice2")
+	assert.Equal(t, trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullInt64]]]{Slice: []trino.NullSlice[trino.NullSlice[sql.NullInt64]]{ones2, {}}, Valid: true}, nullInt64Slice3, "NullInt64Slice3")
 
-	assert.Equal(t, []sql.NullFloat64{{Float64: 1.0, Valid: true}, {Float64: 2.0, Valid: true}, {Valid: false}}, nullFloat64Slice.SliceFloat64)
-	assert.True(t, nullFloat64Slice.Valid, "NullFloat64Slice.Valid")
-	assert.Equal(t, [][]sql.NullFloat64{{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, {}}, nullFloat64Slice2.Slice2Float64)
-	assert.True(t, nullFloat64Slice2.Valid, "NullFloat64Slice2.Valid")
-	assert.Equal(t, [][][]sql.NullFloat64{{{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, {}}, {}}, nullFloat64Slice3.Slice3Float64)
-	assert.True(t, nullFloat64Slice3.Valid, "NullFloat64Slice3.Valid")
+	assert.Equal(t, trino.NullSlice[sql.NullFloat64]{Slice: []sql.NullFloat64{{Float64: 1.0, Valid: true}, {Float64: 2.0, Valid: true}, {Valid: false}}, Valid: true}, nullFloat64Slice, "NullFloat64Slice")
+	onePointOnes := trino.NullSlice[sql.NullFloat64]{Slice: []sql.NullFloat64{{Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}, {Float64: 1.1, Valid: true}}, Valid: true}
+	onePointOnes2 := trino.NullSlice[trino.NullSlice[sql.NullFloat64]]{Slice: []trino.NullSlice[sql.NullFloat64]{onePointOnes, {}}, Valid: true}
+	assert.Equal(t, onePointOnes2, nullFloat64Slice2, "NullFloat64Slice2")
+	assert.Equal(t, trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullFloat64]]]{Slice: []trino.NullSlice[trino.NullSlice[sql.NullFloat64]]{onePointOnes2, {}}, Valid: true}, nullFloat64Slice3, "NullFloat64Slice3")
 
 	assert.Equal(t, map[string]interface{}{"a": "c", "b": "d"}, goMap, "GoMap")
 	assert.False(t, nullMap.Valid, "NullMap.Valid")
@@ -558,7 +555,7 @@ func TestIntegrationVariantType(t *testing.T) {
 
 			require.True(t, rows.Next(), "expected one row")
 			var object, variantNull, sqlNull, date, timestamp, decimal, uuid, binary trino.Variant
-			var array trino.NullSliceString
+			var array trino.NullSlice[sql.NullString]
 			var row trino.Row
 			require.NoError(t, rows.Scan(&object, &variantNull, &sqlNull, &date, &timestamp, &decimal, &uuid, &binary, &array, &row))
 
@@ -575,7 +572,7 @@ func TestIntegrationVariantType(t *testing.T) {
 			assert.Equal(t, trino.VariantUUID, uuid.Type())
 			assert.Equal(t, "12151fd2-7586-11e9-8f9e-2a86e4085a59", uuid.Value())
 			assert.Equal(t, []byte{0x00, 0xff}, binary.Value())
-			assert.Equal(t, trino.NullSliceString{SliceString: []sql.NullString{{String: "1.5", Valid: true}, {String: "null", Valid: true}, {}}, Valid: true}, array)
+			assert.Equal(t, trino.NullSlice[sql.NullString]{Slice: []sql.NullString{{String: "1.5", Valid: true}, {String: "null", Valid: true}, {}}, Valid: true}, array)
 			value, ok := row.Field("x")
 			assert.True(t, ok)
 			require.IsType(t, trino.Variant{}, value)
