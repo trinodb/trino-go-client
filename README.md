@@ -152,7 +152,24 @@ HTTPS**.
 This driver supports Kerberos authentication by setting up the Kerberos fields
 in the
 [Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config)
-struct.
+struct, or the matching DSN parameters: `KerberosEnabled`,
+`KerberosKeytabPath`, `KerberosCredentialCachePath`, `KerberosPrincipal`,
+`KerberosRealm`, `KerberosConfigPath` and `KerberosRemoteServiceName`.
+Kerberos requires HTTPS.
+
+The driver logs in with the keytab in `KerberosKeytabPath`, or reuses a ticket
+from a credential cache, such as the one `kinit` writes. Without a keytab it
+reads the cache in [`KerberosCredentialCachePath`](#kerberoscredentialcachepath),
+then the one named by the `KRB5CCNAME` environment variable, then
+`/tmp/krb5cc_<uid>`. The principal and realm come from the cache; when
+`KerberosPrincipal` or `KerberosRealm` are set, they must match it.
+
+```go
+db, err := sql.Open("trino", "https://user@localhost:8443"+
+    "?KerberosEnabled=true"+
+    "&KerberosConfigPath=/etc/krb5.conf"+
+    "&KerberosCredentialCachePath=/tmp/krb5cc_1000")
+```
 
 Please refer to the [Coordinator Kerberos
 Authentication](https://trino.io/docs/current/security/server.html) for
@@ -620,6 +637,22 @@ coordinator's host name. Neither can be combined with `custom_client` or
 ```go
 db, err := sql.Open("trino", "http://user@localhost:8080?socksProxy=localhost:1080")
 ```
+
+##### `KerberosCredentialCachePath`
+
+```
+Type:           string
+Valid values:   a filesystem path, optionally prefixed with FILE:
+Default:        empty (KRB5CCNAME, then /tmp/krb5cc_<uid>, when no keytab is given)
+```
+
+A Kerberos credential cache holding a ticket for the user, used instead of a
+keytab; it cannot be combined with `KerberosKeytabPath`. Only file caches can
+be read: when `KRB5CCNAME` names another type, such as `KEYRING:`, `KCM:` or
+macOS's default `API:`, run `kinit -c FILE:/path` and set this parameter. The
+cache is read when a connection opens, so connections opened after `kinit`
+refreshes it use the new ticket. See [Kerberos
+authentication](#kerberos-authentication).
 
 ##### `query_timeout`
 
