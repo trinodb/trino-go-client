@@ -2585,19 +2585,13 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 			return nil, fmt.Errorf("unsupported header type %T", v)
 		}
 
-		if len(headerSlice) == 0 {
-			continue
+		for _, value := range headerSlice {
+			header, ok := value.(string)
+			if !ok {
+				return nil, fmt.Errorf("unsupported header value type %T", value)
+			}
+			req.Header.Add(k, header)
 		}
-
-		if len(headerSlice) > 1 {
-			return nil, fmt.Errorf("multiple values for header %s", k)
-		}
-
-		header, ok := headerSlice[0].(string)
-		if !ok {
-			return nil, fmt.Errorf("unsupported header value type %T", headerSlice[0])
-		}
-		req.Header.Add(k, header)
 	}
 
 	resp, err := sf.roundTrip(req)
