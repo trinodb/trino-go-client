@@ -176,6 +176,41 @@ func TestIntegrationSessionProperties(t *testing.T) {
 	require.NoError(t, rows.Err())
 }
 
+func TestIntegrationResourceEstimates(t *testing.T) {
+	source := "resource-estimates-test"
+	dsn := integrationDSN(t) + "?source=" + source + "&resourceEstimates=EXECUTION_TIME%3A10m%3BCPU_TIME%3A1h%3Bpeak_memory%3A1.5GB"
+	db := integrationOpen(t, dsn)
+
+	query := "SELECT 1"
+	rows, err := db.Query(query, sql.Named("X-Trino-Resource-Estimate", map[string]string{"CPU_TIME": "1.5h"}))
+	require.NoError(t, err)
+	for rows.Next() {
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+
+	var queryID string
+	err = db.QueryRow("SELECT query_id FROM system.runtime.queries WHERE source = ? AND query = ?", source, query).Scan(&queryID)
+	require.NoError(t, err)
+	queryInfo, err := getQueryInfo(dsn, queryID)
+	require.NoError(t, err)
+
+	assert.Equal(t, QueryResourceEstimates{
+		ExecutionTime:   600,
+		CPUTime:         5400,
+		PeakMemoryBytes: 3 << 29,
+	}, queryInfo.Session.ResourceEstimates)
+}
+
+func TestIntegrationResourceEstimatesRejectedByServer(t *testing.T) {
+	db := integrationOpen(t, integrationDSN(t)+"?resourceEstimates=EXECUTION_TIME%3A1h30m0s")
+
+	_, err := db.Query("SELECT 1")
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Unsupported format for resource estimate '1h30m0s'")
+}
+
 func TestIntegrationNoResults(t *testing.T) {
 	db := integrationOpen(t)
 	rows, err := db.Query("SELECT 1 LIMIT 0")

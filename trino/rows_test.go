@@ -328,6 +328,113 @@ func TestExtraCredentialsSentOnlyWithTheStatement(t *testing.T) {
 	}
 }
 
+func TestResourceEstimatesSentWithTheStatement(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}), emptyPage())
+	db := fc.open(t, "?resourceEstimates=PEAK_MEMORY%3A1.5GB%3BEXECUTION_TIME%3A10m")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+	require.NoError(t, rows.Err())
+
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 3)
+	assert.Equal(t, []string{"EXECUTION_TIME=10m", "PEAK_MEMORY=1.5GB"}, requests[0].header.Values(trinoResourceEstimateHeader), "estimates sent with the statement")
+	for _, request := range requests[1:] {
+		assert.Empty(t, request.header.Values(trinoResourceEstimateHeader), "estimates sent with %s %s", request.method, request.path)
+	}
+}
+
+// The server URL-decodes each estimate, as the Java client encodes it.
+func TestResourceEstimatesAreURLEncoded(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	connector, err := NewConnector(&Config{
+		ServerURI:         fc.url(),
+		ResourceEstimates: map[string]string{"EXECUTION_TIME": "1h;2h%,+"},
+	})
+	require.NoError(t, err)
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+
+	assert.Equal(t, []string{"EXECUTION_TIME=1h%3B2h%25%2C%2B"}, fc.capturedRequests()[0].header.Values(trinoResourceEstimateHeader))
+}
+
+func TestResourceEstimatesQueryArgument(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name     string
+		dsn      string
+		arg      any
+		want     []string
+		wantNext []string
+	}{
+		{
+			name:     "map adds to and replaces the connection estimates",
+			dsn:      "?resourceEstimates=EXECUTION_TIME%3A10m%3BPEAK_MEMORY%3A1GB",
+			arg:      map[string]string{"PEAK_MEMORY": "2GB", "CPU_TIME": "1h"},
+			want:     []string{"CPU_TIME=1h", "EXECUTION_TIME=10m", "PEAK_MEMORY=2GB"},
+			wantNext: []string{"EXECUTION_TIME=10m", "PEAK_MEMORY=1GB"},
+		},
+		{
+			name: "map without connection estimates",
+			arg:  map[string]string{"CPU_TIME": "1h"},
+			want: []string{"CPU_TIME=1h"},
+		},
+		{
+			// The server keeps the last value of a repeated estimate.
+			name:     "string is sent verbatim after the connection estimates",
+			dsn:      "?resourceEstimates=EXECUTION_TIME%3A10m",
+			arg:      "EXECUTION_TIME=1h",
+			want:     []string{"EXECUTION_TIME=10m", "EXECUTION_TIME=1h"},
+			wantNext: []string{"EXECUTION_TIME=10m"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), resultPage([][]any{{1}}))
+			db := fc.open(t, tc.dsn)
+
+			rows, err := db.Query("SELECT 1", sql.Named(trinoResourceEstimateHeader, tc.arg))
+			require.NoError(t, err)
+			collectInts(t, rows)
+			rows, err = db.Query("SELECT 1")
+			require.NoError(t, err)
+			collectInts(t, rows)
+
+			var statements []capturedRequest
+			for _, request := range fc.capturedRequests() {
+				if request.method == http.MethodPost {
+					statements = append(statements, request)
+				}
+			}
+			require.Len(t, statements, 2)
+			assert.Equal(t, tc.want, statements[0].header.Values(trinoResourceEstimateHeader))
+			assert.Equal(t, tc.wantNext, statements[1].header.Values(trinoResourceEstimateHeader), "the next query sends only the connection estimates")
+		})
+	}
+}
+
+func TestResourceEstimatesQueryArgumentRejected(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "")
+
+	_, err := db.Query("SELECT 1", sql.Named(trinoResourceEstimateHeader, map[string]string{"EXECUTION=TIME": "1h"}))
+
+	assert.EqualError(t, err, `trino: resourceEstimates key "EXECUTION=TIME" must not contain '='`)
+	assert.Empty(t, fc.capturedRequests())
+}
+
 func TestSetPathHeader(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
