@@ -2,6 +2,8 @@ package trino
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -69,6 +71,37 @@ func FormatDataSize(bytes int64) string {
 		return sign + "0B"
 	}
 	return sign + strings.TrimSuffix(value, ".00") + suffix
+}
+
+// airliftDurationPattern matches io.airlift.units.Duration strings, such as
+// 3.00d or 12.50ms.
+var airliftDurationPattern = regexp.MustCompile(`^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\s*$`)
+
+// parseAirliftDuration reads a Duration string the server produces, such as
+// the uptime at /v1/info, using the same units FormatDuration writes.
+func parseAirliftDuration(s string) (time.Duration, error) {
+	match := airliftDurationPattern.FindStringSubmatch(s)
+	if match == nil {
+		return 0, fmt.Errorf("invalid duration %q", s)
+	}
+	unit, ok := durationUnit(match[2])
+	if !ok {
+		return 0, fmt.Errorf("unknown time unit in duration %q", s)
+	}
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
+	}
+	return time.Duration(value * float64(unit)), nil
+}
+
+func durationUnit(suffix string) (time.Duration, bool) {
+	for _, unit := range durationUnits {
+		if unit.suffix == suffix {
+			return time.Duration(unit.size), true
+		}
+	}
+	return 0, false
 }
 
 func splitSign(value int64) (string, uint64) {

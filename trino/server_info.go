@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"regexp"
-	"strconv"
 	"time"
 )
 
@@ -100,34 +98,4 @@ func (c *Conn) validateCredentials(ctx context.Context) error {
 		return err
 	}
 	return resp.Body.Close()
-}
-
-// airliftDurationPattern matches io.airlift.units.Duration strings, such as
-// 3.00d or 12.50ms.
-var airliftDurationPattern = regexp.MustCompile(`^\s*(\d+(?:\.\d+)?)\s*([a-zA-Z]+)\s*$`)
-
-var airliftDurationUnits = map[string]time.Duration{
-	"ns": time.Nanosecond,
-	"us": time.Microsecond,
-	"ms": time.Millisecond,
-	"s":  time.Second,
-	"m":  time.Minute,
-	"h":  time.Hour,
-	"d":  24 * time.Hour,
-}
-
-func parseAirliftDuration(s string) (time.Duration, error) {
-	match := airliftDurationPattern.FindStringSubmatch(s)
-	if match == nil {
-		return 0, fmt.Errorf("invalid duration %q", s)
-	}
-	unit, ok := airliftDurationUnits[match[2]]
-	if !ok {
-		return 0, fmt.Errorf("unknown time unit in duration %q", s)
-	}
-	value, err := strconv.ParseFloat(match[1], 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid duration %q: %w", s, err)
-	}
-	return time.Duration(value * float64(unit)), nil
 }
