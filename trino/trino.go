@@ -1491,12 +1491,45 @@ func transientNetworkError(err error) bool {
 	return errors.Is(err, syscall.ECONNRESET) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
+// retryableStatus reports whether a response status is retried. It applies to
+// the statement POST too, which the Java client also retries on 502, 503 and
+// 504. A 429 means the request was refused before it was processed (RFC 6585),
+// so retrying it cannot submit the statement twice.
 func retryableStatus(status int) bool {
 	switch status {
-	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+	case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return true
 	}
 	return false
+}
+
+// retryAfter returns how long a 429 or 503 response asks the client to wait
+// in its Retry-After header, given as delta-seconds or an HTTP-date (RFC 9110,
+// section 10.2.3). It reports false when the header is missing or malformed,
+// so the caller falls back to its own backoff. A date in the past means the
+// request can be retried right away.
+func retryAfter(resp *http.Response, now time.Time) (time.Duration, bool) {
+	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusServiceUnavailable {
+		return 0, false
+	}
+	value := strings.TrimSpace(resp.Header.Get("Retry-After"))
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, false
+		}
+		if seconds > int64(math.MaxInt64/time.Second) {
+			return time.Duration(math.MaxInt64), true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+	date, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	return max(date.Sub(now), 0), true
 }
 
 func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reader, hs http.Header) (*http.Request, error) {
@@ -1545,7 +1578,7 @@ func withoutRedirects(client *http.Client) *http.Client {
 	return &copied
 }
 
-// roundTrip sends req, retrying 502/503/504 responses and network errors
+// roundTrip sends req, retrying 429/502/503/504 responses and network errors
 // within c.retryLimit. Only idempotent requests are retried on
 // network errors; connection errors are always retried.
 func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response, error) {
@@ -1611,8 +1644,10 @@ type retryLimit struct {
 	maxAttempts int
 }
 
-// roundTrip retries a 502, 503 or 504 response and a network error accepted
-// by policy, backing off from initialDelay, until limit is reached.
+// roundTrip retries a 429, 502, 503 or 504 response and a network error
+// accepted by policy, backing off from initialDelay, until limit is reached.
+// A Retry-After header on a 429 or 503 response replaces the backoff for that
+// wait, which is cut short when the remaining budget is smaller.
 func roundTrip(ctx context.Context, client *http.Client, req *http.Request, limit retryLimit, initialDelay time.Duration, policy retryPolicy) (*http.Response, error) {
 	start := time.Now()
 	delay := initialDelay
@@ -1626,6 +1661,7 @@ func roundTrip(ctx context.Context, client *http.Client, req *http.Request, limi
 			return nil, ctx.Err()
 		case <-timer.C:
 			attempt++
+			wait := delay
 			resp, err := client.Do(req)
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
@@ -1638,6 +1674,9 @@ func roundTrip(ctx context.Context, client *http.Client, req *http.Request, limi
 				return resp, nil
 			} else {
 				resp.Body.Close()
+				if serverWait, ok := retryAfter(resp, time.Now()); ok {
+					wait = serverWait
+				}
 			}
 
 			elapsed := time.Since(start)
@@ -1653,7 +1692,7 @@ func roundTrip(ctx context.Context, client *http.Client, req *http.Request, limi
 				return nil, &ErrQueryFailed{Reason: err}
 			}
 
-			timer.Reset(min(delay, limit.timeout-elapsed))
+			timer.Reset(min(wait, limit.timeout-elapsed))
 			delay = time.Duration(math.Min(float64(delay)*math.Phi, maxDelayBetweenRequests))
 		}
 	}

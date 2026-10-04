@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -35,6 +36,7 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 		closeConnection bool
 		wantErr         string
 	}{
+		{name: "retry 429 Too Many Requests", status: http.StatusTooManyRequests, wantErr: "200 OK"},
 		{name: "retry 502 Bad Gateway", status: http.StatusBadGateway, wantErr: "200 OK"},
 		{name: "retry 503 Service Unavailable", status: http.StatusServiceUnavailable, wantErr: "200 OK"},
 		{name: "retry 504 Gateway Timeout", status: http.StatusGatewayTimeout, wantErr: "200 OK"},
@@ -115,6 +117,187 @@ func TestRoundTripRetryNextURIGet(t *testing.T) {
 	assert.False(t, rows.Next())
 	require.NoError(t, rows.Err())
 	assert.Equal(t, int32(failures+1), getRequests.Load(), "the nextUri GET must be retried until it succeeds")
+}
+
+// throttle answers the first `times` requests that match with status and,
+// when retryAfter is not empty, a Retry-After header, and counts the
+// requests that match.
+func throttle(fc *fakeCoordinator, match func(*http.Request) bool, times int32, status int, retryAfter string) *atomic.Int32 {
+	var matched atomic.Int32
+	fc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
+		if !match(r) || matched.Add(1) > times {
+			return false
+		}
+		if retryAfter != "" {
+			w.Header().Set("Retry-After", retryAfter)
+		}
+		w.WriteHeader(status)
+		return true
+	})
+	return &matched
+}
+
+func isMethod(method string) func(*http.Request) bool {
+	return func(r *http.Request) bool { return r.Method == method }
+}
+
+func TestRoundTripRetryTooManyRequestsNextURIGet(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	gets := throttle(fc, isMethod(http.MethodGet), 2, http.StatusTooManyRequests, "")
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	assert.Equal(t, []int{1}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+	assert.EqualValues(t, 3, gets.Load(), "the nextUri GET must be retried until it succeeds")
+}
+
+// The default backoff starts at 100ms, so a wait of a second or more can only
+// come from the Retry-After header.
+func TestRoundTripHonorsRetryAfter(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name       string
+		status     int
+		retryAfter func() string
+		wantWait   time.Duration
+	}{
+		{
+			name:       "429 with delta-seconds",
+			status:     http.StatusTooManyRequests,
+			retryAfter: func() string { return "1" },
+			wantWait:   time.Second,
+		},
+		{
+			name:   "429 with HTTP-date",
+			status: http.StatusTooManyRequests,
+			// the date has a one second resolution, so the wait is between
+			// one and two seconds
+			retryAfter: func() string { return time.Now().Add(2 * time.Second).UTC().Format(http.TimeFormat) },
+			wantWait:   time.Second,
+		},
+		{
+			name:       "503 with delta-seconds",
+			status:     http.StatusServiceUnavailable,
+			retryAfter: func() string { return "1" },
+			wantWait:   time.Second,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), resultPage([][]any{{1}}))
+			posts := throttle(fc, isMethod(http.MethodPost), 1, tc.status, tc.retryAfter())
+			db := fc.open(t, "")
+
+			start := time.Now()
+			rows, err := db.Query("SELECT 1")
+			elapsed := time.Since(start)
+
+			require.NoError(t, err)
+			assert.Equal(t, []int{1}, collectInts(t, rows))
+			require.NoError(t, rows.Err())
+			assert.EqualValues(t, 2, posts.Load())
+			assert.GreaterOrEqual(t, elapsed, tc.wantWait, "the retry must wait as long as Retry-After asks")
+		})
+	}
+}
+
+func TestRoundTripMalformedRetryAfterFallsBackToBackoff(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	posts := throttle(fc, isMethod(http.MethodPost), 1, http.StatusTooManyRequests, "soon")
+	db := fc.open(t, "")
+
+	start := time.Now()
+	rows, err := db.Query("SELECT 1")
+	elapsed := time.Since(start)
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{1}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+	assert.EqualValues(t, 2, posts.Load())
+	assert.Less(t, elapsed, time.Second, "a malformed Retry-After must not delay the retry beyond the backoff")
+}
+
+// A Retry-After beyond request_retry_timeout is cut short, so the query fails
+// when the budget runs out instead of waiting as long as the server asks.
+func TestRoundTripRetryAfterLongerThanBudget(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	posts := throttle(fc, isMethod(http.MethodPost), math.MaxInt32, http.StatusTooManyRequests, "3600")
+	db := fc.open(t, "?request_retry_timeout=300ms")
+
+	start := time.Now()
+	_, err := db.Query("SELECT 1")
+	elapsed := time.Since(start)
+
+	var queryFailed *ErrQueryFailed
+	require.ErrorAs(t, err, &queryFailed)
+	assert.Equal(t, http.StatusTooManyRequests, queryFailed.StatusCode)
+	assert.GreaterOrEqual(t, elapsed, 300*time.Millisecond)
+	assert.Less(t, elapsed, 2*time.Second, "the wait must be capped at the remaining request_retry_timeout")
+	assert.EqualValues(t, 2, posts.Load(), "one retry once the budget is spent")
+	assert.ErrorContains(t, err, "429 Too Many Requests")
+	assert.ErrorContains(t, err, "giving up after 2 attempts")
+}
+
+func TestRoundTripTooManyRequestsExhaustsMaxAttempts(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	posts := throttle(fc, isMethod(http.MethodPost), math.MaxInt32, http.StatusTooManyRequests, "0")
+	db := fc.open(t, "?request_retry_max_attempts=3&request_retry_timeout=1h")
+
+	_, err := db.Query("SELECT 1")
+
+	var queryFailed *ErrQueryFailed
+	require.ErrorAs(t, err, &queryFailed)
+	assert.Equal(t, http.StatusTooManyRequests, queryFailed.StatusCode)
+	assert.EqualValues(t, 3, posts.Load())
+	assert.ErrorContains(t, err, `trino: query failed (429 Too Many Requests): "giving up after 3 attempts`)
+}
+
+func TestRetryAfter(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name     string
+		status   int
+		header   string
+		wantWait time.Duration
+		wantOK   bool
+	}{
+		{name: "delta-seconds", status: http.StatusTooManyRequests, header: "120", wantWait: 2 * time.Minute, wantOK: true},
+		{name: "zero seconds", status: http.StatusTooManyRequests, header: "0", wantWait: 0, wantOK: true},
+		{name: "surrounding whitespace", status: http.StatusTooManyRequests, header: " 5 ", wantWait: 5 * time.Second, wantOK: true},
+		{name: "seconds overflowing a duration", status: http.StatusTooManyRequests, header: "9223372036854775807", wantWait: time.Duration(math.MaxInt64), wantOK: true},
+		{name: "IMF-fixdate", status: http.StatusTooManyRequests, header: "Sun, 04 Oct 2026 12:00:30 GMT", wantWait: 30 * time.Second, wantOK: true},
+		{name: "obsolete RFC 850 date", status: http.StatusTooManyRequests, header: "Sunday, 04-Oct-26 12:01:00 GMT", wantWait: time.Minute, wantOK: true},
+		{name: "date in the past", status: http.StatusTooManyRequests, header: "Sun, 04 Oct 2026 11:00:00 GMT", wantWait: 0, wantOK: true},
+		{name: "503 with Retry-After", status: http.StatusServiceUnavailable, header: "7", wantWait: 7 * time.Second, wantOK: true},
+		{name: "missing", status: http.StatusTooManyRequests},
+		{name: "negative seconds", status: http.StatusTooManyRequests, header: "-1"},
+		{name: "fractional seconds", status: http.StatusTooManyRequests, header: "1.5"},
+		{name: "garbage", status: http.StatusTooManyRequests, header: "soon"},
+		{name: "ignored on 502", status: http.StatusBadGateway, header: "7"},
+		{name: "ignored on 504", status: http.StatusGatewayTimeout, header: "7"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := &http.Response{StatusCode: tc.status, Header: make(http.Header)}
+			if tc.header != "" {
+				resp.Header.Set("Retry-After", tc.header)
+			}
+			wait, ok := retryAfter(resp, now)
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantWait, wait)
+		})
+	}
 }
 
 // A permanently failing request gives up once request_retry_timeout elapses.
