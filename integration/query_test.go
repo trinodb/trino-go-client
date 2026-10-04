@@ -178,11 +178,13 @@ func TestIntegrationSessionProperties(t *testing.T) {
 
 func TestIntegrationResourceEstimates(t *testing.T) {
 	source := "resource-estimates-test"
-	dsn := integrationDSN(t) + "?source=" + source + "&resourceEstimates=EXECUTION_TIME%3A10m%3BCPU_TIME%3A1h%3Bpeak_memory%3A1.5GB"
+	dsn := integrationDSN(t) + "?source=" + source + "&resourceEstimates=EXECUTION_TIME%3A10m%3BCPU_TIME%3A1h%3Bpeak_memory%3A" + trino.FormatDataSize(1537<<20)
 	db := integrationOpen(t, dsn)
 
 	query := "SELECT 1"
-	rows, err := db.Query(query, sql.Named("X-Trino-Resource-Estimate", map[string]string{"CPU_TIME": "1.5h"}))
+	rows, err := db.Query(query, sql.Named("X-Trino-Resource-Estimate", map[string]string{
+		"CPU_TIME": trino.FormatDuration(time.Hour + 1500*time.Millisecond),
+	}))
 	require.NoError(t, err)
 	for rows.Next() {
 	}
@@ -197,8 +199,8 @@ func TestIntegrationResourceEstimates(t *testing.T) {
 
 	assert.Equal(t, QueryResourceEstimates{
 		ExecutionTime:   600,
-		CPUTime:         5400,
-		PeakMemoryBytes: 3 << 29,
+		CPUTime:         3601.5,
+		PeakMemoryBytes: 1537 << 20,
 	}, queryInfo.Session.ResourceEstimates)
 }
 

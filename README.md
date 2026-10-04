@@ -765,8 +765,12 @@ out of an interactive group. The server accepts these resources, ignoring case:
 
 The values are sent as given. The server rejects a query with an unknown
 resource or a value it cannot parse, so a Go `time.Duration` must not be passed
-through `String()`, which produces `1h30m0s`. The driver rejects names that are
-empty, contain `=` or `,`, or contain characters other than printable ASCII.
+through `String()`, which produces `1h30m0s`. Use `trino.FormatDuration` and
+`trino.FormatDataSize` instead, which produce values the server accepts, such
+as `1.50h` and `1.50GB`. They use the largest unit that represents the value
+exactly with two decimal places, so they never round: `time.Hour + time.Second`
+becomes `3601.00s`. The driver rejects names that are empty, contain `=` or
+`,`, or contain characters other than printable ASCII.
 
 **DSN parameter example:**
 ```
@@ -779,7 +783,8 @@ config := &Config{
     ServerURI: "http://foobar@localhost:8080",
     ResourceEstimates: map[string]string{
         "EXECUTION_TIME": "10m",
-        "PEAK_MEMORY":    "1GB",
+        "CPU_TIME":       FormatDuration(90 * time.Minute), // 1.50h
+        "PEAK_MEMORY":    FormatDataSize(1 << 30),          // 1GB
     },
 }
 
