@@ -744,6 +744,55 @@ dsn, err := config.FormatDSN()
 rows, err := db.Query(query, sql.Named("X-Trino-Client-Tags", "tag1,tag2,tag3"))
 ```
 
+##### `resourceEstimates`
+
+```
+Type:           string
+Valid values:   semicolon-separated list of resource:estimate pairs
+Default:        empty
+```
+
+The `resourceEstimates` parameter tells the coordinator how much each query is
+expected to use, and is sent as one `X-Trino-Resource-Estimate` header per
+estimate with every statement. Resource group selectors can match on these
+estimates to route queries, for example to keep long or memory-hungry queries
+out of an interactive group. The server accepts these resources, ignoring case:
+
+- `EXECUTION_TIME` and `CPU_TIME`, a duration such as `90s`, `10m` or `1.5h`
+  (units `ns`, `us`, `ms`, `s`, `m`, `h`, `d`)
+- `PEAK_MEMORY`, a data size such as `512MB` or `1.5GB` (units `B`, `kB`,
+  `MB`, `GB`, `TB`, `PB`, all powers of 1024)
+
+The values are sent as given. The server rejects a query with an unknown
+resource or a value it cannot parse, so a Go `time.Duration` must not be passed
+through `String()`, which produces `1h30m0s`. The driver rejects names that are
+empty, contain `=` or `,`, or contain characters other than printable ASCII.
+
+**DSN parameter example:**
+```
+resourceEstimates=EXECUTION_TIME%3A10m%3BPEAK_MEMORY%3A1GB
+```
+
+**Config struct example:**
+```go
+config := &Config{
+    ServerURI: "http://foobar@localhost:8080",
+    ResourceEstimates: map[string]string{
+        "EXECUTION_TIME": "10m",
+        "PEAK_MEMORY":    "1GB",
+    },
+}
+
+dsn, err := config.FormatDSN()
+```
+
+**Query parameter example (adds to or replaces the connection estimates):**
+```go
+rows, err := db.Query(query, sql.Named("X-Trino-Resource-Estimate", map[string]string{
+    "CPU_TIME": "1h",
+}))
+```
+
 ##### `trace_token`
 
 ```

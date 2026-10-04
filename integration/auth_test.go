@@ -381,7 +381,15 @@ func TestParametersClientTags(t *testing.T) {
 }
 
 type QuerySession struct {
-	ClientTags []string `json:"clientTags"`
+	ClientTags        []string               `json:"clientTags"`
+	ResourceEstimates QueryResourceEstimates `json:"resourceEstimates"`
+}
+
+// QueryResourceEstimates holds the durations in seconds.
+type QueryResourceEstimates struct {
+	ExecutionTime   float64 `json:"executionTime"`
+	CPUTime         float64 `json:"cpuTime"`
+	PeakMemoryBytes int64   `json:"peakMemoryBytes"`
 }
 type QueryInfo struct {
 	Session QuerySession `json:"session"`

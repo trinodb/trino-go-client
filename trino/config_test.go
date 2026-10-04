@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,14 @@ func TestFormatDSN(t *testing.T) {
 				SessionProperties: map[string]string{"query_priority": "1"},
 			},
 			want: "http://foobar@localhost:8080?session_properties=query_priority%3A1&source=trino-go-client",
+		},
+		{
+			name: "resource estimates",
+			config: &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				ResourceEstimates: map[string]string{"PEAK_MEMORY": "1GB", "EXECUTION_TIME": "1.5h"},
+			},
+			want: "http://foobar@localhost:8080?resourceEstimates=EXECUTION_TIME%3A1.5h%3BPEAK_MEMORY%3A1GB&source=trino-go-client",
 		},
 		{
 			name: "trace token, client info and language",
@@ -508,6 +517,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"client_info=test%20client%20info&" +
 		"language=en-US&" +
 		"timezone=Asia%2FTokyo&" +
+		"resourceEstimates=EXECUTION_TIME%3A10m%3BPEAK_MEMORY%3A1GB&" +
 		"custom_client=test_client&" +
 		"KerberosEnabled=true&" +
 		"KerberosKeytabPath=/path/to/keytab&" +
@@ -575,6 +585,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, "test client info", config.ClientInfo)
 	assert.Equal(t, "en-US", config.Language)
 	assert.Equal(t, "Asia/Tokyo", config.TimeZone)
+	assert.Equal(t, map[string]string{"EXECUTION_TIME": "10m", "PEAK_MEMORY": "1GB"}, config.ResourceEstimates)
 	assert.Equal(t, "test_client", config.CustomClientName)
 	assert.Equal(t, true, config.KerberosEnabled)
 	assert.Equal(t, "/path/to/keytab", config.KerberosKeytabPath)
@@ -747,6 +758,69 @@ func TestInvalidClientTags(t *testing.T) {
 
 	_, err = conf.FormatDSN()
 	assert.EqualError(t, err, wantErr, "FormatDSN")
+}
+
+func TestInvalidResourceEstimates(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name      string
+		estimates map[string]string
+		wantErr   string
+	}{
+		{
+			name:      "empty name",
+			estimates: map[string]string{"": "10m"},
+			wantErr:   "trino: resourceEstimates key is empty",
+		},
+		{
+			name:      "empty estimate",
+			estimates: map[string]string{"EXECUTION_TIME": ""},
+			wantErr:   "trino: resourceEstimates value is empty",
+		},
+		{
+			name:      "name with equals sign",
+			estimates: map[string]string{"EXECUTION=TIME": "10m"},
+			wantErr:   `trino: resourceEstimates key "EXECUTION=TIME" must not contain '='`,
+		},
+		{
+			name:      "name with comma",
+			estimates: map[string]string{"EXECUTION_TIME,CPU_TIME": "10m"},
+			wantErr:   `trino: resourceEstimates key "EXECUTION_TIME,CPU_TIME" must not contain ','`,
+		},
+		{
+			name:      "name with space",
+			estimates: map[string]string{"EXECUTION TIME": "10m"},
+			wantErr:   `trino: resourceEstimates key "EXECUTION TIME" contains spaces or is not printable ASCII`,
+		},
+		{
+			name:      "estimate with space",
+			estimates: map[string]string{"EXECUTION_TIME": "10 m"},
+			wantErr:   "trino: resourceEstimates value for key 'EXECUTION_TIME' contains spaces or is not printable ASCII",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			conf := &Config{
+				ServerURI:         "http://foobar@localhost:8080",
+				ResourceEstimates: tc.estimates,
+			}
+
+			_, err := NewConnector(conf)
+			assert.EqualError(t, err, tc.wantErr, "NewConnector")
+
+			_, err = conf.FormatDSN()
+			assert.EqualError(t, err, tc.wantErr, "FormatDSN")
+
+			var entries []string
+			for name, estimate := range tc.estimates {
+				entries = append(entries, name+mapKeySeparator+estimate)
+			}
+			_, err = ParseDSN("http://foobar@localhost:8080?" + url.Values{resourceEstimatesConfig: {strings.Join(entries, mapEntrySeparator)}}.Encode())
+			assert.EqualError(t, err, tc.wantErr, "ParseDSN")
+		})
+	}
 }
 
 func TestConnErrorDSN(t *testing.T) {

@@ -181,6 +181,7 @@ const (
 	trinoClientInfoHeader         = trinoHeaderPrefix + `Client-Info`
 	trinoLanguageHeader           = trinoHeaderPrefix + `Language`
 	trinoTimeZoneHeader           = trinoHeaderPrefix + `Time-Zone`
+	trinoResourceEstimateHeader   = trinoHeaderPrefix + `Resource-Estimate`
 
 	trinoQueryDataEncodingHeader  = trinoHeaderPrefix + `Query-Data-Encoding`
 	trinoClientCapabilitiesHeader = trinoHeaderPrefix + `Client-Capabilities`
@@ -213,6 +214,7 @@ const (
 	accessTokenConfig                = "accessToken"
 	explicitPrepareConfig            = "explicitPrepare"
 	forwardAuthorizationHeaderConfig = "forwardAuthorizationHeader"
+	resourceEstimatesConfig          = "resourceEstimates"
 
 	mapKeySeparator   = ":"
 	mapEntrySeparator = ";"
@@ -300,6 +302,7 @@ func (c *Config) clone() *Config {
 	cloned.SessionProperties = maps.Clone(c.SessionProperties)
 	cloned.ExtraCredentials = maps.Clone(c.ExtraCredentials)
 	cloned.Roles = maps.Clone(c.Roles)
+	cloned.ResourceEstimates = maps.Clone(c.ResourceEstimates)
 	cloned.ClientTags = slices.Clone(c.ClientTags)
 	if c.QueryTimeout != nil {
 		cloned.QueryTimeout = new(time.Duration)
@@ -357,6 +360,7 @@ type Config struct {
 	ClientInfo                 string            // Free-form description of the client, visible in the web UI and to event listeners (optional)
 	Language                   string            // Language tag, e.g. en-US, used for locale-sensitive processing (optional)
 	TimeZone                   string            // Time zone id, e.g. Europe/Warsaw or +02:00, used by the server and to read values without a zone (optional, default is the local zone)
+	ResourceEstimates          map[string]string // Expected resource usage of each query, e.g. EXECUTION_TIME: 10m, used to select a resource group (optional; DSN: resourceEstimates)
 	CustomClientName           string            // Custom client name (optional)
 	KerberosEnabled            bool              // KerberosEnabled (optional, default is false)
 	KerberosKeytabPath         string            // Kerberos Keytab Path (optional)
@@ -455,6 +459,17 @@ func ParseDSN(dsn string) (*Config, error) {
 
 	if clientTags := query.Get("clientTags"); clientTags != "" {
 		config.ClientTags = strings.Split(clientTags, commaSeparator)
+	}
+
+	if resourceEstimates := query.Get(resourceEstimatesConfig); resourceEstimates != "" {
+		var err error
+		config.ResourceEstimates, err = parseMapParameter(resourceEstimates, "resource estimate", mapEntrySeparator, mapKeySeparator)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := encodeResourceEstimates(config.ResourceEstimates); err != nil {
+			return nil, err
+		}
 	}
 
 	config.TraceToken = query.Get("trace_token")
@@ -680,6 +695,9 @@ func (c *Config) validate(serverURL *url.URL) error {
 	if c.HeartbeatInterval != nil && *c.HeartbeatInterval <= 0 {
 		return fmt.Errorf("trino: heartbeat_interval must be positive, got %s", *c.HeartbeatInterval)
 	}
+	if _, err := encodeResourceEstimates(c.ResourceEstimates); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -871,6 +889,11 @@ func (c *Config) FormatDSN() (string, error) {
 		}
 	}
 
+	var resourceEstimates []string
+	for k, v := range c.ResourceEstimates {
+		resourceEstimates = append(resourceEstimates, k+mapKeySeparator+v)
+	}
+
 	query := make(url.Values)
 	query.Add("source", c.Source)
 
@@ -924,6 +947,7 @@ func (c *Config) FormatDSN() (string, error) {
 	sort.Strings(sessionkv)
 	sort.Strings(credkv)
 	sort.Strings(roles)
+	sort.Strings(resourceEstimates)
 
 	if c.QueryTimeout != nil {
 		query.Add("query_timeout", c.QueryTimeout.String())
@@ -939,6 +963,10 @@ func (c *Config) FormatDSN() (string, error) {
 
 	if c.HeartbeatInterval != nil {
 		query.Add("heartbeat_interval", c.HeartbeatInterval.String())
+	}
+
+	if len(resourceEstimates) > 0 {
+		query.Add(resourceEstimatesConfig, strings.Join(resourceEstimates, mapEntrySeparator))
 	}
 
 	for k, v := range map[string]string{
@@ -1104,6 +1132,7 @@ type Conn struct {
 	httpHeadersMu              sync.RWMutex
 	httpHeaders                http.Header
 	extraCredentials           []string
+	resourceEstimates          map[string]string
 	kerberosEnabled            bool
 	kerberosClient             *client.Client
 	kerberosRemoteServiceName  string
@@ -1287,6 +1316,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 		retryLimit:                 retryLimit{timeout: DefaultRequestRetryTimeout, maxAttempts: DefaultRequestRetryMaxAttempts},
 		timeZone:                   timeZone,
 		externalAuth:               externalAuth,
+		resourceEstimates:          maps.Clone(conf.ResourceEstimates),
 	}
 
 	if conf.RequestRetryTimeout != nil {
@@ -1370,6 +1400,21 @@ func decodeMapHeader(name string, m map[string]string) ([]string, error) {
 		result = append(result, key+"="+url.QueryEscape(value))
 	}
 	return result, nil
+}
+
+// encodeResourceEstimates returns one header value per estimate, as the Java
+// client sends them. The server splits the header on ',' and each value on
+// '=', and decodes only the estimate, so a name cannot contain either.
+func encodeResourceEstimates(estimates map[string]string) ([]string, error) {
+	if err := validateMapKeys(resourceEstimatesConfig, estimates); err != nil {
+		return nil, err
+	}
+	values, err := decodeMapHeader(resourceEstimatesConfig, estimates)
+	if err != nil {
+		return nil, err
+	}
+	slices.Sort(values)
+	return values, nil
 }
 
 func isASCII(s string) bool {
@@ -2362,7 +2407,7 @@ func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
 				return nil
 			}
 
-			if arg.Name == trinoRoleHeader {
+			if arg.Name == trinoRoleHeader || arg.Name == trinoResourceEstimateHeader {
 				return nil
 			}
 
@@ -2532,10 +2577,19 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	if len(st.conn.extraCredentials) > 0 {
 		hs[trinoExtraCredentialHeader] = slices.Clone(st.conn.extraCredentials)
 	}
+	resourceEstimates := st.conn.resourceEstimates
 
 	if len(args) > 0 {
 		var ss []string
 		for _, arg := range args {
+			if queryEstimates, ok := arg.Value.(map[string]string); arg.Name == trinoResourceEstimateHeader && ok {
+				resourceEstimates = maps.Clone(resourceEstimates)
+				if resourceEstimates == nil {
+					resourceEstimates = make(map[string]string, len(queryEstimates))
+				}
+				maps.Copy(resourceEstimates, queryEstimates)
+				continue
+			}
 			if arg.Name == trinoProgressCallbackParam {
 				st.conn.progressUpdater = arg.Value.(ProgressUpdater)
 				continue
@@ -2640,6 +2694,14 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				query = "EXECUTE IMMEDIATE " + formatStringLiteral(st.query) + " USING " + strings.Join(ss, ", ")
 			}
 		}
+	}
+
+	if len(resourceEstimates) > 0 {
+		encoded, err := encodeResourceEstimates(resourceEstimates)
+		if err != nil {
+			return nil, err
+		}
+		hs[trinoResourceEstimateHeader] = append(encoded, hs.Values(trinoResourceEstimateHeader)...)
 	}
 
 	if st.spoolingWorkerCount > st.spoolingMaxOutOfOrderSegments {
