@@ -280,6 +280,94 @@ func TestIntegrationNamedRowScan(t *testing.T) {
 	require.NoError(t, rows.Err())
 }
 
+type integrationPoint struct {
+	X     int64 `trino:"x"`
+	Label sql.NullString
+}
+
+type integrationNamed struct {
+	Name    string
+	Created time.Time
+}
+
+type integrationOuter struct {
+	ID     int64                                            `trino:"id"`
+	Detail trino.NullRow[integrationNamed]                  `trino:"detail"`
+	Points trino.NullSlice[trino.NullRow[integrationPoint]] `trino:"points"`
+}
+
+// TestIntegrationGenericScanners checks the generic scanners against the
+// values a real coordinator sends, including depths and key types the
+// hand-written Null* types cannot scan.
+func TestIntegrationGenericScanners(t *testing.T) {
+	db := integrationOpen(t)
+
+	for _, tt := range []struct {
+		name  string
+		query string
+		dest  any
+		want  any
+	}{
+		{
+			name:  "four dimensional array with a NULL inner array",
+			query: `SELECT ARRAY[ARRAY[ARRAY[ARRAY['a', NULL]], NULL]]`,
+			dest:  &trino.NullSlice[trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullString]]]]{},
+			want: &trino.NullSlice[trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullString]]]]{Slice: []trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullString]]]{
+				{Slice: []trino.NullSlice[trino.NullSlice[sql.NullString]]{
+					{Slice: []trino.NullSlice[sql.NullString]{
+						{Slice: []sql.NullString{{String: "a", Valid: true}, {}}, Valid: true},
+					}, Valid: true},
+					{},
+				}, Valid: true},
+			}, Valid: true},
+		},
+		{
+			name:  "map with integer keys and array values",
+			query: `SELECT MAP(ARRAY[1, 2], ARRAY[ARRAY[BIGINT '1', NULL], NULL])`,
+			dest:  &trino.NullMapOf[int32, trino.NullSlice[sql.NullInt64]]{},
+			want: &trino.NullMapOf[int32, trino.NullSlice[sql.NullInt64]]{Map: map[int32]trino.NullSlice[sql.NullInt64]{
+				1: {Slice: []sql.NullInt64{{Int64: 1, Valid: true}, {}}, Valid: true},
+				2: {},
+			}, Valid: true},
+		},
+		{
+			name:  "map with double and boolean keys",
+			query: `SELECT MAP(ARRAY[1.5e0, -2e0], ARRAY[MAP(ARRAY[true], ARRAY['a']), NULL])`,
+			dest:  &trino.NullMapOf[float64, trino.NullMapOf[bool, string]]{},
+			want: &trino.NullMapOf[float64, trino.NullMapOf[bool, string]]{Map: map[float64]trino.NullMapOf[bool, string]{
+				1.5: {Map: map[bool]string{true: "a"}, Valid: true},
+				-2:  {},
+			}, Valid: true},
+		},
+		{
+			name: "row with a nested row and an array of rows",
+			query: `SELECT CAST(ROW(1, ROW('a', TIMESTAMP '2017-07-10 01:02:03.004 UTC'), ARRAY[ROW(2, 'b'), NULL])
+				AS ROW(id BIGINT, detail ROW(name VARCHAR, created TIMESTAMP(3) WITH TIME ZONE), points ARRAY(ROW(x INTEGER, label VARCHAR))))`,
+			dest: &trino.NullRow[integrationOuter]{},
+			want: &trino.NullRow[integrationOuter]{Row: integrationOuter{
+				ID:     1,
+				Detail: trino.NullRow[integrationNamed]{Row: integrationNamed{Name: "a", Created: time.Date(2017, 7, 10, 1, 2, 3, 4*1000000, time.UTC)}, Valid: true},
+				Points: trino.NullSlice[trino.NullRow[integrationPoint]]{Slice: []trino.NullRow[integrationPoint]{
+					{Row: integrationPoint{X: 2, Label: sql.NullString{String: "b", Valid: true}}, Valid: true},
+					{},
+				}, Valid: true},
+			}, Valid: true},
+		},
+		{
+			name:  "NULL row",
+			query: `SELECT CAST(NULL AS ROW(x INTEGER, label VARCHAR))`,
+			dest:  &trino.NullRow[integrationPoint]{},
+			want:  &trino.NullRow[integrationPoint]{},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			require.NoError(t, db.QueryRow(tt.query).Scan(tt.dest))
+
+			assert.Equal(t, tt.want, tt.dest)
+		})
+	}
+}
+
 func TestIntegrationArgsConversion(t *testing.T) {
 	dsn := integrationDSN(t)
 	db := integrationOpen(t, dsn)
