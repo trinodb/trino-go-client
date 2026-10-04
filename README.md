@@ -1126,7 +1126,7 @@ When reading response rows, the driver supports most Trino data types, except:
 * `DATE`, `TIME` and `TIMESTAMP` without a time zone - returned as `time.Time`
   in the zone of the connection (see the `timezone` parameter), which is the
   zone the server used to produce them. When scanning arrays or maps of these
-  types with `trino.NullSlice` or `trino.NullMapOf`, set their `Location`
+  types with `trino.NullSlice` or `trino.NullMap`, set their `Location`
   field to the same zone, as they use `time.Local` by default.
 * `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use
   `sql.NullString` for nullable columns
@@ -1151,7 +1151,7 @@ To read `ARRAY`, `MAP` and `ROW` values, use the generic scanners, which nest
 to any depth:
 
 * `trino.NullSlice[T]` for an `ARRAY`, with its elements in `Slice`
-* `trino.NullMapOf[K, V]` for a `MAP`, with its entries in `Map`
+* `trino.NullMap[K, V]` for a `MAP`, with its entries in `Map`
 * `trino.NullRow[T]` for a `ROW`, with its fields stored in the struct `T`
   in `Row`
 
@@ -1164,7 +1164,7 @@ err := db.QueryRow("SELECT ARRAY[ARRAY['a', NULL], NULL]").Scan(&tags)
 // tags.Slice[0].Slice == []sql.NullString{{String: "a", Valid: true}, {}}
 // tags.Slice[1].Valid == false
 
-var scores trino.NullMapOf[string, trino.NullSlice[int64]]
+var scores trino.NullMap[string, trino.NullSlice[int64]]
 err = db.QueryRow("SELECT MAP(ARRAY['a'], ARRAY[ARRAY[BIGINT '1', 2]])").Scan(&scores)
 // scores.Map["a"].Slice == []int64{1, 2}
 ```
@@ -1177,7 +1177,7 @@ nullable types from `database/sql` (`sql.NullBool`, `sql.NullString`,
 `sql.NullTime`), `trino.NullTime`, `trino.NullBinary`, `trino.Variant`,
 another generic scanner, or any other type that implements `sql.Scanner`. A
 `NULL` element scanned into a plain type that cannot hold it, like `int64`, is
-an error. Set the `Location` field of `trino.NullSlice` and `trino.NullMapOf`
+an error. Set the `Location` field of `trino.NullSlice` and `trino.NullMap`
 to the zone of the connection for elements without a time zone, as they use
 `time.Local` by default; it is passed down to nested scanners.
 
@@ -1224,14 +1224,14 @@ base64 string. Prefer the generic scanners, which convert every element.
 `sql.ColumnType.ScanType()` reports the generic scanners, instantiated with
 the scan types of the elements, keys and values, like
 `trino.NullSlice[sql.NullInt32]` for an `ARRAY(INTEGER)`,
-`trino.NullMapOf[sql.NullString, sql.NullInt64]` for a
+`trino.NullMap[sql.NullString, sql.NullInt64]` for a
 `MAP(VARCHAR, BIGINT)` and `trino.NullSlice[trino.Row]` for an
 `ARRAY(ROW(...))`, so a value created with `reflect.New` from it can be
 passed to `Scan()`. A `ROW` reports `trino.Row`, as `trino.NullRow` needs a
 struct type. The reported types cover arrays of up to three dimensions, maps
 of scalar values, and arrays of such maps; a column nested deeper reports
 `interface{}` for the values below the deepest level covered, like
-`trino.NullMapOf[sql.NullString, interface{}]` for a
+`trino.NullMap[sql.NullString, interface{}]` for a
 `MAP(VARCHAR, ARRAY(BIGINT))`. A map key that is not comparable in Go, like
 `VARBINARY`, is reported as `interface{}`.
 

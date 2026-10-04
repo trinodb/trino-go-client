@@ -5,7 +5,7 @@ import (
 	"reflect"
 )
 
-// containerScanTypes holds the NullSlice and NullMapOf instantiations
+// containerScanTypes holds the NullSlice and NullMap instantiations
 // ColumnTypeScanType reports for ARRAY and MAP columns.
 //
 // Go instantiates generic types only at compile time, and reflect cannot
@@ -13,7 +13,7 @@ import (
 // listed ahead of time. A generic function cannot generate them by nesting
 // NullSlice[T] in itself to some depth either: the compiler rejects that as
 // an instantiation cycle. Each instantiation adds code to every binary using
-// the driver, a few kilobytes for a NullMapOf, so the table covers the
+// the driver, a few kilobytes for a NullMap, so the table covers the
 // shapes the hand-written scanners covered rather than every combination:
 //   - arrays of up to three dimensions of any scalar scan type, including
 //     Row and interface{}
@@ -86,7 +86,7 @@ func registerScalarContainers[S any](t *scanTypeTable) {
 
 func registerMapsWithKey[K comparable, S any](t *scanTypeTable) {
 	registerMap[K, S](t)
-	registerSlice[NullMapOf[K, S]](t)
+	registerSlice[NullMap[K, S]](t)
 }
 
 // registerArrays registers arrays of up to three dimensions of E.
@@ -102,5 +102,5 @@ func registerSlice[E any](t *scanTypeTable) {
 
 func registerMap[K comparable, V any](t *scanTypeTable) {
 	t.keys[reflect.TypeFor[K]()] = true
-	t.maps[mapScanTypeKey{reflect.TypeFor[K](), reflect.TypeFor[V]()}] = reflect.TypeFor[NullMapOf[K, V]]()
+	t.maps[mapScanTypeKey{reflect.TypeFor[K](), reflect.TypeFor[V]()}] = reflect.TypeFor[NullMap[K, V]]()
 }

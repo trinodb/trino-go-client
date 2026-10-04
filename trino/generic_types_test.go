@@ -28,13 +28,13 @@ type outer struct {
 }
 
 type everyKind struct {
-	Tags    NullSlice[string]          `trino:"tags"`
-	Scores  NullMapOf[string, float64] `trino:"scores"`
-	Created time.Time                  `trino:"created"`
-	Payload []byte                     `trino:"payload"`
-	Points  NullSlice[NullRow[point]]  `trino:"points"`
-	Raw     interface{}                `trino:"raw"`
-	Ignored string                     `trino:"-"`
+	Tags    NullSlice[string]         `trino:"tags"`
+	Scores  NullMap[string, float64]  `trino:"scores"`
+	Created time.Time                 `trino:"created"`
+	Payload []byte                    `trino:"payload"`
+	Points  NullSlice[NullRow[point]] `trino:"points"`
+	Raw     interface{}               `trino:"raw"`
+	Ignored string                    `trino:"-"`
 	hidden  string
 }
 
@@ -141,8 +141,8 @@ func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 			name:   "map of arrays",
 			column: column("map(varchar,array(bigint))", mapType(scalarType("varchar"), arrayType(scalarType("bigint")))),
 			value:  map[string]any{"a": []any{1, nil}, "b": nil},
-			dest:   func() any { return &NullMapOf[string, NullSlice[sql.NullInt64]]{} },
-			want: NullMapOf[string, NullSlice[sql.NullInt64]]{Map: map[string]NullSlice[sql.NullInt64]{
+			dest:   func() any { return &NullMap[string, NullSlice[sql.NullInt64]]{} },
+			want: NullMap[string, NullSlice[sql.NullInt64]]{Map: map[string]NullSlice[sql.NullInt64]{
 				"a": {Slice: []sql.NullInt64{{Int64: 1, Valid: true}, {}}, Valid: true},
 				"b": {},
 			}, Valid: true},
@@ -151,29 +151,29 @@ func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 			name:   "map with integer keys",
 			column: column("map(integer,varchar)", mapType(scalarType("integer"), scalarType("varchar"))),
 			value:  map[string]any{"1": "a", "-2": "b"},
-			dest:   func() any { return &NullMapOf[int64, string]{} },
-			want:   NullMapOf[int64, string]{Map: map[int64]string{1: "a", -2: "b"}, Valid: true},
+			dest:   func() any { return &NullMap[int64, string]{} },
+			want:   NullMap[int64, string]{Map: map[int64]string{1: "a", -2: "b"}, Valid: true},
 		},
 		{
 			name:   "map with boolean keys",
 			column: column("map(boolean,double)", mapType(scalarType("boolean"), scalarType("double"))),
 			value:  map[string]any{"true": 1, "false": 0},
-			dest:   func() any { return &NullMapOf[bool, float64]{} },
-			want:   NullMapOf[bool, float64]{Map: map[bool]float64{true: 1, false: 0}, Valid: true},
+			dest:   func() any { return &NullMap[bool, float64]{} },
+			want:   NullMap[bool, float64]{Map: map[bool]float64{true: 1, false: 0}, Valid: true},
 		},
 		{
 			name:   "NULL map",
 			column: column("map(varchar,varchar)", mapType(scalarType("varchar"), scalarType("varchar"))),
 			value:  nil,
-			dest:   func() any { return &NullMapOf[string, string]{} },
-			want:   NullMapOf[string, string]{},
+			dest:   func() any { return &NullMap[string, string]{} },
+			want:   NullMap[string, string]{},
 		},
 		{
 			name:   "array of maps",
 			column: column("array(map(varchar,bigint))", arrayType(mapType(scalarType("varchar"), scalarType("bigint")))),
 			value:  []any{map[string]any{"a": 1}, nil},
-			dest:   func() any { return &NullSlice[NullMapOf[string, int64]]{} },
-			want: NullSlice[NullMapOf[string, int64]]{Slice: []NullMapOf[string, int64]{
+			dest:   func() any { return &NullSlice[NullMap[string, int64]]{} },
+			want: NullSlice[NullMap[string, int64]]{Slice: []NullMap[string, int64]{
 				{Map: map[string]int64{"a": 1}, Valid: true},
 				{},
 			}, Valid: true},
@@ -227,8 +227,8 @@ func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 			name:   "row in map",
 			column: column("map(varchar,row(x integer, label varchar))", mapType(scalarType("varchar"), pointType)),
 			value:  map[string]any{"a": []any{1, "b"}},
-			dest:   func() any { return &NullMapOf[string, NullRow[point]]{} },
-			want: NullMapOf[string, NullRow[point]]{Map: map[string]NullRow[point]{
+			dest:   func() any { return &NullMap[string, NullRow[point]]{} },
+			want: NullMap[string, NullRow[point]]{Map: map[string]NullRow[point]{
 				"a": {Row: point{X: 1, Label: sql.NullString{String: "b", Valid: true}}, Valid: true},
 			}, Valid: true},
 		},
@@ -246,7 +246,7 @@ func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 			dest:  func() any { return &NullRow[everyKind]{} },
 			want: NullRow[everyKind]{Row: everyKind{
 				Tags:    NullSlice[string]{Slice: []string{"a"}, Valid: true},
-				Scores:  NullMapOf[string, float64]{Map: map[string]float64{"b": 1.5}, Valid: true},
+				Scores:  NullMap[string, float64]{Map: map[string]float64{"b": 1.5}, Valid: true},
 				Created: time.Date(2017, 7, 10, 1, 2, 3, 0, time.UTC),
 				Payload: []byte{0, 1},
 				Points:  NullSlice[NullRow[point]]{Slice: []NullRow[point]{{Row: point{X: 2}, Valid: true}}, Valid: true},
@@ -331,21 +331,21 @@ func TestGenericScannersRejectMismatchedValues(t *testing.T) {
 			name:    "slice into a map",
 			column:  column("array(varchar)", arrayType(scalarType("varchar"))),
 			value:   []any{"a"},
-			dest:    &NullMapOf[string, string]{},
+			dest:    &NullMap[string, string]{},
 			wantErr: "trino: cannot convert [a] ([]interface {}) to map[string]string",
 		},
 		{
 			name:    "map key of the wrong type",
 			column:  column("map(varchar,varchar)", mapType(scalarType("varchar"), scalarType("varchar"))),
 			value:   map[string]any{"a": "b"},
-			dest:    &NullMapOf[int64, string]{},
+			dest:    &NullMap[int64, string]{},
 			wantErr: `trino: key "a": cannot convert a (json.Number) to int64`,
 		},
 		{
 			name:    "map value of the wrong type",
 			column:  column("map(varchar,varchar)", mapType(scalarType("varchar"), scalarType("varchar"))),
 			value:   map[string]any{"a": "b"},
-			dest:    &NullMapOf[string, bool]{},
+			dest:    &NullMap[string, bool]{},
 			wantErr: `trino: value for key "a": cannot convert b (string) to bool`,
 		},
 		{

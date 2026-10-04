@@ -551,19 +551,19 @@ func TestSliceTypeConversion(t *testing.T) {
 		{name: "[]int64", scanner: &NullSlice[sql.NullInt64]{}, depth: 1, sample: json.Number("1")},
 		{name: "[]float64", scanner: &NullSlice[sql.NullFloat64]{}, depth: 1, sample: json.Number("1.0")},
 		{name: "[]time.Time", scanner: &NullSlice[NullTime]{}, depth: 1, sample: "2017-07-01"},
-		{name: "[]map[string]interface{}", scanner: &NullSlice[NullMapOf[string, interface{}]]{}, depth: 1, sample: map[string]interface{}{"hello": "world"}},
+		{name: "[]map[string]interface{}", scanner: &NullSlice[NullMap[string, interface{}]]{}, depth: 1, sample: map[string]interface{}{"hello": "world"}},
 		{name: "[][]bool", scanner: &NullSlice[NullSlice[sql.NullBool]]{}, depth: 2, sample: true},
 		{name: "[][]string", scanner: &NullSlice[NullSlice[sql.NullString]]{}, depth: 2, sample: "hello"},
 		{name: "[][]int64", scanner: &NullSlice[NullSlice[sql.NullInt64]]{}, depth: 2, sample: json.Number("1")},
 		{name: "[][]float64", scanner: &NullSlice[NullSlice[sql.NullFloat64]]{}, depth: 2, sample: json.Number("1.0")},
 		{name: "[][]time.Time", scanner: &NullSlice[NullSlice[NullTime]]{}, depth: 2, sample: "2017-07-01"},
-		{name: "[][]map[string]interface{}", scanner: &NullSlice[NullSlice[NullMapOf[string, interface{}]]]{}, depth: 2, sample: map[string]interface{}{"hello": "world"}},
+		{name: "[][]map[string]interface{}", scanner: &NullSlice[NullSlice[NullMap[string, interface{}]]]{}, depth: 2, sample: map[string]interface{}{"hello": "world"}},
 		{name: "[][][]bool", scanner: &NullSlice[NullSlice[NullSlice[sql.NullBool]]]{}, depth: 3, sample: true},
 		{name: "[][][]string", scanner: &NullSlice[NullSlice[NullSlice[sql.NullString]]]{}, depth: 3, sample: "hello"},
 		{name: "[][][]int64", scanner: &NullSlice[NullSlice[NullSlice[sql.NullInt64]]]{}, depth: 3, sample: json.Number("1")},
 		{name: "[][][]float64", scanner: &NullSlice[NullSlice[NullSlice[sql.NullFloat64]]]{}, depth: 3, sample: json.Number("1.0")},
 		{name: "[][][]time.Time", scanner: &NullSlice[NullSlice[NullSlice[NullTime]]]{}, depth: 3, sample: "2017-07-01"},
-		{name: "[][][]map[string]interface{}", scanner: &NullSlice[NullSlice[NullSlice[NullMapOf[string, interface{}]]]]{}, depth: 3, sample: map[string]interface{}{"hello": "world"}},
+		{name: "[][][]map[string]interface{}", scanner: &NullSlice[NullSlice[NullSlice[NullMap[string, interface{}]]]]{}, depth: 3, sample: map[string]interface{}{"hello": "world"}},
 	}
 
 	for _, tc := range cases {
