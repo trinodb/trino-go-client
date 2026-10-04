@@ -3542,6 +3542,15 @@ func (qr *driverRows) fetch() error {
 	}
 }
 
+// location returns the zone the server produces values without a time zone
+// in for this statement.
+func (st *driverStmt) location() *time.Location {
+	if st.timeZone != nil {
+		return st.timeZone
+	}
+	return st.conn.location()
+}
+
 func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
 	st.usingSpooledProtocol = true
 
@@ -3959,10 +3968,7 @@ func (qr *driverRows) initColumns(qresp *queryResponse) error {
 	}
 	qr.columns = make([]string, len(qresp.Columns))
 	qr.coltype = make([]*typeConverter, len(qresp.Columns))
-	location := qr.stmt.timeZone
-	if location == nil {
-		location = qr.stmt.conn.location()
-	}
+	location := qr.stmt.location()
 	for i, col := range qresp.Columns {
 		err = unmarshalArguments(&(qresp.Columns[i].TypeSignature))
 		if err != nil {
