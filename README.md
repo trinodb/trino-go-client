@@ -1119,9 +1119,8 @@ When reading response rows, the driver supports most Trino data types, except:
 * `DATE`, `TIME` and `TIMESTAMP` without a time zone - returned as `time.Time`
   in the zone of the connection (see the `timezone` parameter), which is the
   zone the server used to produce them. When scanning arrays or maps of these
-  types with `trino.NullSlice` or `trino.NullMapOf`, or the deprecated
-  `trino.NullSliceTime` and its 2D and 3D variants, set their `Location` field
-  to the same zone, as they use `time.Local` by default.
+  types with `trino.NullSlice` or `trino.NullMapOf`, set their `Location`
+  field to the same zone, as they use `time.Local` by default.
 * `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use
   `sql.NullString` for nullable columns
 * `IPADDRESS` - returned as string
@@ -1173,9 +1172,7 @@ another generic scanner, or any other type that implements `sql.Scanner`. A
 `NULL` element scanned into a plain type that cannot hold it, like `int64`, is
 an error. Set the `Location` field of `trino.NullSlice` and `trino.NullMapOf`
 to the zone of the connection for elements without a time zone, as they use
-`time.Local` by default; it is passed down to nested scanners. The map scanner
-is called `NullMapOf` because `trino.NullMap` is the name of the older,
-non-generic map scanner.
+`time.Local` by default; it is passed down to nested scanners.
 
 `trino.NullRow[T]` maps each `ROW` field to an exported field of the struct
 `T`, by the name in a `trino:"name"` struct tag, or by the Go field name,
@@ -1231,19 +1228,6 @@ of scalar values, and arrays of such maps; a column nested deeper reports
 `MAP(VARCHAR, ARRAY(BIGINT))`. A map key that is not comparable in Go, like
 `VARBINARY`, is reported as `interface{}`.
 
-The following hand-written scanners are deprecated in favor of the generic
-ones, but keep working:
-
-* `trino.NullMap`, replaced by `trino.NullMapOf[string, interface{}]`
-* `trino.NullSliceBool`, `trino.NullSliceString`, `trino.NullSliceInt64`,
-  `trino.NullSliceFloat64`, `trino.NullSliceTime` and `trino.NullSliceMap`,
-  replaced by `trino.NullSlice[T]` with `sql.NullBool`, `sql.NullString`,
-  `sql.NullInt64`, `sql.NullFloat64`, `trino.NullTime` or
-  `trino.NullMapOf[string, interface{}]` elements
-* their two and three dimensional variants, like `trino.NullSlice2Bool` and
-  `trino.NullSlice3Bool`, replaced by nested `trino.NullSlice` values; unlike
-  the generic ones, they turn a `NULL` inner array into an empty one
-
 ### VARIANT
 
 To read a `VARIANT` value, scan into a `trino.Variant`:
@@ -1287,7 +1271,7 @@ server sent `VARIANT` columns as `JSON`: `database/sql` only converts strings,
 byte slices and numbers into a string. Scan into a `trino.Variant` and call
 `String`, or use `CAST(v AS JSON)` in the query. An `ARRAY(VARIANT)` scans
 into a `trino.NullSlice[trino.Variant]`, or still into a
-`trino.NullSliceString` holding the JSON text of each element.
+`trino.NullSlice[sql.NullString]` holding the JSON text of each element.
 
 ## Errors
 

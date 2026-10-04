@@ -546,24 +546,24 @@ func TestSliceTypeConversion(t *testing.T) {
 		depth   int
 		sample  interface{}
 	}{
-		{name: "[]bool", scanner: &NullSliceBool{}, depth: 1, sample: true},
-		{name: "[]string", scanner: &NullSliceString{}, depth: 1, sample: "hello"},
-		{name: "[]int64", scanner: &NullSliceInt64{}, depth: 1, sample: json.Number("1")},
-		{name: "[]float64", scanner: &NullSliceFloat64{}, depth: 1, sample: json.Number("1.0")},
-		{name: "[]time.Time", scanner: &NullSliceTime{}, depth: 1, sample: "2017-07-01"},
-		{name: "[]map[string]interface{}", scanner: &NullSliceMap{}, depth: 1, sample: map[string]interface{}{"hello": "world"}},
-		{name: "[][]bool", scanner: &NullSlice2Bool{}, depth: 2, sample: true},
-		{name: "[][]string", scanner: &NullSlice2String{}, depth: 2, sample: "hello"},
-		{name: "[][]int64", scanner: &NullSlice2Int64{}, depth: 2, sample: json.Number("1")},
-		{name: "[][]float64", scanner: &NullSlice2Float64{}, depth: 2, sample: json.Number("1.0")},
-		{name: "[][]time.Time", scanner: &NullSlice2Time{}, depth: 2, sample: "2017-07-01"},
-		{name: "[][]map[string]interface{}", scanner: &NullSlice2Map{}, depth: 2, sample: map[string]interface{}{"hello": "world"}},
-		{name: "[][][]bool", scanner: &NullSlice3Bool{}, depth: 3, sample: true},
-		{name: "[][][]string", scanner: &NullSlice3String{}, depth: 3, sample: "hello"},
-		{name: "[][][]int64", scanner: &NullSlice3Int64{}, depth: 3, sample: json.Number("1")},
-		{name: "[][][]float64", scanner: &NullSlice3Float64{}, depth: 3, sample: json.Number("1.0")},
-		{name: "[][][]time.Time", scanner: &NullSlice3Time{}, depth: 3, sample: "2017-07-01"},
-		{name: "[][][]map[string]interface{}", scanner: &NullSlice3Map{}, depth: 3, sample: map[string]interface{}{"hello": "world"}},
+		{name: "[]bool", scanner: &NullSlice[sql.NullBool]{}, depth: 1, sample: true},
+		{name: "[]string", scanner: &NullSlice[sql.NullString]{}, depth: 1, sample: "hello"},
+		{name: "[]int64", scanner: &NullSlice[sql.NullInt64]{}, depth: 1, sample: json.Number("1")},
+		{name: "[]float64", scanner: &NullSlice[sql.NullFloat64]{}, depth: 1, sample: json.Number("1.0")},
+		{name: "[]time.Time", scanner: &NullSlice[NullTime]{}, depth: 1, sample: "2017-07-01"},
+		{name: "[]map[string]interface{}", scanner: &NullSlice[NullMapOf[string, interface{}]]{}, depth: 1, sample: map[string]interface{}{"hello": "world"}},
+		{name: "[][]bool", scanner: &NullSlice[NullSlice[sql.NullBool]]{}, depth: 2, sample: true},
+		{name: "[][]string", scanner: &NullSlice[NullSlice[sql.NullString]]{}, depth: 2, sample: "hello"},
+		{name: "[][]int64", scanner: &NullSlice[NullSlice[sql.NullInt64]]{}, depth: 2, sample: json.Number("1")},
+		{name: "[][]float64", scanner: &NullSlice[NullSlice[sql.NullFloat64]]{}, depth: 2, sample: json.Number("1.0")},
+		{name: "[][]time.Time", scanner: &NullSlice[NullSlice[NullTime]]{}, depth: 2, sample: "2017-07-01"},
+		{name: "[][]map[string]interface{}", scanner: &NullSlice[NullSlice[NullMapOf[string, interface{}]]]{}, depth: 2, sample: map[string]interface{}{"hello": "world"}},
+		{name: "[][][]bool", scanner: &NullSlice[NullSlice[NullSlice[sql.NullBool]]]{}, depth: 3, sample: true},
+		{name: "[][][]string", scanner: &NullSlice[NullSlice[NullSlice[sql.NullString]]]{}, depth: 3, sample: "hello"},
+		{name: "[][][]int64", scanner: &NullSlice[NullSlice[NullSlice[sql.NullInt64]]]{}, depth: 3, sample: json.Number("1")},
+		{name: "[][][]float64", scanner: &NullSlice[NullSlice[NullSlice[sql.NullFloat64]]]{}, depth: 3, sample: json.Number("1.0")},
+		{name: "[][][]time.Time", scanner: &NullSlice[NullSlice[NullSlice[NullTime]]]{}, depth: 3, sample: "2017-07-01"},
+		{name: "[][][]map[string]interface{}", scanner: &NullSlice[NullSlice[NullSlice[NullMapOf[string, interface{}]]]]{}, depth: 3, sample: map[string]interface{}{"hello": "world"}},
 	}
 
 	for _, tc := range cases {
@@ -830,7 +830,7 @@ func TestTypeConversionUsesLocation(t *testing.T) {
 	}
 }
 
-func TestNullSliceTimeLocation(t *testing.T) {
+func TestNullSliceLocation(t *testing.T) {
 	t.Parallel()
 	tokyo, err := time.LoadLocation("Asia/Tokyo")
 	require.NoError(t, err)
@@ -838,26 +838,26 @@ func TestNullSliceTimeLocation(t *testing.T) {
 	sample := "2017-07-10 01:02:03.000"
 
 	t.Run("one dimension", func(t *testing.T) {
-		scanner := NullSliceTime{Location: tokyo}
+		scanner := NullSlice[NullTime]{Location: tokyo}
 		require.NoError(t, scanner.Scan(nest(1, sample)))
-		assert.Equal(t, []NullTime{want}, scanner.SliceTime)
+		assert.Equal(t, []NullTime{want}, scanner.Slice)
 	})
 
 	t.Run("two dimensions", func(t *testing.T) {
-		scanner := NullSlice2Time{Location: tokyo}
+		scanner := NullSlice[NullSlice[NullTime]]{Location: tokyo}
 		require.NoError(t, scanner.Scan(nest(2, sample)))
-		assert.Equal(t, [][]NullTime{{want}}, scanner.Slice2Time)
+		assert.Equal(t, []NullTime{want}, scanner.Slice[0].Slice)
 	})
 
 	t.Run("three dimensions", func(t *testing.T) {
-		scanner := NullSlice3Time{Location: tokyo}
+		scanner := NullSlice[NullSlice[NullSlice[NullTime]]]{Location: tokyo}
 		require.NoError(t, scanner.Scan(nest(3, sample)))
-		assert.Equal(t, [][][]NullTime{{{want}}}, scanner.Slice3Time)
+		assert.Equal(t, []NullTime{want}, scanner.Slice[0].Slice[0].Slice)
 	})
 
 	t.Run("nil location means time.Local", func(t *testing.T) {
-		var scanner NullSliceTime
+		var scanner NullSlice[NullTime]
 		require.NoError(t, scanner.Scan(nest(1, sample)))
-		assert.Equal(t, time.Local, scanner.SliceTime[0].Time.Location())
+		assert.Equal(t, time.Local, scanner.Slice[0].Time.Location())
 	})
 }
