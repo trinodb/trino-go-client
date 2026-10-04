@@ -972,7 +972,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(trino.NullSliceString{}),
+			reflect.TypeOf(trino.NullSlice[sql.NullString]{}),
 		},
 		{
 			"ARRAY(ARRAY(VARCHAR(1)))",
@@ -981,7 +981,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(trino.NullSlice2String{}),
+			reflect.TypeOf(trino.NullSlice[trino.NullSlice[sql.NullString]]{}),
 		},
 		{
 			"ARRAY(ARRAY(ARRAY(VARCHAR(1))))",
@@ -990,7 +990,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(trino.NullSlice3String{}),
+			reflect.TypeOf(trino.NullSlice[trino.NullSlice[trino.NullSlice[sql.NullString]]]{}),
 		},
 		{
 			"MAP(VARCHAR(1), INTEGER)",
@@ -999,7 +999,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(trino.NullMap{}),
+			reflect.TypeOf(trino.NullMapOf[sql.NullString, sql.NullInt32]{}),
 		},
 		{
 			"ARRAY(MAP(VARCHAR(1), INTEGER))",
@@ -1008,7 +1008,7 @@ func TestQueryColumns(t *testing.T) {
 			0,
 			false,
 			0,
-			reflect.TypeOf(trino.NullSliceMap{}),
+			reflect.TypeOf(trino.NullSlice[trino.NullMapOf[sql.NullString, sql.NullInt32]]{}),
 		},
 		{
 			"ROW(VARCHAR(1), INTEGER)",
@@ -1056,6 +1056,17 @@ func TestQueryColumns(t *testing.T) {
 	}
 
 	assert.Equal(t, expectedTypes, actualTypes)
+
+	require.True(t, rows.Next())
+	dests := make([]any, len(columnTypes))
+	for i, column := range columnTypes {
+		dests[i] = reflect.New(column.ScanType()).Interface()
+	}
+	require.NoError(t, rows.Scan(dests...), "every scan type must accept the value of its column")
+	assert.Equal(t, trino.NullSlice[trino.NullMapOf[sql.NullString, sql.NullInt32]]{Slice: []trino.NullMapOf[sql.NullString, sql.NullInt32]{
+		{Map: map[sql.NullString]sql.NullInt32{{String: "a", Valid: true}: {Int32: 1, Valid: true}}, Valid: true},
+		{Map: map[sql.NullString]sql.NullInt32{{String: "b", Valid: true}: {Int32: 2, Valid: true}}, Valid: true},
+	}, Valid: true}, *dests[28].(*trino.NullSlice[trino.NullMapOf[sql.NullString, sql.NullInt32]]))
 }
 
 func TestMaxGoPrecisionDateTime(t *testing.T) {
