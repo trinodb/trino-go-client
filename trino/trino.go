@@ -634,8 +634,8 @@ func (c *Config) validate(serverURL *url.URL) error {
 	if c.HTTPClient != nil && (c.CustomClientName != "" || c.SSLCert != "" || c.SSLCertPath != "" || hasClientCert || c.SSLVerification != "") {
 		return errors.New("trino: client configuration error, HTTPClient cannot be combined with a custom client, SSL certificates or SSLVerification; configure its transport with Config.TLSConfig instead")
 	}
-	if c.CustomClientName != "" && (c.SSLCert != "" || c.SSLCertPath != "" || hasClientCert) {
-		return errors.New("trino: client configuration error, a custom client cannot be specific together with a custom SSL certificate")
+	if err := c.validateCustomClientTLS(); err != nil {
+		return err
 	}
 	if c.SSLCertPath != "" {
 		if !isSSL {
@@ -717,6 +717,19 @@ func validateMapKeys(parameter string, entries map[string]string) error {
 		}
 	}
 	return nil
+}
+
+// validateCustomClientTLS rejects TLS settings a custom client would ignore,
+// since its own transport decides how to verify the coordinator.
+func (c *Config) validateCustomClientTLS() error {
+	if c.CustomClientName == "" {
+		return nil
+	}
+	hasClientCert := c.SSLClientCert != "" || c.SSLClientCertPath != "" || c.SSLClientKey != "" || c.SSLClientKeyPath != ""
+	if c.SSLCert == "" && c.SSLCertPath == "" && !hasClientCert && c.SSLVerification == "" {
+		return nil
+	}
+	return fmt.Errorf("trino: client configuration error, %s, %s, client certificates and %s cannot be combined with a custom client; configure TLS on its transport instead", sslCertConfig, sslCertPathConfig, sslVerificationConfig)
 }
 
 // validateProxy mirrors the JDBC driver, where httpProxy and socksProxy are
@@ -1203,6 +1216,9 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 		return nil, fmt.Errorf("trino: invalid server URL: %w", err)
 	}
 	if err := conf.validateExternalAuthentication(serverURL); err != nil {
+		return nil, err
+	}
+	if err := conf.validateCustomClientTLS(); err != nil {
 		return nil, err
 	}
 	if err := conf.validateProxy(); err != nil {

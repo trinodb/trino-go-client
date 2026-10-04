@@ -502,7 +502,12 @@ Default:        empty (defaults to http.DefaultClient)
 ```
 
 The `custom_client` parameter allows the use of custom `http.Client` for the
-communication with Trino.
+communication with Trino. Its transport decides how to verify the
+coordinator and how to reach it, so the driver rejects `SSLCert`,
+`SSLCertPath`, the client certificate parameters, `SSLVerification`,
+`httpProxy` and `socksProxy` combined with it, instead of ignoring them.
+Configure TLS on the client's transport, for example with the `tls.Config`
+that `Config.TLSConfig` builds.
 
 The default client does not follow HTTP redirects, because a redirect would
 carry the `X-Trino-*` headers, including extra credentials, to a host other
@@ -558,8 +563,9 @@ Default:        empty (the system trust store is used)
 ```
 
 An additional CA certificate the driver should trust, as a file path or as
-inline PEM content; only one of the pair may be set. Requires HTTPS, and is
-ignored when `custom_client` is set.
+inline PEM content; only one of the pair may be set. Requires HTTPS, and
+cannot be combined with `custom_client`, whose transport has its own TLS
+configuration.
 
 ##### `SSLClientCertPath` / `SSLClientCert` and `SSLClientKeyPath` / `SSLClientKey`
 
@@ -572,7 +578,7 @@ Default:        empty (no client certificate is presented)
 A PEM client certificate and its private key, for TLS client authentication
 (mutual TLS). The certificate and the key must each be given as either a path
 or inline content, not both, and the certificate and key must be set
-together. Requires HTTPS, and is ignored when `custom_client` is set.
+together. Requires HTTPS, and cannot be combined with `custom_client`.
 
 ```go
 db, err := sql.Open("trino", "https://user@localhost:8080"+
@@ -593,7 +599,8 @@ the JDBC driver's `SSLVerification` property. `FULL` validates the
 certificate chain and the hostname. `CA` validates the certificate chain but
 not the hostname. `NONE` disables certificate validation entirely and must
 only be used for development, since it also allows a network attacker to
-intercept the connection. Requires HTTPS.
+intercept the connection. Requires HTTPS, and cannot be combined with
+`custom_client`.
 
 ##### `httpProxy` / `socksProxy`
 
