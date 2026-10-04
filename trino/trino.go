@@ -3762,15 +3762,15 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 }
 
 type typeConverter struct {
-	typeName    string
-	parsedType  []string
-	scanType    reflect.Type
-	precision   optionalInt64
-	scale       optionalInt64
-	size        optionalInt64
-	location    *time.Location
-	signature   typeSignature
-	containsRow bool
+	typeName       string
+	parsedType     []string
+	scanType       reflect.Type
+	precision      optionalInt64
+	scale          optionalInt64
+	size           optionalInt64
+	location       *time.Location
+	signature      typeSignature
+	convertsNested bool
 }
 
 type optionalInt64 struct {
@@ -3786,11 +3786,11 @@ func newOptionalInt64(value int64) optionalInt64 {
 // a time zone are interpreted in location.
 func newTypeConverter(typeName string, signature typeSignature, location *time.Location) (*typeConverter, error) {
 	result := &typeConverter{
-		typeName:    typeName,
-		parsedType:  getNestedTypes([]string{}, signature),
-		location:    location,
-		signature:   signature,
-		containsRow: containsRow(signature),
+		typeName:       typeName,
+		parsedType:     getNestedTypes([]string{}, signature),
+		location:       location,
+		signature:      signature,
+		convertsNested: needsNestedConversion(signature),
 	}
 	var err error
 	result.scanType, err = getScanType(result.parsedType)
@@ -3843,20 +3843,21 @@ func getNestedTypes(types []string, signature typeSignature) []string {
 	return types
 }
 
-// containsRow reports whether a type is, or contains, a ROW, including
-// through ARRAY and MAP.
-func containsRow(signature typeSignature) bool {
+// needsNestedConversion reports whether a type is, or contains through ARRAY
+// and MAP, a type whose values the JSON response does not carry in the shape
+// the driver returns: a ROW.
+func needsNestedConversion(signature typeSignature) bool {
 	if signature.RawType == "row" {
 		return true
 	}
 	for _, arg := range signature.Arguments {
 		switch arg.Kind {
 		case KIND_TYPE:
-			if containsRow(arg.typeSignature) {
+			if needsNestedConversion(arg.typeSignature) {
 				return true
 			}
 		case KIND_NAMED_TYPE:
-			if containsRow(arg.namedTypeSignature.TypeSignature) {
+			if needsNestedConversion(arg.namedTypeSignature.TypeSignature) {
 				return true
 			}
 		}
@@ -3958,18 +3959,18 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
 	switch c.parsedType[0] {
 	case "row":
-		return convertRows(c.signature, v, c.location)
+		return convertNested(c.signature, v, c.location)
 	case "map":
-		if c.containsRow {
-			return convertRows(c.signature, v, c.location)
+		if c.convertsNested {
+			return convertNested(c.signature, v, c.location)
 		}
 		if err := validateMap(v); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "array":
-		if c.containsRow {
-			return convertRows(c.signature, v, c.location)
+		if c.convertsNested {
+			return convertNested(c.signature, v, c.location)
 		}
 		if err := validateSlice(v); err != nil {
 			return nil, err
@@ -4029,11 +4030,11 @@ func convertScalar(rawType string, v interface{}, location *time.Location) (inte
 	}
 }
 
-// convertRows walks a value that is, or contains, a ROW, converting each
-// field the way convertScalar would and turning every ROW into a Row.
-// Values that don't contain a ROW are never passed here; they keep the
-// plain pass-through behavior in ConvertValue.
-func convertRows(signature typeSignature, v interface{}, location *time.Location) (interface{}, error) {
+// convertNested walks a value whose type needsNestedConversion, converting
+// each field and element the way convertScalar would and turning every ROW
+// into a Row. Other values are never passed here; they keep the plain
+// pass-through behavior in ConvertValue.
+func convertNested(signature typeSignature, v interface{}, location *time.Location) (interface{}, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -4053,7 +4054,7 @@ func convertRows(signature typeSignature, v interface{}, location *time.Location
 			if row.names[i] == "" {
 				row.names[i] = "field" + strconv.Itoa(i)
 			}
-			converted, err := convertRows(arg.TypeSignature, field, location)
+			converted, err := convertNested(arg.TypeSignature, field, location)
 			if err != nil {
 				return nil, err
 			}
@@ -4069,7 +4070,7 @@ func convertRows(signature typeSignature, v interface{}, location *time.Location
 		converted := make([]interface{}, len(elems))
 		for i, elem := range elems {
 			var err error
-			if converted[i], err = convertRows(elementType, elem, location); err != nil {
+			if converted[i], err = convertNested(elementType, elem, location); err != nil {
 				return nil, err
 			}
 		}
@@ -4083,7 +4084,7 @@ func convertRows(signature typeSignature, v interface{}, location *time.Location
 		converted := make(map[string]interface{}, len(m))
 		for k, elem := range m {
 			var err error
-			if converted[k], err = convertRows(valueType, elem, location); err != nil {
+			if converted[k], err = convertNested(valueType, elem, location); err != nil {
 				return nil, err
 			}
 		}
