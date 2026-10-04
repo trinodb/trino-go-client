@@ -395,6 +395,7 @@ type Config struct {
 	HTTPClient      *http.Client    `dsn:"-"` // Client for every request, which never follows redirects (optional)
 	RedirectHandler RedirectHandler `dsn:"-"` // Sends the user to the external authentication URL (optional, default is OpenBrowser)
 	TokenCache      TokenCache      `dsn:"-"` // Keeps the external authentication token (optional, default is in memory, per Connector)
+	KerberosClient  *client.Client  `dsn:"-"` // Logged-in Kerberos client used instead of a keytab or credential cache, shared by all connections (optional, requires KerberosEnabled)
 }
 
 func (c *Config) applyDefaults() {
@@ -882,6 +883,9 @@ func (c *Config) FormatDSN() (string, error) {
 	}
 	if c.TokenCache != nil {
 		return "", errors.New("trino: TokenCache cannot be expressed in a DSN, use NewConnector")
+	}
+	if c.KerberosClient != nil {
+		return "", errors.New("trino: KerberosClient cannot be expressed in a DSN, use NewConnector")
 	}
 	c.applyDefaults()
 
