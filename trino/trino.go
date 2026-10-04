@@ -80,9 +80,6 @@ import (
 	"unicode"
 
 	"github.com/jcmturner/gokrb5/v8/client"
-	"github.com/jcmturner/gokrb5/v8/config"
-	"github.com/jcmturner/gokrb5/v8/keytab"
-	"github.com/jcmturner/gokrb5/v8/spnego"
 	"github.com/klauspost/compress/zstd"
 	"github.com/pierrec/lz4/v4"
 )
@@ -1256,19 +1253,9 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 
 	var kerberosClient *client.Client
 	if conf.KerberosEnabled {
-		kt, err := keytab.Load(conf.KerberosKeytabPath)
+		kerberosClient, err = newKerberosClient(conf)
 		if err != nil {
-			return nil, fmt.Errorf("trino: Error loading Keytab: %w", err)
-		}
-		confKerb, err := config.Load(conf.KerberosConfigPath)
-		if err != nil {
-			return nil, fmt.Errorf("trino: Error loading krb config: %w", err)
-		}
-
-		kerberosClient = client.NewWithKeytab(conf.KerberosPrincipal, conf.KerberosRealm, kt, confKerb)
-		loginErr := kerberosClient.Login()
-		if loginErr != nil {
-			return nil, fmt.Errorf("trino: Error login to KDC: %v", loginErr)
+			return nil, err
 		}
 	}
 
@@ -1753,13 +1740,8 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 	req.Header.Set(userAgentHeader, userAgent)
 
 	if c.kerberosEnabled {
-		remoteServiceName := "trino"
-		if c.kerberosRemoteServiceName != "" {
-			remoteServiceName = c.kerberosRemoteServiceName
-		}
-		err = spnego.SetSPNEGOHeader(c.kerberosClient, req, remoteServiceName+"/"+req.URL.Hostname())
-		if err != nil {
-			return nil, fmt.Errorf("error setting client SPNEGO header: %w", err)
+		if err := c.setSPNEGOHeader(req); err != nil {
+			return nil, err
 		}
 	}
 
