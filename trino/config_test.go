@@ -136,6 +136,22 @@ func TestFormatDSN(t *testing.T) {
 			want: "https://foobar@localhost:8080?SSLVerification=CA&source=trino-go-client",
 		},
 		{
+			name: "HTTP proxy",
+			config: &Config{
+				ServerURI: "http://foobar@localhost:8080",
+				HTTPProxy: "proxy.example.com:3128",
+			},
+			want: "http://foobar@localhost:8080?httpProxy=proxy.example.com%3A3128&source=trino-go-client",
+		},
+		{
+			name: "SOCKS proxy",
+			config: &Config{
+				ServerURI:  "http://foobar@localhost:8080",
+				SOCKSProxy: "[::1]:1080",
+			},
+			want: "http://foobar@localhost:8080?socksProxy=%5B%3A%3A1%5D%3A1080&source=trino-go-client",
+		},
+		{
 			name: "extra credentials",
 			config: &Config{
 				ServerURI:        "http://foobar@localhost:8080",
@@ -295,6 +311,22 @@ func TestFormatDSNRejects(t *testing.T) {
 				SSLVerification: SSLVerificationNone,
 			},
 		},
+		{
+			name: "HTTP and SOCKS proxy together",
+			config: &Config{
+				ServerURI:  "http://foobar@localhost:8090",
+				HTTPProxy:  "proxy:3128",
+				SOCKSProxy: "proxy:1080",
+			},
+		},
+		{
+			name: "proxy with a custom client",
+			config: &Config{
+				ServerURI:        "http://foobar@localhost:8090",
+				CustomClientName: "client_name",
+				HTTPProxy:        "proxy:3128",
+			},
+		},
 	}
 
 	for _, tc := range cases {
@@ -426,6 +458,22 @@ func TestParseDSNToConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "HTTP with HTTP proxy",
+			config: &Config{
+				ServerURI: "http://localhost:8080",
+				Source:    "trino-go-client",
+				HTTPProxy: "proxy.example.com:3128",
+			},
+		},
+		{
+			name: "HTTPS with SOCKS proxy",
+			config: &Config{
+				ServerURI:  "https://localhost:8080",
+				Source:     "trino-go-client",
+				SOCKSProxy: "10.0.0.1:1080",
+			},
+		},
+		{
 			name: "HTTP with explicit default boolean values",
 			config: &Config{
 				ServerURI:                  "http://localhost:8080",
@@ -474,6 +522,8 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"SSLClientKeyPath=/path/to/client-key.pem&" +
 		"SSLClientKey=-----BEGIN%20PRIVATE%20KEY-----test-client-key-----END%20PRIVATE%20KEY-----&" +
 		"SSLVerification=CA&" +
+		"httpProxy=proxy.example.com%3A3128&" +
+		"socksProxy=proxy.example.com%3A1080&" +
 		"accessToken=jwt-token-here&" +
 		"explicitPrepare=false&" +
 		"forwardAuthorizationHeader=true&" +
@@ -539,6 +589,8 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, "/path/to/client-key.pem", config.SSLClientKeyPath)
 	assert.Equal(t, "-----BEGIN PRIVATE KEY-----test-client-key-----END PRIVATE KEY-----", config.SSLClientKey)
 	assert.Equal(t, SSLVerificationCA, config.SSLVerification)
+	assert.Equal(t, "proxy.example.com:3128", config.HTTPProxy)
+	assert.Equal(t, "proxy.example.com:1080", config.SOCKSProxy)
 	assert.Equal(t, "jwt-token-here", config.AccessToken)
 	assert.Equal(t, true, config.DisableExplicitPrepare)
 	assert.Equal(t, true, config.ForwardAuthorizationHeader)
