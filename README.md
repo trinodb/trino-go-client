@@ -975,8 +975,9 @@ When reading response rows, the driver supports most Trino data types, except:
   precision, or convert the value to a string that then can be parsed manually.
 * `DATE`, `TIME` and `TIMESTAMP` without a time zone - returned as `time.Time`
   in the zone of the connection (see the `timezone` parameter), which is the
-  zone the server used to produce them. Arrays of these types are scanned with
-  `trino.NullSliceTime` and its 2D and 3D variants; set their `Location` field
+  zone the server used to produce them. When scanning arrays or maps of these
+  types with `trino.NullSlice` or `trino.NullMapOf`, or the deprecated
+  `trino.NullSliceTime` and its 2D and 3D variants, set their `Location` field
   to the same zone, as they use `time.Local` by default.
 * `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use
   `sql.NullString` for nullable columns
@@ -991,23 +992,78 @@ When reading response rows, the driver supports most Trino data types, except:
   returned as `[]byte`, decoded from the base64 form the server sends, the
   same as `VARBINARY` and as the Java client does
 
-For reading nullable columns, use:
-* `trino.NullTime`
-* `trino.NullMap` - which stores a map of `map[string]interface{}`
-or similar structs from the `database/sql` package, like `sql.NullInt64`
+For reading nullable columns, use `trino.NullTime` or similar structs from
+the `database/sql` package, like `sql.NullInt64`.
 
-To read query results containing arrays or maps, pass one of the following
-structs to the `Scan()` function:
+To read `ARRAY`, `MAP` and `ROW` values, use the generic scanners, which nest
+to any depth:
 
-* `trino.NullSliceBool`
-* `trino.NullSliceString`
-* `trino.NullSliceInt64`
-* `trino.NullSliceFloat64`
-* `trino.NullSliceTime`
-* `trino.NullSliceMap`
+* `trino.NullSlice[T]` for an `ARRAY`, with its elements in `Slice`
+* `trino.NullMapOf[K, V]` for a `MAP`, with its entries in `Map`
+* `trino.NullRow[T]` for a `ROW`, with its fields stored in the struct `T`
+  in `Row`
 
-For two or three dimensional arrays, use `trino.NullSlice2Bool` and
-`trino.NullSlice3Bool` or equivalents for other data types.
+Each one has a `Valid` field that is `false` for a `NULL` value, at every
+level, so a `NULL` inner array is told apart from an empty one:
+
+```go
+var tags trino.NullSlice[trino.NullSlice[sql.NullString]]
+err := db.QueryRow("SELECT ARRAY[ARRAY['a', NULL], NULL]").Scan(&tags)
+// tags.Slice[0].Slice == []sql.NullString{{String: "a", Valid: true}, {}}
+// tags.Slice[1].Valid == false
+
+var scores trino.NullMapOf[string, trino.NullSlice[int64]]
+err = db.QueryRow("SELECT MAP(ARRAY['a'], ARRAY[ARRAY[BIGINT '1', 2]])").Scan(&scores)
+// scores.Map["a"].Slice == []int64{1, 2}
+```
+
+Elements, map keys and values, and row fields can be `bool`, `string`,
+`int64` and the narrower integer types, `float64`, `float32`, `time.Time`,
+`[]byte`, `map[string]interface{}`, `[]interface{}` or `interface{}`, the
+nullable types from `database/sql` (`sql.NullBool`, `sql.NullString`,
+`sql.NullInt64`, `sql.NullInt32`, `sql.NullInt16`, `sql.NullFloat64`,
+`sql.NullTime`), `trino.NullTime`, `trino.NullBinary`, another generic
+scanner, or any other type that implements `sql.Scanner`. A `NULL` element
+scanned into a plain type that cannot hold it, like `int64`, is an error. Set
+the `Location` field of `trino.NullSlice` and `trino.NullMapOf` to the zone of
+the connection for elements without a time zone, as they use `time.Local` by
+default; it is passed down to nested scanners. The map scanner is called
+`NullMapOf` because `trino.NullMap` is the name of the older, non-generic map
+scanner.
+
+`trino.NullRow[T]` maps each `ROW` field to an exported field of the struct
+`T`, by the name in a `trino:"name"` struct tag, or by the Go field name,
+preferring an exact match and falling back to one ignoring case. A field
+tagged `trino:"-"` is skipped. An anonymous `ROW` field is named `field<i>`,
+where `i` is its zero-based position, so it maps to a struct field called
+`Field0`, `Field1`, and so on. A `ROW` field without a matching struct field
+is an error; a struct field without a matching `ROW` field keeps its zero
+value. Use `trino.NullRow` for nested rows too:
+
+```go
+type Point struct {
+	X     int64 `trino:"x"`
+	Label sql.NullString
+}
+
+var points trino.NullSlice[trino.NullRow[Point]]
+err := db.QueryRow("SELECT ARRAY[CAST(ROW(1, 'a') AS ROW(x INTEGER, label VARCHAR)), NULL]").Scan(&points)
+// points.Slice[0].Row == Point{X: 1, Label: sql.NullString{String: "a", Valid: true}}
+// points.Slice[1].Valid == false
+```
+
+The following hand-written scanners are deprecated in favor of the generic
+ones, but keep working:
+
+* `trino.NullMap`, replaced by `trino.NullMapOf[string, interface{}]`
+* `trino.NullSliceBool`, `trino.NullSliceString`, `trino.NullSliceInt64`,
+  `trino.NullSliceFloat64`, `trino.NullSliceTime` and `trino.NullSliceMap`,
+  replaced by `trino.NullSlice[T]` with `sql.NullBool`, `sql.NullString`,
+  `sql.NullInt64`, `sql.NullFloat64`, `trino.NullTime` or
+  `trino.NullMapOf[string, interface{}]` elements
+* their two and three dimensional variants, like `trino.NullSlice2Bool` and
+  `trino.NullSlice3Bool`, replaced by nested `trino.NullSlice` values; unlike
+  the generic ones, they turn a `NULL` inner array into an empty one
 
 To read a `ROW` value, scan into a `trino.Row`:
 
@@ -1029,8 +1085,9 @@ well: scan an `ARRAY(ROW(...))` into an `interface{}`, which holds a
 `[]interface{}` of `trino.Row` values, or `nil` for a `NULL` array, and a
 `MAP` with `ROW` values holds `trino.Row` values in its `trino.NullMap.Map`.
 `VARIANT` elements and fields are also converted at any depth, into
-`trino.Variant` values. An `ARRAY` or `MAP` that never contains a `ROW`
-or a `VARIANT` is unaffected: its elements
+`trino.Variant` values. To map a `ROW` onto a struct instead, use
+`trino.NullRow[T]` described above. An `ARRAY` or `MAP` that never contains
+a `ROW` or a `VARIANT` is unaffected: its elements
 keep the raw shape the JSON response used, as described above, including
 `VARBINARY` staying a base64-encoded string.
 
