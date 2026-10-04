@@ -174,6 +174,7 @@ func (c *Conn) setSPNEGOHeader(req *http.Request) error {
 	}
 	err = spnego.SetSPNEGOHeader(c.kerberosClient, req, principal)
 	if err != nil {
+		c.markUnusable()
 		return fmt.Errorf("error setting client SPNEGO header: %w", err)
 	}
 	return nil

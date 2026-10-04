@@ -1156,6 +1156,15 @@ func (c *Config) TLSConfig() (*tls.Config, error) {
 }
 
 // Conn is a Trino connection.
+//
+// A Conn holds no socket, since every request goes through the HTTP client, so
+// the only state that can break it for good is its Kerberos client. Once that
+// client fails to build a SPNEGO token, for example because the ticket in a
+// credential cache expired and the client has no keytab or password to log in
+// again, IsValid reports false and the pool replaces the connection with one
+// that reloads the keytab or credential cache. Transactions, authorization
+// and session state are cleared by ResetSession, and external authentication
+// tokens belong to the Connector, so neither makes a connection invalid.
 type Conn struct {
 	baseURL    string
 	auth       *url.Userinfo
@@ -1166,9 +1175,11 @@ type Conn struct {
 	// listed for the segment, never the session headers or credentials.
 	segmentHTTPClient http.Client
 	// httpHeadersMu guards httpHeaders, which the spooling heartbeat reads
-	// while the query polling updates it from the server responses
+	// while the query polling updates it from the server responses, and
+	// unusable, which the spooling heartbeat can set
 	httpHeadersMu              sync.RWMutex
 	httpHeaders                http.Header
+	unusable                   bool
 	extraCredentials           []string
 	resourceEstimates          map[string]string
 	kerberosEnabled            bool
@@ -1206,6 +1217,7 @@ var (
 	_ driver.ConnBeginTx        = &Conn{}
 	_ driver.SessionResetter    = &Conn{}
 	_ driver.Pinger             = &Conn{}
+	_ driver.Validator          = &Conn{}
 )
 
 // formatRolesFromMap formats roles from a map into the Trino header format
@@ -1563,6 +1575,9 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 func (c *Conn) ResetSession(ctx context.Context) error {
 	c.httpHeadersMu.Lock()
 	defer c.httpHeadersMu.Unlock()
+	if c.unusable {
+		return driver.ErrBadConn
+	}
 	c.httpHeaders.Del(trinoTransactionHeader)
 	c.resetAuthorization()
 	c.setConfiguredRolesHeader()
@@ -1575,6 +1590,30 @@ func (c *Conn) ResetSession(ctx context.Context) error {
 	}
 	c.sessionTimeZone = nil
 	return nil
+}
+
+// IsValid implements the driver.Validator interface. It does no network I/O;
+// Ping checks the server and the credentials.
+func (c *Conn) IsValid() bool {
+	c.httpHeadersMu.RLock()
+	defer c.httpHeadersMu.RUnlock()
+	return !c.unusable
+}
+
+func (c *Conn) markUnusable() {
+	c.httpHeadersMu.Lock()
+	defer c.httpHeadersMu.Unlock()
+	c.unusable = true
+}
+
+// unsentRequestError makes database/sql retry on another connection a
+// request that failed before it was sent because this connection is no
+// longer usable. A request the server may have seen must not be retried.
+func (c *Conn) unsentRequestError(err error) error {
+	if c.IsValid() {
+		return err
+	}
+	return fmt.Errorf("%w: %w", driver.ErrBadConn, err)
 }
 
 // transactionID returns the ID of the transaction open on this connection, or
@@ -2750,7 +2789,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	req, err := st.conn.newRequest(ctx, "POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, st.conn.unsentRequestError(err)
 	}
 
 	resp, err := st.conn.roundTrip(ctx, req)
