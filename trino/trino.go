@@ -4160,7 +4160,7 @@ func newTypeConverter(typeName string, signature typeSignature, location *time.L
 		convertsNested: needsNestedConversion(signature),
 	}
 	var err error
-	result.scanType, err = getScanType(result.parsedType)
+	result.scanType, err = getScanType(signature)
 	if err != nil {
 		return nil, err
 	}
@@ -4232,27 +4232,10 @@ func needsNestedConversion(signature typeSignature) bool {
 	return false
 }
 
-func getScanType(typeNames []string) (reflect.Type, error) {
+func getScanType(signature typeSignature) (reflect.Type, error) {
+	typeNames := getNestedTypes([]string{}, signature)
 	var v interface{}
 	switch typeNames[0] {
-	case "boolean":
-		v = sql.NullBool{}
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "color", "unknown":
-		v = sql.NullString{}
-	case "variant":
-		v = Variant{}
-	case "varbinary":
-		v = []byte{}
-	case "tinyint", "smallint":
-		v = sql.NullInt32{}
-	case "integer":
-		v = sql.NullInt32{}
-	case "bigint":
-		v = sql.NullInt64{}
-	case "real", "double":
-		v = sql.NullFloat64{}
-	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
-		v = sql.NullTime{}
 	case "map":
 		v = NullMap{}
 	case "array":
@@ -4310,6 +4293,38 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 				// if this is a 4 or more dimensional array, scan type will be an empty interface
 			}
 		}
+	default:
+		return scalarScanType(typeNames[0]), nil
+	}
+	if v == nil {
+		return reflect.TypeOf(new(interface{})).Elem(), nil
+	}
+	return reflect.TypeOf(v), nil
+}
+
+// scalarScanType returns the type a column of rawType, other than ARRAY and
+// MAP, scans into.
+func scalarScanType(rawType string) reflect.Type {
+	var v interface{}
+	switch rawType {
+	case "boolean":
+		v = sql.NullBool{}
+	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "color", "unknown":
+		v = sql.NullString{}
+	case "variant":
+		v = Variant{}
+	case "varbinary":
+		v = []byte{}
+	case "tinyint", "smallint":
+		v = sql.NullInt32{}
+	case "integer":
+		v = sql.NullInt32{}
+	case "bigint":
+		v = sql.NullInt64{}
+	case "real", "double":
+		v = sql.NullFloat64{}
+	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
+		v = sql.NullTime{}
 	case "row":
 		v = Row{}
 	case "KdbTree", "BingTile":
@@ -4319,9 +4334,9 @@ func getScanType(typeNames []string) (reflect.Type, error) {
 		v = []byte{}
 	}
 	if v == nil {
-		return reflect.TypeOf(new(interface{})).Elem(), nil
+		return reflect.TypeOf(new(interface{})).Elem()
 	}
-	return reflect.TypeOf(v), nil
+	return reflect.TypeOf(v)
 }
 
 // ConvertValue implements the driver.ValueConverter interface.

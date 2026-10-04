@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -682,20 +681,20 @@ func TestNewTypeConverterRejectsWrongArgumentKinds(t *testing.T) {
 
 func TestGetScanTypeRejectsTruncatedArraySignatures(t *testing.T) {
 	t.Parallel()
-	for _, typeNames := range [][]string{
-		{"array"},
-		{"array", "array"},
-		{"array", "array", "array"},
+	for name, signature := range map[string]typeSignature{
+		"array":             {RawType: "array"},
+		"array/array":       arrayType(typeSignature{RawType: "array"}),
+		"array/array/array": arrayType(arrayType(typeSignature{RawType: "array"})),
 	} {
-		t.Run(strings.Join(typeNames, "/"), func(t *testing.T) {
-			_, err := getScanType(typeNames)
+		t.Run(name, func(t *testing.T) {
+			_, err := parsedScanType(t, signature)
 
 			require.ErrorIs(t, err, ErrInvalidResponseType)
 		})
 	}
 
 	t.Run("four dimensions scan as interface", func(t *testing.T) {
-		scanType, err := getScanType([]string{"array", "array", "array", "array", "integer"})
+		scanType, err := parsedScanType(t, arrayType(arrayType(arrayType(arrayType(scalarType("integer"))))))
 
 		require.NoError(t, err)
 		assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType)
@@ -717,7 +716,7 @@ func TestGetScanTypeForNonStandardTypes(t *testing.T) {
 		"tdigest":            reflect.TypeOf([]byte{}),
 	} {
 		t.Run(typeName, func(t *testing.T) {
-			scanType, err := getScanType([]string{typeName})
+			scanType, err := parsedScanType(t, scalarType(typeName))
 
 			require.NoError(t, err)
 			assert.Equal(t, want, scanType)
@@ -727,10 +726,18 @@ func TestGetScanTypeForNonStandardTypes(t *testing.T) {
 
 func TestGetScanTypeForRowArray(t *testing.T) {
 	t.Parallel()
-	scanType, err := getScanType([]string{"array", "row"})
+	scanType, err := parsedScanType(t, arrayType(rowType()))
 
 	require.NoError(t, err)
 	assert.Equal(t, reflect.TypeOf(new(interface{})).Elem(), scanType, "kept as interface{} so ColumnTypeScanType does not change for existing callers")
+}
+
+// parsedScanType decodes the type arguments of signature the way a response
+// is decoded, before passing it to getScanType.
+func parsedScanType(t *testing.T, signature typeSignature) (reflect.Type, error) {
+	t.Helper()
+	require.NoError(t, unmarshalArguments(&signature))
+	return getScanType(signature)
 }
 
 func TestRowScan(t *testing.T) {
