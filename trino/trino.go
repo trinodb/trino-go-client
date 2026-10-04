@@ -1160,6 +1160,11 @@ type Conn struct {
 	baseURL    string
 	auth       *url.Userinfo
 	httpClient http.Client
+	// segmentHTTPClient follows redirects, which the coordinator issues for
+	// segment downloads in the COORDINATOR_STORAGE_REDIRECT and WORKER_PROXY
+	// retrieval modes. Segment requests carry only the headers the server
+	// listed for the segment, never the session headers or credentials.
+	segmentHTTPClient http.Client
 	// httpHeadersMu guards httpHeaders, which the spooling heartbeat reads
 	// while the query polling updates it from the server responses
 	httpHeadersMu              sync.RWMutex
@@ -1315,6 +1320,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 			httpClient = &http.Client{Transport: transport}
 		}
 	}
+	segmentHTTPClient := httpClient
 	if conf.CustomClientName == "" {
 		httpClient = withoutRedirects(httpClient)
 	}
@@ -1331,6 +1337,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
 		httpClient:                 *httpClient,
+		segmentHTTPClient:          *segmentHTTPClient,
 		httpHeaders:                make(http.Header),
 		kerberosClient:             kerberosClient,
 		kerberosEnabled:            conf.KerberosEnabled,
@@ -3904,7 +3911,7 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 
 					segmentFetcher := &SegmentFetcher{
 						ctx:             ctx,
-						httpClient:      st.conn.httpClient,
+						httpClient:      st.conn.segmentHTTPClient,
 						spooledMetadata: metadata,
 						acks:            &st.waitSegmentAcks,
 						failedAcks:      &st.failedSegmentAcks,

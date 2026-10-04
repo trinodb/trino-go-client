@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync"
@@ -612,6 +613,70 @@ func TestSpoolingProtocolAcknowledgesSegments(t *testing.T) {
 		acked := fc.ackedSegments()
 		return slices.Contains(acked, "seg0") && slices.Contains(acked, "seg1")
 	}, 5*time.Second, time.Millisecond, "every downloaded segment must be acknowledged")
+}
+
+// In the COORDINATOR_STORAGE_REDIRECT and WORKER_PROXY retrieval modes the
+// coordinator answers the segment download with a redirect to the storage or
+// to a worker, which needs the segment headers to open the segment.
+func TestSpoolingProtocolFollowsSegmentRedirects(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusSeeOther, http.StatusFound, http.StatusTemporaryRedirect} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			var mu sync.Mutex
+			var storageRequests []http.Header
+			storage := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				storageRequests = append(storageRequests, r.Header.Clone())
+				mu.Unlock()
+				_, _ = w.Write([]byte("[[1000]]"))
+			}))
+			t.Cleanup(storage.Close)
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json",
+				spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+			))
+			fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, storage.URL+"/bucket/seg?signature=1", status)
+			})
+			db := fc.open(t, "?extra_credentials=secret:value")
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			assert.Equal(t, []int{1000}, collectInts(t, rows))
+			require.NoError(t, rows.Err())
+
+			mu.Lock()
+			defer mu.Unlock()
+			require.Len(t, storageRequests, 1)
+			header := storageRequests[0]
+			assert.Equal(t, "test", header.Get("test"), "the redirect target needs the segment headers")
+			for name := range header {
+				assert.NotContains(t, strings.ToLower(name), "x-trino", "session headers must not reach the redirect target")
+			}
+			assert.Empty(t, header.Get(authorizationHeader))
+			require.Eventually(t, func() bool {
+				return slices.Contains(fc.ackedSegments(), "seg")
+			}, 5*time.Second, time.Millisecond, "the coordinator still receives the acknowledgment")
+		})
+	}
+}
+
+func TestSpoolingProtocolStopsEndlessSegmentRedirects(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, r.URL.String(), http.StatusSeeOther)
+	})
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+	require.ErrorContains(t, rows.Err(), "stopped after 10 redirects")
 }
 
 func TestSpoolingProtocolSendsSegmentHeaders(t *testing.T) {
