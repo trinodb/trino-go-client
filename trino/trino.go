@@ -386,7 +386,8 @@ type Config struct {
 	ExternalAuthentication        bool           // Obtain a token through the server's external authentication, e.g. OAuth2, when it rejects a request (optional; DSN: externalAuthentication)
 	ExternalAuthenticationTimeout *time.Duration // Time the user has to authenticate (optional, default is 2m; DSN: externalAuthenticationTimeout)
 
-	KerberosCredentialCachePath string // Credential cache holding a ticket from kinit, used instead of a keytab (optional, default is KRB5CCNAME, then /tmp/krb5cc_<uid>, when no keytab is given)
+	KerberosCredentialCachePath     string // Credential cache holding a ticket from kinit, used instead of a keytab (optional, default is KRB5CCNAME, then /tmp/krb5cc_<uid>, when no keytab is given)
+	KerberosServicePrincipalPattern string // Coordinator service principal, with ${SERVICE} and ${HOST} replaced (optional, default is ${SERVICE}@${HOST})
 
 	// Fields below cannot be expressed in a DSN; pass them with NewConnector.
 
@@ -584,6 +585,10 @@ func ParseDSN(dsn string) (*Config, error) {
 
 	if ccache := query.Get(kerberosCredentialCachePathConfig); ccache != "" {
 		config.KerberosCredentialCachePath = ccache
+	}
+
+	if pattern := query.Get(kerberosServicePrincipalPatternConfig); pattern != "" {
+		config.KerberosServicePrincipalPattern = pattern
 	}
 
 	if sslCertPath := query.Get(sslCertPathConfig); sslCertPath != "" {
@@ -950,6 +955,9 @@ func (c *Config) FormatDSN() (string, error) {
 		if c.KerberosCredentialCachePath != "" {
 			query.Add(kerberosCredentialCachePathConfig, c.KerberosCredentialCachePath)
 		}
+		if c.KerberosServicePrincipalPattern != "" {
+			query.Add(kerberosServicePrincipalPatternConfig, c.KerberosServicePrincipalPattern)
+		}
 	}
 
 	// ensure consistent order of items
@@ -1144,7 +1152,7 @@ type Conn struct {
 	resourceEstimates          map[string]string
 	kerberosEnabled            bool
 	kerberosClient             *client.Client
-	kerberosRemoteServiceName  string
+	kerberosServicePrincipal   kerberosServicePrincipal
 	progressUpdater            ProgressUpdater
 	progressUpdaterPeriod      queryProgressCallbackPeriod
 	useExplicitPrepare         bool
@@ -1310,7 +1318,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 		httpHeaders:                make(http.Header),
 		kerberosClient:             kerberosClient,
 		kerberosEnabled:            conf.KerberosEnabled,
-		kerberosRemoteServiceName:  conf.KerberosRemoteServiceName,
+		kerberosServicePrincipal:   newKerberosServicePrincipal(conf),
 		useExplicitPrepare:         !conf.DisableExplicitPrepare,
 		forwardAuthorizationHeader: conf.ForwardAuthorizationHeader,
 		queryTimeout:               conf.QueryTimeout,

@@ -526,6 +526,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"KerberosRealm=REALM.COM&" +
 		"KerberosConfigPath=/etc/krb5.conf&" +
 		"KerberosCredentialCachePath=/tmp/krb5cc_1000&" +
+		"KerberosServicePrincipalPattern=HTTP%40%24%7BHOST%7D&" +
 		"SSLCertPath=/path/to/cert.pem&" +
 		"SSLCert=-----BEGIN%20CERTIFICATE-----test-cert-----END%20CERTIFICATE-----&" +
 		"SSLClientCertPath=/path/to/client-cert.pem&" +
@@ -595,6 +596,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, "REALM.COM", config.KerberosRealm)
 	assert.Equal(t, "/etc/krb5.conf", config.KerberosConfigPath)
 	assert.Equal(t, "/tmp/krb5cc_1000", config.KerberosCredentialCachePath)
+	assert.Equal(t, "HTTP@${HOST}", config.KerberosServicePrincipalPattern)
 	assert.Equal(t, "/path/to/cert.pem", config.SSLCertPath)
 	assert.Equal(t, "-----BEGIN CERTIFICATE-----test-cert-----END CERTIFICATE-----", config.SSLCert)
 	assert.Equal(t, "/path/to/client-cert.pem", config.SSLClientCertPath)

@@ -184,6 +184,79 @@ func TestKerberosCredentialCacheDSNRoundTrip(t *testing.T) {
 	assert.Equal(t, "/tmp/krb5cc_1000", parsed.KerberosCredentialCachePath)
 }
 
+func TestKerberosServicePrincipalPattern(t *testing.T) {
+	t.Parallel()
+	fc := newFakeTLSCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	krb5Files := newKerberosTestFiles(t, "alice", "HTTP/127.0.0.1")
+
+	db := openKerberos(t, fc, Config{
+		KerberosConfigPath:              krb5Files.config,
+		KerberosCredentialCachePath:     krb5Files.credentialCache,
+		KerberosServicePrincipalPattern: "HTTP@${HOST}",
+	})
+	rows, err := db.Query("SELECT 1")
+
+	require.NoError(t, err)
+	assert.Equal(t, []int{1}, collectInts(t, rows))
+	assert.Equal(t, "HTTP/127.0.0.1", requestedServicePrincipal(t, fc.capturedRequests()[0].header))
+}
+
+func TestKerberosServicePrincipalForHost(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		pattern     string
+		serviceName string
+		host        string
+		want        string
+	}{
+		{name: "defaults", host: "coordinator.example.com", want: "trino/coordinator.example.com"},
+		{name: "remote service name", serviceName: "presto", host: "coordinator.example.com", want: "presto/coordinator.example.com"},
+		{name: "host is lowercased", host: "Coordinator.Example.COM", want: "trino/coordinator.example.com"},
+		{name: "fixed host", pattern: "${SERVICE}@gateway.example.com", host: "coordinator.example.com", want: "trino/gateway.example.com"},
+		{name: "fixed service", pattern: "HTTP@${HOST}", host: "coordinator.example.com", want: "HTTP/coordinator.example.com"},
+		{name: "principal form", pattern: "${SERVICE}/${HOST}", host: "coordinator.example.com", want: "trino/coordinator.example.com"},
+		{name: "IPv6 literal", host: "::1", want: "trino/::1"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			principal := newKerberosServicePrincipal(&Config{
+				KerberosServicePrincipalPattern: tc.pattern,
+				KerberosRemoteServiceName:       tc.serviceName,
+			})
+			assert.Equal(t, tc.want, principal.forHost(tc.host))
+		})
+	}
+}
+
+func TestKerberosServicePrincipalPatternRejectsRealm(t *testing.T) {
+	t.Parallel()
+	_, err := NewConnector(&Config{
+		ServerURI:                       "https://localhost:8443",
+		KerberosEnabled:                 true,
+		KerberosServicePrincipalPattern: "${SERVICE}/${HOST}@EXAMPLE.COM",
+	})
+	require.ErrorContains(t, err, "names a realm")
+}
+
+func TestKerberosServicePrincipalPatternDSNRoundTrip(t *testing.T) {
+	t.Parallel()
+	conf := &Config{
+		ServerURI:                       "https://localhost:8443",
+		KerberosEnabled:                 true,
+		KerberosServicePrincipalPattern: "HTTP@${HOST}",
+	}
+
+	dsn, err := conf.FormatDSN()
+	require.NoError(t, err)
+	parsed, err := ParseDSN(dsn)
+	require.NoError(t, err)
+
+	assert.Equal(t, "HTTP@${HOST}", parsed.KerberosServicePrincipalPattern)
+}
+
 func openKerberos(t *testing.T, fc *fakeCoordinator, conf Config) *sql.DB {
 	t.Helper()
 	conf.ServerURI = fc.url()
