@@ -154,8 +154,9 @@ in the
 [Config](https://godoc.org/github.com/trinodb/trino-go-client/trino#Config)
 struct, or the matching DSN parameters: `KerberosEnabled`,
 `KerberosKeytabPath`, `KerberosCredentialCachePath`, `KerberosPrincipal`,
-`KerberosRealm`, `KerberosConfigPath`, `KerberosRemoteServiceName` and
-`KerberosServicePrincipalPattern`. Kerberos requires HTTPS.
+`KerberosRealm`, `KerberosConfigPath`, `KerberosRemoteServiceName`,
+`KerberosServicePrincipalPattern` and `KerberosUseCanonicalHostname`.
+Kerberos requires HTTPS.
 
 The driver logs in with the keytab in `KerberosKeytabPath`, or reuses a ticket
 from a credential cache, such as the one `kinit` writes. Without a keytab it
@@ -670,6 +671,32 @@ the Kerberos principal `service/host`, so the default asks for a ticket for
 principal name. The realm of the service comes from `domain_realm` in the
 krb5 configuration, or is the user's realm, and cannot be part of the
 pattern.
+
+##### `KerberosUseCanonicalHostname`
+
+```
+Type:           bool
+Valid values:   true, false
+Default:        true
+```
+
+`${HOST}` in
+[`KerberosServicePrincipalPattern`](#kerberosserviceprincipalpattern) is the
+canonical name of the coordinator host instead of the host in the URL, for a
+coordinator reached through a DNS alias or a load balancer. As in the JDBC
+driver, the host is resolved to an address, following CNAME records, and the
+first address is looked up in reverse DNS; without a reverse record the
+address itself is used. `localhost` and loopback addresses are replaced with
+the canonical name of the local machine, and requests fail with
+`Fully qualified name of localhost should not resolve to 'localhost'` when
+that resolves to `localhost` too, as on many laptops. The name is resolved
+once per connection and host. Set it to `false`, or set
+`Config.KerberosDisableCanonicalHostname`, to use the URL host as is.
+
+Earlier versions of this driver always used the URL host. If you reach the
+coordinator through a DNS alias and its service principal is registered for
+that alias, set `KerberosUseCanonicalHostname=false` to keep asking for the
+same ticket.
 
 ##### `query_timeout`
 

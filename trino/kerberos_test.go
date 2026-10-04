@@ -2,10 +2,12 @@ package trino
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/base64"
 	"encoding/binary"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -223,12 +225,108 @@ func TestKerberosServicePrincipalForHost(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			principal := newKerberosServicePrincipal(&Config{
-				KerberosServicePrincipalPattern: tc.pattern,
-				KerberosRemoteServiceName:       tc.serviceName,
+				KerberosServicePrincipalPattern:  tc.pattern,
+				KerberosRemoteServiceName:        tc.serviceName,
+				KerberosDisableCanonicalHostname: true,
 			})
-			assert.Equal(t, tc.want, principal.forHost(tc.host))
+			got, err := principal.forHost(t.Context(), tc.host)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
 		})
 	}
+}
+
+func TestKerberosCanonicalHostname(t *testing.T) {
+	t.Parallel()
+	resolver := fakeResolver{
+		hosts: map[string][]string{
+			"trino.example.com":  {"192.0.2.1", "192.0.2.2"},
+			"dev.example.com":    {"192.0.2.3"},
+			"unregistered.local": {"192.0.2.9"},
+			"loopback-only":      {"127.0.0.1"},
+		},
+		addrs: map[string][]string{
+			"192.0.2.1": {"Coordinator-1.Example.COM."},
+			"192.0.2.3": {"dev.example.com."},
+			"127.0.0.1": {"localhost"},
+		},
+	}
+
+	cases := []struct {
+		name          string
+		host          string
+		localHostname string
+		want          string
+		wantErr       string
+	}{
+		{name: "alias", host: "trino.example.com", want: "trino/coordinator-1.example.com"},
+		{name: "IP literal", host: "192.0.2.1", want: "trino/coordinator-1.example.com"},
+		{name: "no reverse record", host: "unregistered.local", want: "trino/192.0.2.9"},
+		{name: "IP literal without reverse record", host: "192.0.2.9", want: "trino/192.0.2.9"},
+		{name: "localhost", host: "localhost", localHostname: "dev.example.com", want: "trino/dev.example.com"},
+		{name: "loopback address", host: "127.0.0.1", localHostname: "dev.example.com", want: "trino/dev.example.com"},
+		{name: "local hostname resolves to localhost", host: "localhost", localHostname: "loopback-only", wantErr: "Fully qualified name of localhost should not resolve to 'localhost'. System configuration error? Set KerberosUseCanonicalHostname=false"},
+		{name: "unknown host", host: "missing.example.com", wantErr: "failed to resolve host missing.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			principal := newKerberosServicePrincipal(&Config{})
+			principal.canonicalizer = newHostnameCanonicalizer(resolver, func() (string, error) { return tc.localHostname, nil })
+
+			got, err := principal.forHost(t.Context(), tc.host)
+
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestKerberosCanonicalHostnameIsResolvedOnce(t *testing.T) {
+	t.Parallel()
+	resolver := &countingResolver{fakeResolver: fakeResolver{
+		hosts: map[string][]string{"trino.example.com": {"192.0.2.1"}},
+		addrs: map[string][]string{"192.0.2.1": {"coordinator-1.example.com."}},
+	}}
+	canonicalizer := newHostnameCanonicalizer(resolver, os.Hostname)
+
+	for range 3 {
+		canonical, err := canonicalizer.canonicalize(t.Context(), "trino.example.com")
+		require.NoError(t, err)
+		assert.Equal(t, "coordinator-1.example.com", canonical)
+	}
+	assert.Equal(t, 2, resolver.lookups)
+}
+
+func TestKerberosUseCanonicalHostnameDSN(t *testing.T) {
+	t.Parallel()
+	parsed, err := ParseDSN("https://localhost:8443?KerberosEnabled=true")
+	require.NoError(t, err)
+	assert.NotNil(t, newKerberosServicePrincipal(parsed).canonicalizer, "canonicalization is on by default")
+
+	conf := &Config{
+		ServerURI:                        "https://localhost:8443",
+		KerberosEnabled:                  true,
+		KerberosDisableCanonicalHostname: true,
+	}
+	dsn, err := conf.FormatDSN()
+	require.NoError(t, err)
+	assert.Contains(t, dsn, "KerberosUseCanonicalHostname=false")
+	parsed, err = ParseDSN(dsn)
+	require.NoError(t, err)
+	assert.True(t, parsed.KerberosDisableCanonicalHostname)
+	assert.Nil(t, newKerberosServicePrincipal(parsed).canonicalizer)
+
+	parsed, err = ParseDSN("https://localhost:8443?KerberosEnabled=true&KerberosUseCanonicalHostname=true")
+	require.NoError(t, err)
+	assert.False(t, parsed.KerberosDisableCanonicalHostname)
+
+	_, err = ParseDSN("https://localhost:8443?KerberosEnabled=true&KerberosUseCanonicalHostname=yes")
+	require.ErrorContains(t, err, "invalid boolean for KerberosUseCanonicalHostname")
 }
 
 func TestKerberosServicePrincipalPatternRejectsRealm(t *testing.T) {
@@ -257,9 +355,12 @@ func TestKerberosServicePrincipalPatternDSNRoundTrip(t *testing.T) {
 	assert.Equal(t, "HTTP@${HOST}", parsed.KerberosServicePrincipalPattern)
 }
 
+// openKerberos keeps the fake coordinator's 127.0.0.1 in the service
+// principal, since its canonical name depends on the machine's resolver.
 func openKerberos(t *testing.T, fc *fakeCoordinator, conf Config) *sql.DB {
 	t.Helper()
 	conf.ServerURI = fc.url()
+	conf.KerberosDisableCanonicalHostname = true
 	conf.SSLCert = fc.certificatePEM()
 	conf.KerberosEnabled = true
 	connector, err := NewConnector(&conf)
@@ -362,4 +463,39 @@ func requestedServicePrincipal(t *testing.T, header http.Header) string {
 	var krb5Token spnego.KRB5Token
 	require.NoError(t, krb5Token.Unmarshal(spnegoToken.NegTokenInit.MechTokenBytes))
 	return krb5Token.APReq.Ticket.SName.PrincipalNameString()
+}
+
+// fakeResolver answers from fixed forward and reverse records.
+type fakeResolver struct {
+	hosts map[string][]string
+	addrs map[string][]string
+}
+
+func (r fakeResolver) LookupHost(_ context.Context, host string) ([]string, error) {
+	if addresses, ok := r.hosts[host]; ok {
+		return addresses, nil
+	}
+	return nil, &net.DNSError{Err: "no such host", Name: host, IsNotFound: true}
+}
+
+func (r fakeResolver) LookupAddr(_ context.Context, addr string) ([]string, error) {
+	if names, ok := r.addrs[addr]; ok {
+		return names, nil
+	}
+	return nil, &net.DNSError{Err: "no such host", Name: addr, IsNotFound: true}
+}
+
+type countingResolver struct {
+	fakeResolver
+	lookups int
+}
+
+func (r *countingResolver) LookupHost(ctx context.Context, host string) ([]string, error) {
+	r.lookups++
+	return r.fakeResolver.LookupHost(ctx, host)
+}
+
+func (r *countingResolver) LookupAddr(ctx context.Context, addr string) ([]string, error) {
+	r.lookups++
+	return r.fakeResolver.LookupAddr(ctx, addr)
 }

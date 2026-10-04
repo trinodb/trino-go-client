@@ -386,8 +386,9 @@ type Config struct {
 	ExternalAuthentication        bool           // Obtain a token through the server's external authentication, e.g. OAuth2, when it rejects a request (optional; DSN: externalAuthentication)
 	ExternalAuthenticationTimeout *time.Duration // Time the user has to authenticate (optional, default is 2m; DSN: externalAuthenticationTimeout)
 
-	KerberosCredentialCachePath     string // Credential cache holding a ticket from kinit, used instead of a keytab (optional, default is KRB5CCNAME, then /tmp/krb5cc_<uid>, when no keytab is given)
-	KerberosServicePrincipalPattern string // Coordinator service principal, with ${SERVICE} and ${HOST} replaced (optional, default is ${SERVICE}@${HOST})
+	KerberosCredentialCachePath      string // Credential cache holding a ticket from kinit, used instead of a keytab (optional, default is KRB5CCNAME, then /tmp/krb5cc_<uid>, when no keytab is given)
+	KerberosServicePrincipalPattern  string // Coordinator service principal, with ${SERVICE} and ${HOST} replaced (optional, default is ${SERVICE}@${HOST})
+	KerberosDisableCanonicalHostname bool   // Replace ${HOST} with the URL host instead of its canonical name from DNS (optional, default is false; DSN: KerberosUseCanonicalHostname=false)
 
 	// Fields below cannot be expressed in a DSN; pass them with NewConnector.
 
@@ -589,6 +590,14 @@ func ParseDSN(dsn string) (*Config, error) {
 
 	if pattern := query.Get(kerberosServicePrincipalPatternConfig); pattern != "" {
 		config.KerberosServicePrincipalPattern = pattern
+	}
+
+	if canonical := query.Get(kerberosUseCanonicalHostnameConfig); canonical != "" {
+		enabled, err := strconv.ParseBool(canonical)
+		if err != nil {
+			return nil, fmt.Errorf("trino: invalid boolean for %s: %q", kerberosUseCanonicalHostnameConfig, canonical)
+		}
+		config.KerberosDisableCanonicalHostname = !enabled
 	}
 
 	if sslCertPath := query.Get(sslCertPathConfig); sslCertPath != "" {
@@ -957,6 +966,9 @@ func (c *Config) FormatDSN() (string, error) {
 		}
 		if c.KerberosServicePrincipalPattern != "" {
 			query.Add(kerberosServicePrincipalPatternConfig, c.KerberosServicePrincipalPattern)
+		}
+		if c.KerberosDisableCanonicalHostname {
+			query.Add(kerberosUseCanonicalHostnameConfig, "false")
 		}
 	}
 
