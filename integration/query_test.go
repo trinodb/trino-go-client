@@ -31,7 +31,8 @@ type nodesRow struct {
 
 func TestIntegrationSelectQueryIterator(t *testing.T) {
 	db := integrationOpen(t)
-	rows, err := db.Query("SELECT * FROM system.runtime.nodes")
+	// the worker_proxy retrieval mode runs a worker too
+	rows, err := db.Query("SELECT * FROM system.runtime.nodes WHERE coordinator")
 	require.NoError(t, err)
 	defer rows.Close()
 	count := 0

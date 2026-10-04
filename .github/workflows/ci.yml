@@ -26,9 +26,20 @@ jobs:
       matrix:
         go: ['>=1.27', '1.25.5']
         trino: ['latest', '372']
+        spooling: ['coordinator_proxy']
+        include:
+          - go: '>=1.27'
+            trino: 'latest'
+            spooling: 'coordinator_storage_redirect'
+          - go: '>=1.27'
+            trino: 'latest'
+            spooling: 'worker_proxy'
+          - go: '>=1.27'
+            trino: 'latest'
+            spooling: 'storage'
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
-      - run: go test -C integration -v -race -timeout 2m ./... -trino_image_tag=${{ matrix.trino }}
+      - run: go test -C integration -v -race -timeout 2m ./... -trino_image_tag=${{ matrix.trino }} -trino_spooling_retrieval_mode=${{ matrix.spooling }}

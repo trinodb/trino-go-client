@@ -16,13 +16,16 @@ import (
 	"log"
 	"math"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -42,6 +45,10 @@ const (
 	bucketName      = "spooling"
 	DockerTrinoName = "trino-go-client-tests"
 	TrinoNetwork    = "trino-network"
+	// DockerTrinoWorkerName is the worker's container name, and the address
+	// it announces, which the coordinator redirects segment downloads to in
+	// the worker_proxy retrieval mode.
+	DockerTrinoWorkerName = "trino-go-client-tests-worker"
 	// DockerDexName is the OAuth2 provider's container name, and its host
 	// name on the shared network.
 	DockerDexName = "dex"
@@ -59,6 +66,9 @@ var (
 	// secretsDir holds the generated TLS certificate and the password file
 	// mounted into the container.
 	secretsDir string
+	// configDir holds the configuration files generated from integration/etc
+	// for this run, and the catalog data the coordinator and the worker share.
+	configDir string
 
 	// serverVersion is the numeric Trino version reported by the server under
 	// test, whether it runs in the container or behind -trino_server_dsn.
@@ -80,6 +90,21 @@ var (
 		5*time.Second,
 		"max duration for Trino queries to run before giving up",
 	)
+	spoolingRetrievalModeFlag = flag.String(
+		"trino_spooling_retrieval_mode",
+		envOrDefault("TRINO_SPOOLING_RETRIEVAL_MODE", "coordinator_proxy"),
+		"protocol.spooling.retrieval-mode of the Trino server container: storage, coordinator_proxy, coordinator_storage_redirect or worker_proxy",
+	)
+	containerAddressesFlag = flag.String(
+		"trino_container_addresses",
+		os.Getenv("TRINO_CONTAINER_ADDRESSES"),
+		"comma separated address=published pairs, like s3:4566=localhost:4566, that the tests dial instead of the container addresses Trino sends segment downloads to; filled in for the containers the tests start",
+	)
+	// containerAddresses maps the addresses on the container network that
+	// segment downloads are sent to, like the S3 emulator in a pre-signed
+	// URI or the worker in the worker_proxy mode, to their published ports.
+	containerAddresses = map[string]string{}
+
 	noCleanup = flag.Bool(
 		"no_cleanup",
 		false,
@@ -95,7 +120,11 @@ var (
 
 func TestMain(m *testing.M) {
 	flag.Parse()
-	if err := trino.RegisterCustomClient(uncompressedClient, &http.Client{Transport: &http.Transport{DisableCompression: true}}); err != nil {
+	if err := parseContainerAddresses(*containerAddressesFlag); err != nil {
+		log.Fatalf("Invalid -trino_container_addresses: %s", err)
+	}
+	http.DefaultTransport.(*http.Transport).DialContext = dialContainerAddress
+	if err := trino.RegisterCustomClient(uncompressedClient, &http.Client{Transport: &http.Transport{DisableCompression: true, DialContext: dialContainerAddress}}); err != nil {
 		log.Fatalf("Could not register the %s client: %s", uncompressedClient, err)
 	}
 	if *trinoImageTagFlag == "" {
@@ -133,6 +162,7 @@ func startContainers(ctx context.Context) {
 	stopOnSignal(ctx)
 
 	removeExistingContainer(ctx, DockerTrinoName)
+	removeExistingContainer(ctx, DockerTrinoWorkerName)
 	removeExistingContainer(ctx, DockerS3Name)
 	removeExistingContainer(ctx, legacyS3Name)
 	removeExistingContainer(ctx, DockerDexName)
@@ -144,8 +174,20 @@ func startContainers(ctx context.Context) {
 	}
 
 	imageVersion := imageVersion(ctx)
+	retrievalMode := strings.ToLower(*spoolingRetrievalModeFlag)
+	if !slices.Contains([]string{"storage", "coordinator_proxy", "coordinator_storage_redirect", "worker_proxy"}, retrievalMode) {
+		setupFatal(ctx, "Invalid -trino_spooling_retrieval_mode %q", *spoolingRetrievalModeFlag)
+	}
 	if imageVersion >= 466 {
 		setupS3Emulator(ctx)
+	}
+
+	configDir, err = os.MkdirTemp("", "trino-go-client-config-")
+	if err != nil {
+		setupFatal(ctx, "Could not create the configuration directory: %s", err)
+	}
+	if err := os.Chmod(configDir, 0o755); err != nil {
+		setupFatal(ctx, "Could not make the configuration directory readable: %s", err)
 	}
 
 	secretsDir, err = prepareSecrets(wd + "/etc/secrets")
@@ -175,12 +217,16 @@ func startContainers(ctx context.Context) {
 	case imageVersion < 466:
 		mounts = append(mounts, wd+"/etc/config-pre-466version.properties:/etc/trino/config.properties")
 	case imageVersion < 477:
-		mounts = append(mounts, wd+"/etc/config-pre-477version.properties:/etc/trino/config.properties")
+		mounts = append(mounts, renderConfig(ctx, wd+"/etc/config-pre-477version.properties", retrievalMode)+":/etc/trino/config.properties")
 	default:
-		mounts = append(mounts, wd+"/etc/config.properties:/etc/trino/config.properties")
+		mounts = append(mounts, renderConfig(ctx, wd+"/etc/config.properties", retrievalMode)+":/etc/trino/config.properties")
 	}
 	if imageVersion >= 466 {
 		mounts = append(mounts, wd+"/etc/spooling-manager.properties:/etc/trino/spooling-manager.properties")
+	}
+	startWorker := imageVersion >= 466 && retrievalMode == "worker_proxy"
+	if startWorker {
+		mounts = append(mounts, sharedCatalogDataMounts(ctx)...)
 	}
 
 	trinoContainer = runContainer(ctx, "trinodb/trino",
@@ -206,6 +252,10 @@ func startContainers(ctx context.Context) {
 	)
 
 	waitForContainerHealth(ctx, trinoContainer, "trino")
+	*integrationServerFlag = "http://test@localhost:" + trinoContainer.GetPort("8080/tcp")
+	if startWorker {
+		setupWorker(ctx, wd, mounts)
+	}
 
 	if imageVersion >= 458 {
 		if err := grantAdminRoleToTestUser(ctx); err != nil {
@@ -213,13 +263,11 @@ func startContainers(ctx context.Context) {
 		}
 	}
 
-	*integrationServerFlag = "http://test@localhost:" + trinoContainer.GetPort("8080/tcp")
-
 	tlsConfig, err := getTLSConfig(secretsDir)
 	if err != nil {
 		setupFatal(ctx, "Failed to load the TLS config: %s", err)
 	}
-	if err := trino.RegisterCustomClient(tlsClient, &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig}}); err != nil {
+	if err := trino.RegisterCustomClient(tlsClient, &http.Client{Transport: &http.Transport{TLSClientConfig: tlsConfig, DialContext: dialContainerAddress}}); err != nil {
 		setupFatal(ctx, "Could not register the %s client: %s", tlsClient, err)
 	}
 	tlsServer = "https://admin:admin@localhost:" + trinoContainer.GetPort("8443/tcp") + "?custom_client=" + tlsClient
@@ -229,6 +277,142 @@ func startContainers(ctx context.Context) {
 			"trino:8443":            "localhost:" + trinoContainer.GetPort("8443/tcp"),
 		}
 	}
+}
+
+// renderConfig copies the coordinator configuration to configDir with the
+// spooling retrieval mode set to mode, and returns the copy's path.
+func renderConfig(ctx context.Context, source, mode string) string {
+	config, err := os.ReadFile(source)
+	if err != nil {
+		setupFatal(ctx, "Could not read %s: %s", source, err)
+	}
+	rendered := retrievalModeProperty.ReplaceAll(config, []byte("protocol.spooling.retrieval-mode="+mode))
+	target := filepath.Join(configDir, "config.properties")
+	if err := os.WriteFile(target, rendered, 0o644); err != nil {
+		setupFatal(ctx, "Could not write %s: %s", target, err)
+	}
+	return target
+}
+
+var retrievalModeProperty = regexp.MustCompile(`(?m)^protocol\.spooling\.retrieval-mode=.*$`)
+
+// sharedCatalogDataMounts gives the coordinator and the worker the same
+// directories for the file metastores of the hive and iceberg catalogs and
+// for the hive staging files, since a table written on one node must be
+// readable on the other. They are world writable for the containers' user.
+func sharedCatalogDataMounts(ctx context.Context) []string {
+	var mounts []string
+	for _, dir := range []string{"metastore", "iceberg", "hive-staging"} {
+		path := filepath.Join(configDir, dir)
+		if err := os.Mkdir(path, 0o777); err != nil {
+			setupFatal(ctx, "Could not create %s: %s", path, err)
+		}
+		if err := os.Chmod(path, 0o777); err != nil {
+			setupFatal(ctx, "Could not make %s writable: %s", path, err)
+		}
+		mounts = append(mounts, path+":/tmp/"+dir)
+	}
+	return mounts
+}
+
+// setupWorker starts a worker for the worker_proxy retrieval mode, in which
+// the coordinator redirects every segment download to a worker, and waits
+// until the coordinator sees it. It shares the coordinator's catalogs and
+// spooling configuration, but has its own config and node properties.
+func setupWorker(ctx context.Context, wd string, coordinatorMounts []string) {
+	mounts := []string{
+		wd + "/etc/worker/config.properties:/etc/trino/config.properties",
+		wd + "/etc/worker/node.properties:/etc/trino/node.properties",
+	}
+	for _, mount := range coordinatorMounts {
+		if strings.HasSuffix(mount, ":/etc/trino/config.properties") ||
+			strings.HasSuffix(mount, ":/etc/trino/node.properties") ||
+			strings.HasSuffix(mount, ":/etc/trino/secrets") ||
+			strings.HasSuffix(mount, ":/etc/trino/password-authenticator.properties") {
+			continue
+		}
+		mounts = append(mounts, mount)
+	}
+	worker := runContainer(ctx, "trinodb/trino",
+		dt.WithName(DockerTrinoWorkerName),
+		// the pool would otherwise hand back the coordinator, which runs the
+		// same image
+		dt.WithoutReuse(),
+		dt.WithTag(*trinoImageTagFlag),
+		dt.WithMounts(mounts),
+		dt.WithContainerConfig(func(c *container.Config) {
+			c.ExposedPorts = network.PortSet{network.MustParsePort("8080/tcp"): {}}
+		}),
+		dt.WithHostConfig(func(hc *container.HostConfig) {
+			hc.NetworkMode = container.NetworkMode(trinoNetwork.ID())
+			hc.Ulimits = []*container.Ulimit{
+				{
+					Name: "nofile",
+					Hard: 4096,
+					Soft: 4096,
+				},
+			}
+		}),
+	)
+	waitForContainerHealth(ctx, worker, "trino worker")
+	containerAddresses[DockerTrinoWorkerName+":8080"] = "localhost:" + worker.GetPort("8080/tcp")
+
+	if err := pool.Retry(ctx, 0, func() error {
+		return requireActiveWorker(ctx)
+	}); err != nil {
+		setupFatal(ctx, "The coordinator did not see the worker: %s\nContainer logs:\n%s", err, getLogs(ctx, worker))
+	}
+}
+
+func requireActiveWorker(ctx context.Context) error {
+	db, err := sql.Open("trino", *integrationServerFlag)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	var workers int
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM system.runtime.nodes WHERE NOT coordinator AND state = 'active'").Scan(&workers); err != nil {
+		return err
+	}
+	if workers == 0 {
+		return errors.New("no active worker")
+	}
+	return nil
+}
+
+// parseContainerAddresses reads -trino_container_addresses into
+// containerAddresses.
+func parseContainerAddresses(addresses string) error {
+	if addresses == "" {
+		return nil
+	}
+	for pair := range strings.SplitSeq(addresses, ",") {
+		address, published, ok := strings.Cut(pair, "=")
+		if !ok || address == "" || published == "" {
+			return fmt.Errorf("%q is not an address=published pair", pair)
+		}
+		containerAddresses[address] = published
+	}
+	return nil
+}
+
+// dialContainerAddress connects to the published port of a container that
+// Trino sends a segment download to by its address on the container network.
+// The request keeps that address as its Host, which a pre-signed URI is
+// signed for.
+func dialContainerAddress(ctx context.Context, network, address string) (net.Conn, error) {
+	if published, ok := containerAddresses[address]; ok {
+		address = published
+	}
+	dialer := net.Dialer{Timeout: 30 * time.Second, KeepAlive: 30 * time.Second}
+	return dialer.DialContext(ctx, network, address)
+}
+
+func envOrDefault(name, fallback string) string {
+	if value := os.Getenv(name); value != "" {
+		return value
+	}
+	return fallback
 }
 
 // setupDex starts the OAuth2 provider Trino is configured with, which must be
@@ -330,9 +514,12 @@ func releaseDockerResources(ctx context.Context) {
 	if err := pool.Close(ctx); err != nil {
 		log.Printf("Could not clean up Docker resources: %s", err)
 	}
-	if secretsDir != "" {
-		if err := os.RemoveAll(secretsDir); err != nil {
-			log.Printf("Could not remove %s: %s", secretsDir, err)
+	for _, dir := range []string{secretsDir, configDir} {
+		if dir == "" {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			log.Printf("Could not remove %s: %s", dir, err)
 		}
 	}
 }
@@ -465,6 +652,8 @@ func setupS3Emulator(ctx context.Context) {
 	)
 
 	s3Endpoint := "http://localhost:" + s3Container.GetPort("4566/tcp")
+	// pre-signed URIs name the emulator by the endpoint Trino uses
+	containerAddresses[DockerS3Name+":4566"] = "localhost:" + s3Container.GetPort("4566/tcp")
 	log.Println("S3 emulator started at:", s3Endpoint)
 
 	waitForContainerHealth(ctx, s3Container, "s3")
