@@ -28,6 +28,13 @@ go test -C integration -v -race -timeout 2m ./... -trino_image_tag=latest
 ```
 
 The `-trino_image_tag` flag picks the Trino release; CI runs `latest` and `372`.
+`-trino_spooling_retrieval_mode` sets the server's
+`protocol.spooling.retrieval-mode`, `coordinator_proxy` by default; CI also
+runs `latest` with `coordinator_storage_redirect`, `worker_proxy`, which starts
+a worker as well, and `storage`. In those modes the client downloads segments
+from the S3 emulator or the worker by their container addresses, which the
+tests dial at the published ports; with `-trino_server_dsn`, pass them with
+`-trino_container_addresses`, like `s3:4566=localhost:4566`.
 To iterate against a running server, start the containers once with
 `-no_cleanup`, then pass its address with `-trino_server_dsn`:
 
