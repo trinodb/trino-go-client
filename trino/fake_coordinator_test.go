@@ -188,6 +188,12 @@ func (fc *fakeCoordinator) respond(pages ...page) {
 	fc.pages = pages
 }
 
+func (fc *fakeCoordinator) hasPages() bool {
+	fc.mu.Lock()
+	defer fc.mu.Unlock()
+	return len(fc.pages) > 0
+}
+
 // serveSegment makes a spooled segment download return body with status 200.
 func (fc *fakeCoordinator) serveSegment(name string, body []byte) {
 	fc.handleSegment(name, func(w http.ResponseWriter, r *http.Request) {

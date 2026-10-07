@@ -1024,6 +1024,12 @@ and `sql.LevelSerializable`; any other level is rejected. `ReadOnly` starts a
 A statement that fails aborts the whole transaction on the server. `Rollback`
 reports success in that case, while `Commit` returns an error.
 
+Closing rows before the last page cancels the query on the server, and Trino
+aborts the transaction when a query inside it is cancelled. A `tx.QueryRow`
+over a result that spans more than one page, or a `rows.Close` before the end,
+therefore leaves `Commit` failing with `TRANSACTION_ALREADY_ABORTED`. Inside a
+transaction, read the rows to the end or add a `LIMIT` to the query.
+
 Transaction control statements must go through the returned `*sql.Tx`. Sending
 them directly, as in `db.Exec("START TRANSACTION")`, is rejected.
 
