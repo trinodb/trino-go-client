@@ -3,7 +3,7 @@ package trino
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"net/http"
 	"net/url"
@@ -88,7 +88,7 @@ func (a *fakeExternalAuth) serve(w http.ResponseWriter, r *http.Request) bool {
 		if a.body != "" {
 			_, _ = w.Write([]byte(a.body))
 		} else {
-			_ = json.NewEncoder(w).Encode(response)
+			_ = json.MarshalWrite(w, response)
 		}
 		return true
 	}

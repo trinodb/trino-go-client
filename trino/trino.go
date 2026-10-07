@@ -51,14 +51,13 @@
 package trino
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
-	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -77,7 +76,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unicode"
 
 	"github.com/jcmturner/gokrb5/v8/client"
 	"github.com/klauspost/compress/zstd"
@@ -2592,25 +2590,26 @@ type stmtStage struct {
 
 type jsonFloat64 float64
 
-func (f *jsonFloat64) UnmarshalJSON(data []byte) error {
-	var v float64
-	err := json.Unmarshal(data, &v)
+// UnmarshalJSONFrom decodes anything but a number, like the empty string
+// some servers send for the progress of a query, as zero.
+func (f *jsonFloat64) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	if dec.PeekKind() != '0' {
+		*f = 0
+		return dec.SkipValue()
+	}
+	token, err := dec.ReadToken()
 	if err != nil {
-		var jsonErr *json.UnmarshalTypeError
-		if errors.As(err, &jsonErr) {
-			if f != nil {
-				*f = 0
-			}
-			return nil
-		}
 		return err
 	}
-	p := (*float64)(f)
-	*p = v
+	value, err := token.Float()
+	if err != nil {
+		return err
+	}
+	*f = jsonFloat64(value)
 	return nil
 }
 
-var _ json.Unmarshaler = new(jsonFloat64)
+var _ json.UnmarshalerFrom = new(jsonFloat64)
 
 func (st *driverStmt) Query(args []driver.Value) (driver.Rows, error) {
 	return nil, driver.ErrSkip
@@ -2807,9 +2806,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 
 	defer resp.Body.Close()
 	var sr stmtResponse
-	d := json.NewDecoder(resp.Body)
-	d.UseNumber()
-	err = d.Decode(&sr)
+	err = json.UnmarshalRead(resp.Body, &sr)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("trino: %w", err)
@@ -2871,9 +2868,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 					return
 				}
 				var qresp queryResponse
-				d := json.NewDecoder(resp.Body)
-				d.UseNumber()
-				err = d.Decode(&qresp)
+				err = json.UnmarshalRead(resp.Body, &qresp)
 				if err != nil {
 					st.errors <- fmt.Errorf("trino: %w", err)
 					return
@@ -2986,18 +2981,9 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 	// The acknowledgment copies these headers, so it carries the User-Agent too.
 	req.Header.Set(userAgentHeader, userAgent)
 
-	for k, v := range sf.spooledMetadata.headers {
-		headerSlice, ok := v.([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("unsupported header type %T", v)
-		}
-
-		for _, value := range headerSlice {
-			header, ok := value.(string)
-			if !ok {
-				return nil, fmt.Errorf("unsupported header value type %T", value)
-			}
-			req.Header.Add(k, header)
+	for name, values := range sf.spooledMetadata.headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
 		}
 	}
 
@@ -3080,7 +3066,8 @@ type driverRows struct {
 	err          error
 	rowindex     int
 	columns      []string
-	coltype      []*typeConverter
+	coltype      []*columnType
+	decoder      *rowsDecoder
 	data         []queryData
 	rowsAffected int64
 
@@ -3250,17 +3237,7 @@ func (qr *driverRows) next(dest []driver.Value) error {
 		qr.err = sql.ErrNoRows
 		return qr.err
 	}
-	for i, v := range qr.coltype {
-		if i > len(dest)-1 {
-			break
-		}
-		vv, err := v.ConvertValue(qr.data[qr.rowindex][i])
-		if err != nil {
-			qr.err = err
-			return err
-		}
-		dest[i] = vv
-	}
+	copy(dest, qr.data[qr.rowindex])
 	qr.rowindex++
 	return nil
 }
@@ -3277,17 +3254,20 @@ func (qr driverRows) RowsAffected() (int64, error) {
 	return qr.rowsAffected, nil
 }
 
+// queryResponse is one page of a query's results. Its Data is decoded once
+// the columns are known: it is an array of rows for the direct protocol and
+// a spooledData object for the spooling protocol.
 type queryResponse struct {
-	ID          string        `json:"id"`
-	InfoURI     string        `json:"infoUri"`
-	NextURI     string        `json:"nextUri"`
-	Columns     []queryColumn `json:"columns"`
-	Data        interface{}   `json:"data"`
-	Stats       stmtStats     `json:"stats"`
-	Error       ErrTrino      `json:"error"`
-	UpdateType  string        `json:"updateType"`
-	UpdateCount int64         `json:"updateCount"`
-	Warnings    []Warning     `json:"warnings"`
+	ID          string         `json:"id"`
+	InfoURI     string         `json:"infoUri"`
+	NextURI     string         `json:"nextUri"`
+	Columns     []queryColumn  `json:"columns"`
+	Data        jsontext.Value `json:"data"`
+	Stats       stmtStats      `json:"stats"`
+	Error       ErrTrino       `json:"error"`
+	UpdateType  string         `json:"updateType"`
+	UpdateCount int64          `json:"updateCount"`
+	Warnings    []Warning      `json:"warnings"`
 }
 
 // Warning is a warning the coordinator attached to a query, such as a
@@ -3363,9 +3343,38 @@ func (w *Warnings) add(ws []Warning) {
 	}
 }
 
+// spooledData is the data of a page of the spooling protocol: the rows are
+// in segments, either inline in the page or in storage.
+type spooledData struct {
+	Encoding string        `json:"encoding"`
+	Segments []dataSegment `json:"segments"`
+}
+
+type dataSegment struct {
+	// Type is "inline" for a segment whose rows are in Data, or "spooled"
+	// for one to download from URI.
+	Type     string              `json:"type"`
+	Data     []byte              `json:"data"`
+	URI      string              `json:"uri"`
+	AckURI   string              `json:"ackUri"`
+	Headers  map[string][]string `json:"headers"`
+	Metadata *segmentAttributes  `json:"metadata"`
+}
+
+// segmentAttributes are the attributes the server describes a segment
+// with. The mandatory ones are pointers, so a missing one can be reported.
+type segmentAttributes struct {
+	RowOffset *int64 `json:"rowOffset"`
+	// Bug: rowsCount was wrongly not enforced as a mandatory field on Trino response. Fixed on 475 release
+	RowsCount        *int64 `json:"rowsCount"`
+	SegmentSize      *int64 `json:"segmentSize"`
+	UncompressedSize int64  `json:"uncompressedSize"`
+	ExpiresAt        string `json:"expiresAt"`
+}
+
 type segmentMetadata struct {
 	rowOffset        int64
-	rowsCount        int64
+	rowsCount        optionalInt64
 	segmentSize      int64
 	uncompressedSize int64
 }
@@ -3374,46 +3383,55 @@ type spooledMetadata struct {
 	uri       string
 	ackUri    string
 	encoding  string
-	headers   map[string]interface{}
+	headers   map[string][]string
 	metadata  segmentMetadata
 	expiresAt time.Time
 }
 
-func parseSpooledMetadata(segment map[string]interface{}, segmentIndex int, segmentMetadata segmentMetadata, encoding string) (spooledMetadata, error) {
-	result := spooledMetadata{
-		metadata: segmentMetadata,
-		encoding: encoding,
-		headers:  make(map[string]interface{}),
+func (s dataSegment) segmentMetadata(segmentIndex int) (segmentMetadata, error) {
+	if s.Metadata == nil {
+		return segmentMetadata{}, fmt.Errorf("metadata is missing in segment at index %d", segmentIndex)
 	}
-
-	var ok bool
-	result.uri, ok = segment["uri"].(string)
-	if !ok || result.uri == "" {
-		return spooledMetadata{}, fmt.Errorf("missing or invalid 'uri' field in spooled segment at index %d", segmentIndex)
+	if s.Metadata.RowOffset == nil {
+		return segmentMetadata{}, fmt.Errorf("rowOffset is missing in segment metadata at index %d", segmentIndex)
 	}
-
-	result.ackUri, ok = segment["ackUri"].(string)
-	if !ok || result.ackUri == "" {
-		return spooledMetadata{}, fmt.Errorf("missing or invalid 'ackUri' field in spooled segment at index %d", segmentIndex)
+	if s.Metadata.SegmentSize == nil {
+		return segmentMetadata{}, fmt.Errorf("segmentSize is missing in segment metadata at index %d", segmentIndex)
 	}
-
-	if rawHeaders, exists := segment["headers"]; exists {
-		result.headers, ok = rawHeaders.(map[string]interface{})
-		if !ok {
-			return spooledMetadata{}, fmt.Errorf("invalid 'headers' field in spooled segment at index %d: expected map[string]interface{}", segmentIndex)
-		}
+	metadata := segmentMetadata{
+		rowOffset:        *s.Metadata.RowOffset,
+		segmentSize:      *s.Metadata.SegmentSize,
+		uncompressedSize: s.Metadata.UncompressedSize,
 	}
+	if s.Metadata.RowsCount != nil {
+		metadata.rowsCount = newOptionalInt64(*s.Metadata.RowsCount)
+	}
+	return metadata, nil
+}
 
-	return result, nil
+func (s dataSegment) spooledMetadata(segmentIndex int, metadata segmentMetadata, encoding string, location *time.Location) (spooledMetadata, error) {
+	if s.URI == "" {
+		return spooledMetadata{}, fmt.Errorf("missing 'uri' field in spooled segment at index %d", segmentIndex)
+	}
+	if s.AckURI == "" {
+		return spooledMetadata{}, fmt.Errorf("missing 'ackUri' field in spooled segment at index %d", segmentIndex)
+	}
+	return spooledMetadata{
+		uri:       s.URI,
+		ackUri:    s.AckURI,
+		encoding:  encoding,
+		headers:   s.Headers,
+		metadata:  metadata,
+		expiresAt: parseSegmentExpiresAt(s.Metadata.ExpiresAt, location),
+	}, nil
 }
 
 // parseSegmentExpiresAt reads the time after which a spooled segment may be
 // gone from storage. The server formats it as a local date-time in the
 // session time zone. It only explains a failed download, so a missing or
 // malformed value is ignored and returns the zero time.
-func parseSegmentExpiresAt(metadata map[string]interface{}, location *time.Location) time.Time {
-	value, ok := metadata["expiresAt"].(string)
-	if !ok {
+func parseSegmentExpiresAt(value string, location *time.Location) time.Time {
+	if value == "" {
 		return time.Time{}
 	}
 	if expiresAt, err := time.Parse(time.RFC3339Nano, value); err == nil {
@@ -3429,70 +3447,7 @@ func parseSegmentExpiresAt(metadata map[string]interface{}, location *time.Locat
 	return time.Time{}
 }
 
-func parseSegmentMetadata(metadata map[string]interface{}) (segmentMetadata, error) {
-	result := segmentMetadata{
-		rowOffset:        0,
-		rowsCount:        0,
-		segmentSize:      0,
-		uncompressedSize: 0,
-	}
-
-	var err error
-	// Mandatory field
-	if result.rowOffset, err = getInt64(metadata, "rowOffset"); err != nil {
-		return segmentMetadata{}, err
-	}
-
-	// Mandatory field
-	if result.segmentSize, err = getInt64(metadata, "segmentSize"); err != nil {
-		return segmentMetadata{}, err
-	}
-
-	if result.uncompressedSize, err = getOptionalInt64(metadata, "uncompressedSize"); err != nil {
-		return segmentMetadata{}, err
-	}
-
-	// Bug: rowsCount was wrongly not enforced as a mandatory field on Trino response. Fixed on 475 release
-	if result.rowsCount, err = getOptionalInt64(metadata, "rowsCount"); err != nil {
-		return segmentMetadata{}, err
-	}
-
-	return result, nil
-}
-
-func getInt64(metadata map[string]interface{}, key string) (int64, error) {
-	val, exists := metadata[key]
-	if !exists {
-		return 0, fmt.Errorf("%s is missing in segment metadata", key)
-	}
-
-	return parseInt64(val, key)
-}
-
-func getOptionalInt64(metadata map[string]interface{}, key string) (int64, error) {
-	val, exists := metadata[key]
-	if !exists {
-		return 0, nil
-	}
-
-	return parseInt64(val, key)
-}
-
-func parseInt64(val interface{}, key string) (int64, error) {
-	num, ok := val.(json.Number)
-	if !ok {
-		return 0, fmt.Errorf("invalid type for %s in segment metadata, expected json.Number, got %T", key, val)
-	}
-
-	n, err := num.Int64()
-	if err != nil {
-		return 0, fmt.Errorf("error converting %s to int64: %v", key, err)
-	}
-
-	return n, nil
-}
-
-func decodeSegment(data []byte, encoding string, metadata segmentMetadata) ([]queryData, error) {
+func decodeSegment(data []byte, encoding string, metadata segmentMetadata, decoder *rowsDecoder) ([]queryData, error) {
 	if int64(len(data)) != metadata.segmentSize {
 		return nil, fmt.Errorf("segment size mismatch: expected %d bytes, got %d bytes", metadata.segmentSize, len(data))
 	}
@@ -3502,15 +3457,14 @@ func decodeSegment(data []byte, encoding string, metadata segmentMetadata) ([]qu
 		return nil, err
 	}
 
-	var queryDataList = make([]queryData, metadata.rowsCount)
-	decoder := json.NewDecoder(bytes.NewReader(decompressedSegment))
-	decoder.UseNumber()
-	err = decoder.Decode(&queryDataList)
+	rows, err := decoder.decodeRows(decompressedSegment, int(metadata.rowsCount.value))
 	if err != nil {
-		return nil, fmt.Errorf("failed to decode segment into JSON at rowOffset %d: %v", metadata.rowOffset, err)
+		return nil, fmt.Errorf("failed to decode segment at rowOffset %d: %v", metadata.rowOffset, err)
 	}
-
-	return queryDataList, nil
+	if metadata.rowsCount.hasValue && int64(len(rows)) != metadata.rowsCount.value {
+		return nil, fmt.Errorf("segment at rowOffset %d has %d rows but its metadata says %d", metadata.rowOffset, len(rows), metadata.rowsCount.value)
+	}
+	return rows, nil
 }
 
 func decompressSegment(data []byte, encoding string, metadata segmentMetadata) ([]byte, error) {
@@ -3557,7 +3511,7 @@ type queryColumn struct {
 	TypeSignature typeSignature `json:"typeSignature"`
 }
 
-type queryData []interface{}
+type queryData []driver.Value
 
 type namedTypeSignature struct {
 	FieldName     rowFieldName  `json:"fieldName"`
@@ -3584,8 +3538,8 @@ const (
 
 type typeArgument struct {
 	// Kind determines if the typeSignature, namedTypeSignature, or long field has a value
-	Kind  typeKind        `json:"kind"`
-	Value json.RawMessage `json:"value"`
+	Kind  typeKind       `json:"kind"`
+	Value jsontext.Value `json:"value"`
 	// typeSignature decoded from Value when Kind is TYPE
 	typeSignature typeSignature
 	// namedTypeSignature decoded from Value when Kind is NAMED_TYPE
@@ -3695,29 +3649,31 @@ func (qr *driverRows) fetch() error {
 
 			qr.rowindex = 0
 			qr.nextURI = qresp.NextURI
-			switch data := qresp.Data.(type) {
-			case []interface{}:
+			switch qresp.Data.Kind() {
+			case '[':
 				// direct protocol
-				qr.data = make([]queryData, len(data))
-				for i, item := range data {
-					if row, ok := item.([]interface{}); ok {
-						qr.data[i] = row
-					} else {
-						return fmt.Errorf("unexpected data type for row at index %d: expected []interface{}, got %T", i, item)
-					}
+				qr.data, err = qr.rowsDecoder().decodeRows(qresp.Data, 0)
+				if err != nil {
+					return fmt.Errorf("trino: %w", err)
 				}
-			case map[string]interface{}:
+			case '{':
 				// spooling protocol
-				qr.stmt.startSpoolingProtocolWorkers(qr.ctx)
+				spooled, err := decodeSpooledData(qresp.Data)
+				if err != nil {
+					return err
+				}
+				qr.stmt.startSpoolingProtocolWorkers(qr.ctx, qr.rowsDecoder())
 				qr.stmt.sendHeartbeatURI(qresp.NextURI)
 				qr.startOrderedSegmentStreamer()
 
-				err := qr.queueSpoolingSegments(data)
+				qr.queueSpoolingSegments(spooled)
 				qr.proccessSpollingSegments()
 
-				return err
-			case nil:
+				return nil
+			case 0, 'n':
 				qr.data = nil
+			default:
+				return fmt.Errorf("trino: unexpected data in query response, expected an array of rows or the spooled segments, got %s", qresp.Data)
 			}
 			qr.rowsAffected = qresp.UpdateCount
 			qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
@@ -3747,7 +3703,7 @@ func (st *driverStmt) location() *time.Location {
 	return st.conn.location()
 }
 
-func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
+func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context, decoder *rowsDecoder) {
 	st.usingSpooledProtocol = true
 
 	if st.spoolingWorkerCount == 0 {
@@ -3782,7 +3738,7 @@ func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context) {
 
 	st.startSegmentDispatcher()
 	st.startDownloadSegmentsWorkers(downloadSegmentsCtx)
-	st.startSegmentsDecodersWorkers(decodeSegmentCtx)
+	st.startSegmentsDecodersWorkers(decodeSegmentCtx, decoder)
 	st.startHeartbeat(ctx)
 }
 
@@ -3895,52 +3851,37 @@ func (st *driverStmt) startSegmentDispatcher() {
 				// The first error fails the query, so the dispatcher stops
 				// at it instead of reporting the consequences of a bad
 				// segment several more times.
-				segmentMetadata, exists := segmentToProccess.segment["metadata"]
-				if !exists {
-					st.errors <- fmt.Errorf("metadata is missing in segment at index %d", segmentToProccess.segmentIndex)
-					return
-				}
-
-				typedMetadata, ok := segmentMetadata.(map[string]interface{})
-				if !ok {
-					st.errors <- fmt.Errorf("metadata is invalid or cannot be parsed as map[string]interface{} in segment at index %d", segmentToProccess.segmentIndex)
-					return
-				}
-
-				metadata, err := parseSegmentMetadata(typedMetadata)
+				segment := segmentToProccess.segment
+				segmentIndex := segmentToProccess.segmentIndex
+				metadata, err := segment.segmentMetadata(segmentIndex)
 				if err != nil {
 					st.errors <- err
 					return
 				}
-				switch segmentToProccess.segment["type"] {
+				switch segment.Type {
 				case "inline":
-					encodedData, ok := segmentToProccess.segment["data"].(string)
-					if !ok {
-						st.errors <- fmt.Errorf("missing or invalid 'data' field in inline segment at index %d", segmentToProccess.segmentIndex)
+					if segment.Data == nil {
+						st.errors <- fmt.Errorf("missing 'data' field in inline segment at index %d", segmentIndex)
 						return
 					}
-					decodedBytes, err := base64.StdEncoding.DecodeString(encodedData)
-					if err != nil {
-						st.errors <- fmt.Errorf("error decoding base64 data in inline segment at index %d: %v", segmentToProccess.segmentIndex, err)
-						return
-					}
-
 					st.spooledSegmentsToDecode <- segmentToDecode{
-						segmentIndex: 0,
+						segmentIndex: segmentIndex,
 						encoding:     segmentToProccess.encoding,
-						data:         decodedBytes,
+						data:         segment.Data,
 						metadata:     metadata,
 					}
 
 				case "spooled":
-					spooledMetadata, err := parseSpooledMetadata(segmentToProccess.segment, 0, metadata, segmentToProccess.encoding)
+					spooledMetadata, err := segment.spooledMetadata(segmentIndex, metadata, segmentToProccess.encoding, st.location())
 					if err != nil {
 						st.errors <- err
 						return
 					}
-					spooledMetadata.expiresAt = parseSegmentExpiresAt(typedMetadata, st.location())
-
 					st.spooledSegmentsMetadata <- spooledMetadata
+
+				default:
+					st.errors <- fmt.Errorf("unsupported type %q of segment at index %d", segment.Type, segmentIndex)
+					return
 				}
 
 			case <-st.doneCh:
@@ -3999,7 +3940,7 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 	}
 }
 
-func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context) {
+func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context, decoder *rowsDecoder) {
 	st.waitSegmentDecodersWorkers.Add(st.spoolingWorkerCount)
 	for i := 0; i < st.spoolingWorkerCount; i++ {
 		go func() {
@@ -4012,7 +3953,7 @@ func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context) {
 						return
 					}
 
-					segment, err := decodeSegment(segmentToDecode.data, segmentToDecode.encoding, segmentToDecode.metadata)
+					segment, err := decodeSegment(segmentToDecode.data, segmentToDecode.encoding, segmentToDecode.metadata, decoder)
 					if err != nil {
 						st.cancelDecodersWorkers()
 						st.errors <- fmt.Errorf("failed to decode spooled segment at index %d: %v", segmentToDecode.segmentIndex, err)
@@ -4062,16 +4003,18 @@ func (qr *driverRows) proccessSpollingSegments() {
 					qr.stmt.errors <- err
 				}
 
-				switch data := qresp.Data.(type) {
-				case map[string]interface{}:
-					if err := qr.queueSpoolingSegments(data); err != nil {
+				switch qresp.Data.Kind() {
+				case '{':
+					spooled, err := decodeSpooledData(qresp.Data)
+					if err != nil {
 						qr.stmt.errors <- err
+						break
 					}
-
-				case nil:
+					qr.queueSpoolingSegments(spooled)
+				case 0, 'n':
 					// do nothing: trino response without data (e.g only status information)
 				default:
-					qr.stmt.errors <- fmt.Errorf("unexpected data type for row at index %s: expected map[string]interface{}, got %T", qresp.ID, data)
+					qr.stmt.errors <- fmt.Errorf("trino: unexpected data in query %s response, expected the spooled segments, got %s", qresp.ID, qresp.Data)
 				}
 				qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
 			}
@@ -4093,35 +4036,28 @@ func (qr *driverRows) waitForAllSpoolingWorkersFinish() {
 type segmentToProccess struct {
 	segmentIndex int
 	encoding     string
-	segment      map[string]interface{}
+	segment      dataSegment
 }
 
-func (qr *driverRows) queueSpoolingSegments(data map[string]interface{}) error {
-	encoding, ok := data["encoding"].(string)
-	if !ok {
-		return fmt.Errorf("invalid or missing 'encoding' field on spooling protocol, expected string")
+func decodeSpooledData(data jsontext.Value) (spooledData, error) {
+	var spooled spooledData
+	if err := json.Unmarshal(data, &spooled); err != nil {
+		return spooledData{}, fmt.Errorf("trino: invalid spooled segments: %w", err)
 	}
-
-	segments, ok := data["segments"].([]interface{})
-	if !ok {
-		return fmt.Errorf("invalid or missing 'segments' field on spooling protocol, expected []interface{}")
+	if spooled.Encoding == "" {
+		return spooledData{}, fmt.Errorf("trino: missing 'encoding' field on spooling protocol")
 	}
+	return spooled, nil
+}
 
-	for segmentIndex, segment := range segments {
-		segment, ok := segment.(map[string]interface{})
-		if !ok {
-			return fmt.Errorf("segment at index %d is invalid: expected map[string]interface{}, got %T", segmentIndex, segment)
-		}
-
+func (qr *driverRows) queueSpoolingSegments(spooled spooledData) {
+	for segmentIndex, segment := range spooled.Segments {
 		qr.stmt.segmentsToProccess <- segmentToProccess{
 			segmentIndex: segmentIndex,
-			encoding:     encoding,
+			encoding:     spooled.Encoding,
 			segment:      segment,
 		}
-
 	}
-
-	return nil
 }
 
 func unmarshalArguments(signature *typeSignature) error {
@@ -4156,28 +4092,35 @@ func (qr *driverRows) initColumns(qresp *queryResponse) error {
 	if qr.columns != nil || len(qresp.Columns) == 0 {
 		return nil
 	}
-	var err error
 	for i := range qresp.Columns {
-		err = unmarshalArguments(&(qresp.Columns[i].TypeSignature))
-		if err != nil {
+		if err := unmarshalArguments(&(qresp.Columns[i].TypeSignature)); err != nil {
 			return fmt.Errorf("error decoding column type signature: %w", err)
 		}
 	}
-	qr.columns = make([]string, len(qresp.Columns))
-	qr.coltype = make([]*typeConverter, len(qresp.Columns))
-	location := qr.stmt.location()
+	coltype := make([]*columnType, len(qresp.Columns))
 	for i, col := range qresp.Columns {
-		err = unmarshalArguments(&(qresp.Columns[i].TypeSignature))
-		if err != nil {
-			return fmt.Errorf("error decoding column type signature: %w", err)
-		}
-		qr.columns[i] = col.Name
-		qr.coltype[i], err = newTypeConverter(col.Type, col.TypeSignature, location)
-		if err != nil {
+		var err error
+		if coltype[i], err = newColumnType(col.Type, col.TypeSignature); err != nil {
 			return err
 		}
 	}
+	decoder, err := newRowsDecoder(qresp.Columns, qr.stmt.location())
+	if err != nil {
+		return err
+	}
+	qr.columns = decoder.columns
+	qr.coltype = coltype
+	qr.decoder = decoder
 	return nil
+}
+
+// rowsDecoder returns the decoder of the columns, or one without columns,
+// which decodes only empty rows, before the server sent them.
+func (qr *driverRows) rowsDecoder() *rowsDecoder {
+	if qr.decoder == nil {
+		return &rowsDecoder{}
+	}
+	return qr.decoder
 }
 
 func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
@@ -4209,16 +4152,15 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 	qr.stmt.conn.progressUpdaterPeriod.LastQueryState = qrStats.QueryStats.State
 }
 
-type typeConverter struct {
-	typeName       string
-	parsedType     []string
-	scanType       reflect.Type
-	precision      optionalInt64
-	scale          optionalInt64
-	size           optionalInt64
-	location       *time.Location
-	signature      typeSignature
-	convertsNested bool
+// columnType describes a column the way the driver.RowsColumnType*
+// methods report it.
+type columnType struct {
+	typeName   string
+	parsedType []string
+	scanType   reflect.Type
+	precision  optionalInt64
+	scale      optionalInt64
+	size       optionalInt64
 }
 
 type optionalInt64 struct {
@@ -4230,15 +4172,10 @@ func newOptionalInt64(value int64) optionalInt64 {
 	return optionalInt64{value: value, hasValue: true}
 }
 
-// newTypeConverter builds a converter for one result column. Values without
-// a time zone are interpreted in location.
-func newTypeConverter(typeName string, signature typeSignature, location *time.Location) (*typeConverter, error) {
-	result := &typeConverter{
-		typeName:       typeName,
-		parsedType:     getNestedTypes([]string{}, signature),
-		location:       location,
-		signature:      signature,
-		convertsNested: needsNestedConversion(signature),
+func newColumnType(typeName string, signature typeSignature) (*columnType, error) {
+	result := &columnType{
+		typeName:   typeName,
+		parsedType: getNestedTypes([]string{}, signature),
 	}
 	var err error
 	result.scanType, err = getScanType(signature)
@@ -4289,28 +4226,6 @@ func getNestedTypes(types []string, signature typeSignature) []string {
 		}
 	}
 	return types
-}
-
-// needsNestedConversion reports whether a type is, or contains through ARRAY
-// and MAP, a type whose values the JSON response does not carry in the shape
-// the driver returns: a ROW or a VARIANT.
-func needsNestedConversion(signature typeSignature) bool {
-	if signature.RawType == "row" || signature.RawType == "variant" {
-		return true
-	}
-	for _, arg := range signature.Arguments {
-		switch arg.Kind {
-		case KIND_TYPE:
-			if needsNestedConversion(arg.typeSignature) {
-				return true
-			}
-		case KIND_NAMED_TYPE:
-			if needsNestedConversion(arg.namedTypeSignature.TypeSignature) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // getScanType returns the type ColumnTypeScanType reports. An ARRAY or MAP
@@ -4436,362 +4351,11 @@ func scalarScanType(rawType string) reflect.Type {
 	return reflect.TypeOf(v)
 }
 
-// ConvertValue implements the driver.ValueConverter interface.
-func (c *typeConverter) ConvertValue(v interface{}) (driver.Value, error) {
-	switch c.parsedType[0] {
-	case "row":
-		return convertNested(c.signature, v, c.location)
-	case "map":
-		if c.convertsNested {
-			return convertNested(c.signature, v, c.location)
-		}
-		if err := validateMap(v); err != nil {
-			return nil, err
-		}
-		return v, nil
-	case "array":
-		if c.convertsNested {
-			return convertNested(c.signature, v, c.location)
-		}
-		if err := validateSlice(v); err != nil {
-			return nil, err
-		}
-		return v, nil
-	default:
-		return convertScalar(c.parsedType[0], v, c.location)
-	}
-}
-
-// convertScalar converts a single decoded JSON value to the Go value a plain
-// column of rawType would produce.
-func convertScalar(rawType string, v interface{}, location *time.Location) (interface{}, error) {
-	switch rawType {
-	case "boolean":
-		vv, err := scanNullBool(v)
-		if !vv.Valid {
-			return nil, err
-		}
-		return vv.Bool, err
-	case "json", "char", "varchar", "interval year to month", "interval day to second", "decimal", "number", "ipaddress", "uuid", "Geometry", "SphericalGeography", "color", "unknown":
-		vv, err := scanNullString(v)
-		if !vv.Valid {
-			return nil, err
-		}
-		return vv.String, err
-	case "variant":
-		return decodeVariant(v, location)
-	case "tinyint", "smallint", "integer", "bigint":
-		vv, err := scanNullInt64(v)
-		if !vv.Valid {
-			return nil, err
-		}
-		return vv.Int64, err
-	case "real", "double":
-		vv, err := scanNullFloat64(v)
-		if !vv.Valid {
-			return nil, err
-		}
-		return vv.Float64, err
-	case "date", "time", "time with time zone", "timestamp", "timestamp with time zone":
-		vv, err := scanNullTime(v, location)
-		if !vv.Valid {
-			return nil, err
-		}
-		return vv.Time, err
-	case "KdbTree", "BingTile":
-		if err := validateMap(v); err != nil {
-			return nil, err
-		}
-		return v, nil
-	default:
-		// varbinary, and every type without a textual form like HyperLogLog or SetDigest, arrive as base64 strings
-		vv, err := scanNullBytes(v)
-		if !vv.Valid {
-			return nil, err
-		}
-		return vv.Bytes, err
-	}
-}
-
-// convertNested walks a value whose type needsNestedConversion, converting
-// each field and element the way convertScalar would and turning every ROW
-// into a Row. Other values are never passed here; they keep the plain
-// pass-through behavior in ConvertValue.
-func convertNested(signature typeSignature, v interface{}, location *time.Location) (interface{}, error) {
-	if v == nil {
-		return nil, nil
-	}
-	switch signature.RawType {
-	case "row":
-		fields, ok := v.([]interface{})
-		if !ok {
-			return nil, fmt.Errorf("cannot convert %v (%T) to row", v, v)
-		}
-		if len(fields) != len(signature.Arguments) {
-			return nil, fmt.Errorf("row has %d fields but its type has %d", len(fields), len(signature.Arguments))
-		}
-		row := Row{names: make([]string, len(fields)), values: make([]interface{}, len(fields)), Valid: true}
-		for i, field := range fields {
-			arg := signature.Arguments[i].namedTypeSignature
-			row.names[i] = arg.FieldName.Name
-			if row.names[i] == "" {
-				row.names[i] = "field" + strconv.Itoa(i)
-			}
-			converted, err := convertNested(arg.TypeSignature, field, location)
-			if err != nil {
-				return nil, err
-			}
-			row.values[i] = converted
-		}
-		return row, nil
-	case "array":
-		if err := validateSlice(v); err != nil {
-			return nil, err
-		}
-		elems := v.([]interface{})
-		elementType := signature.Arguments[0].typeSignature
-		converted := make([]interface{}, len(elems))
-		for i, elem := range elems {
-			var err error
-			if converted[i], err = convertNested(elementType, elem, location); err != nil {
-				return nil, err
-			}
-		}
-		return converted, nil
-	case "map":
-		if err := validateMap(v); err != nil {
-			return nil, err
-		}
-		m := v.(map[string]interface{})
-		valueType := signature.Arguments[1].typeSignature
-		converted := make(map[string]interface{}, len(m))
-		for k, elem := range m {
-			var err error
-			if converted[k], err = convertNested(valueType, elem, location); err != nil {
-				return nil, err
-			}
-		}
-		return converted, nil
-	default:
-		return convertScalar(signature.RawType, v, location)
-	}
-}
-
-func validateMap(v interface{}) error {
-	if v == nil {
-		return nil
-	}
-	if _, ok := v.(map[string]interface{}); !ok {
-		return fmt.Errorf("cannot convert %v (%T) to map", v, v)
-	}
-	return nil
-}
-
-func validateSlice(v interface{}) error {
-	if v == nil {
-		return nil
-	}
-	if _, ok := v.([]interface{}); !ok {
-		return fmt.Errorf("cannot convert %v (%T) to slice", v, v)
-	}
-	return nil
-}
-
-func scanNullBool(v interface{}) (sql.NullBool, error) {
-	if v == nil {
-		return sql.NullBool{}, nil
-	}
-	vv, ok := v.(bool)
-	if !ok {
-		return sql.NullBool{},
-			fmt.Errorf("cannot convert %v (%T) to bool", v, v)
-	}
-	return sql.NullBool{Valid: true, Bool: vv}, nil
-}
-
-func scanNullString(v interface{}) (sql.NullString, error) {
-	if v == nil {
-		return sql.NullString{}, nil
-	}
-	// An ARRAY(VARIANT) element, which scans into the JSON text a VARIANT
-	// column held before the driver decoded VARIANT values.
-	if variant, ok := v.(Variant); ok {
-		return sql.NullString{Valid: true, String: variant.String()}, nil
-	}
-	vv, ok := v.(string)
-	if !ok {
-		return sql.NullString{},
-			fmt.Errorf("cannot convert %v (%T) to string", v, v)
-	}
-	return sql.NullString{Valid: true, String: vv}, nil
-}
-
 // NullBinary represents a []byte that may be null.
 // This follows the same pattern as sql.NullString, sql.NullInt64, etc.
 type NullBinary struct {
 	Bytes []byte
 	Valid bool // Valid is true if Bytes is not NULL
-}
-
-func scanNullBytes(v interface{}) (NullBinary, error) {
-	if v == nil {
-		return NullBinary{}, nil // Valid: false, Bytes: nil
-	}
-
-	// VARBINARY values come back as a base64 encoded string.
-	vv, ok := v.(string)
-	if !ok {
-		return NullBinary{}, fmt.Errorf("cannot convert %v (%T) to []byte", v, v)
-	}
-
-	// Decode the base64 encoded string into a []byte.
-	decoded, err := base64.StdEncoding.DecodeString(vv)
-	if err != nil {
-		return NullBinary{}, fmt.Errorf("cannot decode base64 string into []byte: %w", err)
-	}
-
-	return NullBinary{Bytes: decoded, Valid: true}, nil
-}
-
-func scanNullInt64(v interface{}) (sql.NullInt64, error) {
-	if v == nil {
-		return sql.NullInt64{}, nil
-	}
-	vNumber, ok := v.(json.Number)
-	if !ok {
-		return sql.NullInt64{},
-			fmt.Errorf("cannot convert %v (%T) to int64", v, v)
-	}
-	vv, err := vNumber.Int64()
-	if err != nil {
-		return sql.NullInt64{},
-			fmt.Errorf("cannot convert %v (%T) to int64", v, v)
-	}
-	return sql.NullInt64{Valid: true, Int64: vv}, nil
-}
-
-func scanNullFloat64(v interface{}) (sql.NullFloat64, error) {
-	if v == nil {
-		return sql.NullFloat64{}, nil
-	}
-	vNumber, ok := v.(json.Number)
-	if ok {
-		vFloat, err := vNumber.Float64()
-		if err != nil {
-			return sql.NullFloat64{}, fmt.Errorf("cannot convert %v (%T) to float64: %w", vNumber, vNumber, err)
-		}
-		return sql.NullFloat64{Valid: true, Float64: vFloat}, nil
-	}
-	switch v {
-	case "NaN":
-		return sql.NullFloat64{Valid: true, Float64: math.NaN()}, nil
-	case "Infinity":
-		return sql.NullFloat64{Valid: true, Float64: math.Inf(+1)}, nil
-	case "-Infinity":
-		return sql.NullFloat64{Valid: true, Float64: math.Inf(-1)}, nil
-	default:
-		vString, ok := v.(string)
-		if !ok {
-			return sql.NullFloat64{}, fmt.Errorf("cannot convert %v (%T) to float64", v, v)
-		}
-		vFloat, err := strconv.ParseFloat(vString, 64)
-		if err != nil {
-			return sql.NullFloat64{}, fmt.Errorf("cannot convert %v (%T) to float64: %w", v, v, err)
-		}
-		return sql.NullFloat64{Valid: true, Float64: vFloat}, nil
-	}
-}
-
-// Layout for time and timestamp WITHOUT time zone.
-// Trino can support up to 12 digits sub second precision, but Go only 9.
-// (Requires X-Trino-Client-Capabilities: PARAMETRIC_DATETIME)
-var timeLayouts = []string{
-	"2006-01-02",
-	"15:04:05.999999999",
-	"2006-01-02 15:04:05.999999999",
-}
-
-// Layout for time and timestamp WITH time zone.
-// Trino can support up to 12 digits sub second precision, but Go only 9.
-// (Requires X-Trino-Client-Capabilities: PARAMETRIC_DATETIME)
-var timeLayoutsTZ = []string{
-	"15:04:05.999999999 -07:00",
-	"2006-01-02 15:04:05.999999999 -07:00",
-}
-
-// scanNullTime parses a Trino date, time or timestamp string. Values that
-// carry their own zone keep it; the others are interpreted in location.
-func scanNullTime(v interface{}, location *time.Location) (NullTime, error) {
-	if v == nil {
-		return NullTime{}, nil
-	}
-	vv, ok := v.(string)
-	if !ok {
-		return NullTime{}, fmt.Errorf("cannot convert %v (%T) to time string", v, v)
-	}
-	vparts := strings.Split(vv, " ")
-	if len(vparts) > 1 && !unicode.IsDigit(rune(vparts[len(vparts)-1][0])) {
-		return parseNullTimeWithLocation(vv)
-	}
-	// Time literals may not have spaces before the timezone.
-	if strings.ContainsRune(vv, '+') {
-		return parseNullTimeWithLocation(strings.Replace(vv, "+", " +", 1))
-	}
-	hyphenCount := strings.Count(vv, "-")
-	// We need to ensure we don't treat the hyphens in dates as the minus offset sign.
-	// So if there's only one hyphen or more than 2, we have a negative offset.
-	if hyphenCount == 1 || hyphenCount > 2 {
-		// We add a space before the last hyphen to parse properly.
-		i := strings.LastIndex(vv, "-")
-		timestamp := vv[:i] + strings.Replace(vv[i:], "-", " -", 1)
-		return parseNullTimeWithLocation(timestamp)
-	}
-	return parseNullTime(vv, location)
-}
-
-func parseNullTime(v string, location *time.Location) (NullTime, error) {
-	var t time.Time
-	var err error
-	for _, layout := range timeLayouts {
-		t, err = time.ParseInLocation(layout, v, location)
-		if err == nil {
-			return NullTime{Valid: true, Time: t}, nil
-		}
-	}
-	return NullTime{}, err
-}
-
-func parseNullTimeWithLocation(v string) (NullTime, error) {
-	idx := strings.LastIndex(v, " ")
-	if idx == -1 {
-		return NullTime{}, fmt.Errorf("cannot convert %v (%T) to time+zone", v, v)
-	}
-	stamp, location := v[:idx], v[idx+1:]
-	var t time.Time
-	var err error
-	// Try offset timezones.
-	if strings.HasPrefix(location, "+") || strings.HasPrefix(location, "-") {
-		for _, layout := range timeLayoutsTZ {
-			t, err = time.Parse(layout, v)
-			if err == nil {
-				return NullTime{Valid: true, Time: t}, nil
-			}
-		}
-		return NullTime{}, err
-	}
-	loc, err := time.LoadLocation(location)
-	// Not a named location.
-	if err != nil {
-		return NullTime{}, fmt.Errorf("cannot load timezone %q: %v", location, err)
-	}
-
-	for _, layout := range timeLayouts {
-		t, err = time.ParseInLocation(layout, stamp, loc)
-		if err == nil {
-			return NullTime{Valid: true, Time: t}, nil
-		}
-	}
-	return NullTime{}, err
 }
 
 // NullTime represents a time.Time value that can be null.

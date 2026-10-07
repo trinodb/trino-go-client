@@ -3,7 +3,6 @@ package integration
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"math"
 	"reflect"
 	"testing"
@@ -168,16 +167,15 @@ func TestIntegrationNonStandardTypes(t *testing.T) {
 	assert.Equal(t, "POINT (1 2)", geometry)
 	assert.Equal(t, "POINT (1 2)", geography)
 	assert.Equal(t, "red", color)
-	assert.Equal(t, map[string]interface{}{"x": json.Number("1"), "y": json.Number("2"), "zoom": json.Number("3")}, bingTile)
+	assert.Equal(t, map[string]interface{}{"x": float64(1), "y": float64(2), "zoom": float64(3)}, bingTile)
 }
 
 // TestComplexTypes pins down how ROW and MAP values decode when nested,
 // which TestIntegrationTypeConversion does not exercise. A ROW converts into
 // a trino.Row at any depth, including inside another ROW or a MAP, with
-// every field converted the way a plain column of that type would be: a
-// VARBINARY field decodes to []byte even nested inside a ROW, unlike at the
-// top level of a MAP or ARRAY that never contains a ROW, which keeps
-// whatever raw shape the JSON response used (see the scalar map case below).
+// every field converted the way a plain column of that type would be, so a
+// VARBINARY field decodes to []byte; MAP and ARRAY values convert their
+// elements the same way.
 func TestComplexTypes(t *testing.T) {
 	db := integrationOpen(t)
 
@@ -202,7 +200,12 @@ func TestComplexTypes(t *testing.T) {
 		{
 			name:     "map with scalar values",
 			query:    `SELECT MAP(ARRAY['a', 'b'], ARRAY[1, 2])`,
-			expected: map[string]interface{}{"a": json.Number("1"), "b": json.Number("2")},
+			expected: map[string]interface{}{"a": int64(1), "b": int64(2)},
+		},
+		{
+			name:     "map with binary values",
+			query:    `SELECT MAP(ARRAY['a'], ARRAY[X'0001'])`,
+			expected: map[string]interface{}{"a": []byte{0, 1}},
 		},
 		{
 			name:  "map with row values",

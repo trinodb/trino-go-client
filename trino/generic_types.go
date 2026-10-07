@@ -2,7 +2,6 @@ package trino
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"reflect"
 	"strconv"
@@ -25,16 +24,17 @@ import (
 //     sql.NullInt16, sql.NullFloat64, sql.NullTime, NullTime or NullBinary,
 //     which keep a NULL element as not valid
 //   - NullSlice, NullMap or NullRow, for nested arrays, maps and rows
-//   - any other type whose pointer implements sql.Scanner, like Row; its
-//     Scan receives the element in the shape the JSON response used, like a
-//     json.Number for a number, or converted the way a plain column would be
-//     when the array contains a ROW (see Row)
+//   - any other type whose pointer implements sql.Scanner, like Row or
+//     Variant; its Scan receives the element converted the way a plain
+//     column of the element type would be
 //
-// []byte elements are decoded from the base64 form VARBINARY values travel
-// in. Elements without a time zone are interpreted in Location, or in
-// time.Local when Location is nil; set it to the zone of the connection,
-// which the server used to produce them. Location is passed down to nested
-// NullSlice and NullMap values.
+// An element converts into T when it holds that type, like an int64 for
+// BIGINT and the narrower integer types, a time.Time for TIMESTAMP and a
+// []byte for VARBINARY. An integer element also converts into the floating
+// point types, and so does a DECIMAL element, a string otherwise. Elements
+// arrive in the zone of the connection, so Location is only used to parse
+// the keys of a nested NullMap and is passed down to nested NullSlice and
+// NullMap values.
 type NullSlice[T any] struct {
 	Slice    []T
 	Valid    bool
@@ -70,8 +70,13 @@ func (s *NullSlice[T]) scanValue(value interface{}, location *time.Location) err
 // string, bool, any of the integer and floating point types NullSlice
 // accepts, time.Time, or any other comparable type whose pointer implements
 // sql.Scanner, which receives the key as a string. A NULL map scans with
-// Valid set to false and a nil Map. Location is used and passed down the
-// same way as in NullSlice.
+// Valid set to false and a nil Map.
+//
+// The server sends the keys as strings, which NullMap parses into K. Keys
+// without a time zone, like those of a MAP(DATE, ...), are interpreted in
+// Location, or in time.Local when Location is nil; set it to the zone of the
+// connection, which the server used to produce them. Location is passed
+// down to nested NullSlice and NullMap values.
 type NullMap[K comparable, V any] struct {
 	Map      map[K]V
 	Valid    bool
@@ -95,7 +100,11 @@ func (m *NullMap[K, V]) scanValue(value interface{}, location *time.Location) er
 	result := make(map[K]V, len(values))
 	for rawKey, rawValue := range values {
 		var key K
-		if err := scanElement(&key, mapKeyValue(&key, rawKey), location); err != nil {
+		keyValue, err := mapKeyValue(&key, rawKey, location)
+		if err != nil {
+			return fmt.Errorf("key %q: %w", rawKey, err)
+		}
+		if err := scanElement(&key, keyValue, location); err != nil {
 			return fmt.Errorf("key %q: %w", rawKey, err)
 		}
 		var v V
@@ -109,17 +118,29 @@ func (m *NullMap[K, V]) scanValue(value interface{}, location *time.Location) er
 }
 
 // mapKeyValue turns a map key, which the JSON response always sends as a
-// string, into the shape an element of the same type would arrive in.
-func mapKeyValue(dest interface{}, key string) interface{} {
+// string, into the value an element of the type of dest would be.
+func mapKeyValue(dest interface{}, key string, location *time.Location) (interface{}, error) {
 	switch dest.(type) {
 	case *bool, *sql.NullBool:
-		if b, err := strconv.ParseBool(key); err == nil {
-			return b
+		return parsedKey(strconv.ParseBool(key))
+	case *int64, *int32, *int16, *int8, *int, *sql.NullInt64, *sql.NullInt32, *sql.NullInt16:
+		return parsedKey(strconv.ParseInt(key, 10, 64))
+	case *float64, *float32, *sql.NullFloat64:
+		return parsedKey(strconv.ParseFloat(key, 64))
+	case *time.Time, *NullTime, *sql.NullTime:
+		if location == nil {
+			location = time.Local
 		}
-	case *int64, *int32, *int16, *int8, *int, *sql.NullInt64, *sql.NullInt32, *sql.NullInt16, *float64, *float32, *sql.NullFloat64:
-		return json.Number(key)
+		return parsedKey(parseTime(key, location))
 	}
-	return key
+	return key, nil
+}
+
+func parsedKey[V any](value V, err error) (interface{}, error) {
+	if err != nil {
+		return nil, err
+	}
+	return value, nil
 }
 
 // NullRow represents a ROW value that may be null, scanned into the struct
@@ -203,9 +224,8 @@ func wrapScanError(err error) error {
 }
 
 // scanElement stores one ARRAY element, MAP key or value, or ROW field in
-// dest. The value is either in the shape the JSON response used, or already
-// converted by convertRows when the column contains a ROW, so both shapes
-// are accepted.
+// dest. The value was decoded the way a plain column of its type is, or
+// parsed from a MAP key by mapKeyValue.
 func scanElement(dest interface{}, value interface{}, location *time.Location) error {
 	switch d := dest.(type) {
 	case elementScanner:
@@ -214,20 +234,20 @@ func scanElement(dest interface{}, value interface{}, location *time.Location) e
 		*d = value
 		return nil
 	case *bool:
-		v, err := scanNullBool(value)
-		return setNotNull(d, v.Bool, v.Valid, err)
+		v, err := element[bool](value)
+		return setNotNull(d, v, err)
 	case *sql.NullBool:
-		v, err := scanNullBool(value)
-		return setNullable(d, v, err)
+		v, err := element[bool](value)
+		return setNullable(d, sql.NullBool{Bool: v.V, Valid: v.Valid}, err)
 	case *string:
-		v, err := scanNullString(value)
-		return setNotNull(d, v.String, v.Valid, err)
+		v, err := elementString(value)
+		return setNotNull(d, v, err)
 	case *sql.NullString:
-		v, err := scanNullString(value)
-		return setNullable(d, v, err)
+		v, err := elementString(value)
+		return setNullable(d, sql.NullString{String: v.V, Valid: v.Valid}, err)
 	case *int64:
-		v, err := elementInt64(value)
-		return setNotNull(d, v.Int64, v.Valid, err)
+		v, err := element[int64](value)
+		return setNotNull(d, v, err)
 	case *int32:
 		return setInteger(d, value)
 	case *int16:
@@ -237,8 +257,8 @@ func scanElement(dest interface{}, value interface{}, location *time.Location) e
 	case *int:
 		return setInteger(d, value)
 	case *sql.NullInt64:
-		v, err := elementInt64(value)
-		return setNullable(d, v, err)
+		v, err := element[int64](value)
+		return setNullable(d, sql.NullInt64{Int64: v.V, Valid: v.Valid}, err)
 	case *sql.NullInt32:
 		v, err := elementInteger[int32](value)
 		return setNullable(d, sql.NullInt32{Int32: v.V, Valid: v.Valid}, err)
@@ -247,40 +267,31 @@ func scanElement(dest interface{}, value interface{}, location *time.Location) e
 		return setNullable(d, sql.NullInt16{Int16: v.V, Valid: v.Valid}, err)
 	case *float64:
 		v, err := elementFloat64(value)
-		return setNotNull(d, v.Float64, v.Valid, err)
+		return setNotNull(d, v, err)
 	case *float32:
 		v, err := elementFloat64(value)
-		return setNotNull(d, float32(v.Float64), v.Valid, err)
+		return setNotNull(d, sql.Null[float32]{V: float32(v.V), Valid: v.Valid}, err)
 	case *sql.NullFloat64:
 		v, err := elementFloat64(value)
-		return setNullable(d, v, err)
+		return setNullable(d, sql.NullFloat64{Float64: v.V, Valid: v.Valid}, err)
 	case *time.Time:
-		v, err := elementTime(value, location)
-		return setNotNull(d, v.Time, v.Valid, err)
+		v, err := element[time.Time](value)
+		return setNotNull(d, v, err)
 	case *NullTime:
-		v, err := elementTime(value, location)
-		return setNullable(d, v, err)
+		v, err := element[time.Time](value)
+		return setNullable(d, NullTime{Time: v.V, Valid: v.Valid}, err)
 	case *sql.NullTime:
-		v, err := elementTime(value, location)
-		return setNullable(d, sql.NullTime{Time: v.Time, Valid: v.Valid}, err)
+		v, err := element[time.Time](value)
+		return setNullable(d, sql.NullTime{Time: v.V, Valid: v.Valid}, err)
 	case *[]byte:
-		v, err := elementBytes(value)
-		return setNullable(d, v.Bytes, err)
+		return setValue(d, value)
 	case *NullBinary:
-		v, err := elementBytes(value)
-		return setNullable(d, v, err)
+		v, err := element[[]byte](value)
+		return setNullable(d, NullBinary{Bytes: v.V, Valid: v.Valid}, err)
 	case *map[string]interface{}:
-		if err := validateMap(value); err != nil {
-			return err
-		}
-		*d, _ = value.(map[string]interface{})
-		return nil
+		return setValue(d, value)
 	case *[]interface{}:
-		if err := validateSlice(value); err != nil {
-			return err
-		}
-		*d, _ = value.([]interface{})
-		return nil
+		return setValue(d, value)
 	case sql.Scanner:
 		return d.Scan(value)
 	default:
@@ -288,14 +299,21 @@ func scanElement(dest interface{}, value interface{}, location *time.Location) e
 	}
 }
 
-func setNotNull[V any](dest *V, value V, valid bool, err error) error {
+// setValue stores value, which must be a V or nil, in dest, which holds the
+// zero V for nil.
+func setValue[V any](dest *V, value interface{}) error {
+	v, err := element[V](value)
+	return setNullable(dest, v.V, err)
+}
+
+func setNotNull[V any](dest *V, value sql.Null[V], err error) error {
 	if err != nil {
 		return err
 	}
-	if !valid {
-		return fmt.Errorf("cannot convert NULL to %T, use a nullable element type", value)
+	if !value.Valid {
+		return fmt.Errorf("cannot convert NULL to %s, use a nullable element type", reflect.TypeFor[V]())
 	}
-	*dest = value
+	*dest = value.V
 	return nil
 }
 
@@ -313,50 +331,55 @@ type integer interface {
 
 func setInteger[N integer](dest *N, value interface{}) error {
 	v, err := elementInteger[N](value)
-	return setNotNull(dest, v.V, v.Valid, err)
+	return setNotNull(dest, v, err)
 }
 
 func elementInteger[N integer](value interface{}) (sql.Null[N], error) {
-	v, err := elementInt64(value)
+	v, err := element[int64](value)
 	if err != nil {
 		return sql.Null[N]{}, err
 	}
-	narrowed := N(v.Int64)
-	if int64(narrowed) != v.Int64 {
-		return sql.Null[N]{}, fmt.Errorf("value %d overflows %T", v.Int64, narrowed)
+	narrowed := N(v.V)
+	if int64(narrowed) != v.V {
+		return sql.Null[N]{}, fmt.Errorf("value %d overflows %T", v.V, narrowed)
 	}
 	return sql.Null[N]{V: narrowed, Valid: v.Valid}, nil
 }
 
-func elementInt64(value interface{}) (sql.NullInt64, error) {
-	if v, ok := value.(int64); ok {
-		return sql.NullInt64{Int64: v, Valid: true}, nil
+// element returns value, which must be a V or nil, as a sql.Null[V].
+func element[V any](value interface{}) (sql.Null[V], error) {
+	if value == nil {
+		return sql.Null[V]{}, nil
 	}
-	return scanNullInt64(value)
+	v, ok := value.(V)
+	if !ok {
+		return sql.Null[V]{}, fmt.Errorf("cannot convert %v (%T) to %s", value, value, reflect.TypeFor[V]())
+	}
+	return sql.Null[V]{V: v, Valid: true}, nil
 }
 
-func elementFloat64(value interface{}) (sql.NullFloat64, error) {
-	if v, ok := value.(float64); ok {
-		return sql.NullFloat64{Float64: v, Valid: true}, nil
+func elementString(value interface{}) (sql.Null[string], error) {
+	// An ARRAY(VARIANT) element, which scans into the JSON text a VARIANT
+	// column held before the driver decoded VARIANT values.
+	if variant, ok := value.(Variant); ok {
+		return sql.Null[string]{V: variant.String(), Valid: true}, nil
 	}
-	return scanNullFloat64(value)
+	return element[string](value)
 }
 
-func elementTime(value interface{}, location *time.Location) (NullTime, error) {
-	if v, ok := value.(time.Time); ok {
-		return NullTime{Time: v, Valid: true}, nil
+func elementFloat64(value interface{}) (sql.Null[float64], error) {
+	switch v := value.(type) {
+	case int64:
+		return sql.Null[float64]{V: float64(v), Valid: true}, nil
+	case string:
+		// A DECIMAL or NUMBER element.
+		parsed, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return sql.Null[float64]{}, fmt.Errorf("cannot convert %v (%T) to float64: %w", value, value, err)
+		}
+		return sql.Null[float64]{V: parsed, Valid: true}, nil
 	}
-	if location == nil {
-		location = time.Local
-	}
-	return scanNullTime(value, location)
-}
-
-func elementBytes(value interface{}) (NullBinary, error) {
-	if v, ok := value.([]byte); ok {
-		return NullBinary{Bytes: v, Valid: true}, nil
-	}
-	return scanNullBytes(value)
+	return element[float64](value)
 }
 
 // rowStructFields holds the keys NullRow matches ROW field names against,

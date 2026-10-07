@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -21,7 +23,7 @@ func TestQueryCancellation(t *testing.T) {
 	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&stmtResponse{
+		json.MarshalWrite(w, &stmtResponse{
 			Error: ErrTrino{
 				ErrorName: "USER_CANCELLED",
 			},
@@ -59,14 +61,14 @@ func TestFetchNoStackOverflow(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(&stmtResponse{
+		_ = json.MarshalWrite(w, &stmtResponse{
 			Error: ErrTrino{
 				ErrorName: "TEST",
 			},
 		})
 	}))
 	t.Cleanup(ts.Close)
-	require.NoError(t, json.NewEncoder(&nextPage).Encode(&stmtResponse{
+	require.NoError(t, json.MarshalWrite(&nextPage, &stmtResponse{
 		ID:      "fake-query",
 		NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
 	}))
@@ -93,17 +95,17 @@ func TestProtocolErrorHandling(t *testing.T) {
 		{
 			name:    "direct protocol invalid row type",
 			data:    []interface{}{123},
-			wantErr: "unexpected data type for row at index 0: expected []interface{}, got json.Number",
+			wantErr: "trino: row 0: expected an array of column values, got a number",
 		},
 		{
 			name:    "spooling protocol missing encoding",
 			data:    map[string]interface{}{"segments": []interface{}{}},
-			wantErr: "invalid or missing 'encoding' field on spooling protocol, expected string",
+			wantErr: "trino: missing 'encoding' field on spooling protocol",
 		},
 		{
 			name:    "spooling protocol invalid segments type",
 			data:    map[string]interface{}{"encoding": "json", "segments": "invalid"},
-			wantErr: "nvalid or missing 'segments' field on spooling protocol, expected []interface{}",
+			wantErr: `cannot unmarshal JSON string into Go []trino.dataSegment within "/segments"`,
 		},
 	}
 
@@ -118,6 +120,35 @@ func TestProtocolErrorHandling(t *testing.T) {
 			require.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+// TestPageKeepsNumbersExact covers numbers a float64 cannot hold: integers
+// beyond 2^53, also inside an array scanned as []interface{}, where callers
+// get an int64, and decimals, which the server sends as strings.
+func TestPageKeepsNumbersExact(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	decimalType := typeSignature{RawType: "decimal", Arguments: []typeArgument{
+		{Kind: KIND_LONG, Value: jsontext.Value("38")},
+		{Kind: KIND_LONG, Value: jsontext.Value("2")},
+	}}
+	columns := []queryColumn{
+		column("bigint", scalarType("bigint")),
+		column("array(bigint)", arrayType(scalarType("bigint"))),
+		column("decimal(38,2)", decimalType),
+	}
+	fc.respond(statementPage(), columnsPage(columns, [][]any{
+		{int64(math.MaxInt64), []any{int64(1<<53 + 1)}, "123456789012345678901234567890.12"},
+	}))
+	db := fc.open(t, "")
+
+	var bigint int64
+	var array NullSlice[interface{}]
+	var decimal string
+	require.NoError(t, db.QueryRow("SELECT x").Scan(&bigint, &array, &decimal))
+	assert.Equal(t, int64(math.MaxInt64), bigint)
+	assert.Equal(t, NullSlice[interface{}]{Slice: []interface{}{int64(9007199254740993)}, Valid: true}, array)
+	assert.Equal(t, "123456789012345678901234567890.12", decimal)
 }
 
 func TestSetRoleHeader(t *testing.T) {
@@ -567,7 +598,7 @@ func TestQueryWarningsCollectedAcrossPages(t *testing.T) {
 		pageOf(&queryResponse{
 			ID:       fakeQueryID,
 			Columns:  []queryColumn{integerColumn("_col0")},
-			Data:     [][]any{{1}},
+			Data:     jsonData([][]any{{1}}),
 			Warnings: []Warning{deprecated},
 		}),
 		pageOf(&queryResponse{
@@ -595,7 +626,7 @@ func TestQueryWarningsIgnoredWithoutSink(t *testing.T) {
 		pageOf(&queryResponse{
 			ID:       fakeQueryID,
 			Columns:  []queryColumn{integerColumn("_col0")},
-			Data:     [][]any{{1}},
+			Data:     jsonData([][]any{{1}}),
 			Warnings: []Warning{{Code: 3, Name: "DEPRECATED_FUNCTION", Message: "Use of deprecated function: foo"}},
 		}),
 	)

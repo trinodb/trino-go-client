@@ -2,10 +2,9 @@ package trino
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
-	"io"
 	"mime"
 	"net"
 	"net/http"
@@ -311,10 +310,12 @@ func parseChallengeURL(name, value string) (*url.URL, error) {
 	return u, nil
 }
 
+// tokenPollResponse member names are matched exactly, as the Java client
+// does, so a "Token" member is not taken for the token.
 type tokenPollResponse struct {
-	Token   string
-	NextURI string
-	Error   string
+	Token   string `json:"token"`
+	NextURI string `json:"nextUri"`
+	Error   string `json:"error"`
 }
 
 // pollToken follows the token server until it returns the token, retrying
@@ -406,11 +407,11 @@ func getTokenPoll(ctx context.Context, client *http.Client, uri string) (*tokenP
 		if mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type")); mediaType != "application/json" {
 			return nil, fmt.Errorf("trino: token server returned Content-Type %q, not application/json", resp.Header.Get("Content-Type"))
 		}
-		poll, err := decodeTokenPoll(resp.Body)
-		if err != nil {
+		var poll tokenPollResponse
+		if err := json.UnmarshalRead(resp.Body, &poll); err != nil {
 			return nil, fmt.Errorf("trino: decoding token server response: %w", err)
 		}
-		return poll, nil
+		return &poll, nil
 	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
 		return nil, &retryableError{fmt.Errorf("token server returned %s", resp.Status)}
 	default:
@@ -425,22 +426,4 @@ func newTokenServerRequest(ctx context.Context, method, uri string) (*http.Reque
 	}
 	req.Header.Set(userAgentHeader, userAgent)
 	return req, nil
-}
-
-// decodeTokenPoll matches field names exactly, as the Java client does;
-// encoding/json would also accept "Token" or "TOKEN".
-func decodeTokenPoll(r io.Reader) (*tokenPollResponse, error) {
-	var fields map[string]json.RawMessage
-	if err := json.NewDecoder(r).Decode(&fields); err != nil {
-		return nil, err
-	}
-	var poll tokenPollResponse
-	for name, dst := range map[string]*string{"token": &poll.Token, "nextUri": &poll.NextURI, "error": &poll.Error} {
-		if raw, ok := fields[name]; ok {
-			if err := json.Unmarshal(raw, dst); err != nil {
-				return nil, fmt.Errorf("%s: %w", name, err)
-			}
-		}
-	}
-	return &poll, nil
 }
