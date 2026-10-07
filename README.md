@@ -15,7 +15,7 @@ offers it, runs transactions, and converts every Trino type, including nested
 
 ## Requirements
 
-* Go 1.25.5 or newer
+* Go 1.27 or newer
 * Trino 372 or newer
 
 ## Installation
@@ -63,7 +63,7 @@ contact the server. Settings that a DSN cannot carry, such as an
 `trino.NewConnector` and `sql.OpenDB`.
 
 Every request the driver sends carries a `User-Agent` such as
-`trino-go-client/v0.333.0 os=linux arch=amd64 lang/go=go1.25.5`, with the
+`trino-go-client/v0.333.0 os=linux arch=amd64 lang/go=go1.27.1`, with the
 driver version taken from the module build information (`unknown` when it is
 not available).
 

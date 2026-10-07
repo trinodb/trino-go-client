@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ['>=1.27', '1.25.5']
+        go: ['1.27']
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -24,17 +24,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        go: ['>=1.27', '1.25.5']
+        go: ['1.27']
         trino: ['latest', '372']
         spooling: ['coordinator_proxy']
         include:
-          - go: '>=1.27'
+          - go: '1.27'
             trino: 'latest'
             spooling: 'coordinator_storage_redirect'
-          - go: '>=1.27'
+          - go: '1.27'
             trino: 'latest'
             spooling: 'worker_proxy'
-          - go: '>=1.27'
+          - go: '1.27'
             trino: 'latest'
             spooling: 'storage'
     steps:
