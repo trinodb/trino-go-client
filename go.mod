@@ -7,6 +7,7 @@ require (
 	github.com/klauspost/compress v1.20.0
 	github.com/pierrec/lz4/v4 v4.1.30
 	github.com/stretchr/testify v1.12.1
+	go.uber.org/goleak v1.3.0
 )
 
 require (
