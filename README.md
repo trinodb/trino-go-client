@@ -1021,6 +1021,10 @@ return tx.Commit()
 and `sql.LevelSerializable`; any other level is rejected. `ReadOnly` starts a
 `READ ONLY` transaction.
 
+`Commit` and `Rollback` carry the values of the context passed to `BeginTx`,
+such as trace spans, but not its cancellation or deadline, so the rollback
+`database/sql` runs when that context is cancelled still reaches the server.
+
 A statement that fails aborts the whole transaction on the server. `Rollback`
 reports success in that case, while `Commit` returns an error.
 
