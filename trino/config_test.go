@@ -1191,3 +1191,49 @@ func TestParseDSNRequiresSchemeAndHost(t *testing.T) {
 		assert.ErrorContains(t, err, "expected scheme://host[:port]", "DSN %q", dsn)
 	}
 }
+
+// The DSN separates entries with ';' and a key from its value with the first
+// ':', so FormatDSN used to write entries that ParseDSN read back as others,
+// or refused.
+func TestFormatDSNRejectsEntriesItCannotExpress(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		config Config
+	}{
+		{"session property key with colon", Config{SessionProperties: map[string]string{"a:b": "c"}}},
+		{"session property key with semicolon", Config{SessionProperties: map[string]string{"a;b": "c"}}},
+		{"session property value with semicolon", Config{SessionProperties: map[string]string{"a": "b;c"}}},
+		{"extra credential key with semicolon", Config{ExtraCredentials: map[string]string{"k;": "v"}}},
+		{"role catalog with colon", Config{Roles: map[string]string{"c:d": "r"}}},
+		{"role with semicolon", Config{Roles: map[string]string{"c": "r;s"}}},
+		{"resource estimate key with colon", Config{ResourceEstimates: map[string]string{"a:b": "1"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tc.config.ServerURI = "http://user@localhost"
+			_, err := tc.config.FormatDSN()
+			assert.ErrorContains(t, err, "cannot be expressed in a DSN")
+
+			// The same Config is fine for a Connector.
+			_, err = NewConnector(&tc.config)
+			assert.NoError(t, err)
+		})
+	}
+}
+
+func TestFormatDSNKeepsColonsInValues(t *testing.T) {
+	t.Parallel()
+	config := &Config{
+		ServerURI:         "http://user@localhost",
+		SessionProperties: map[string]string{"a": "b:c"},
+		Roles:             map[string]string{"hive": "x:y"},
+	}
+	dsn, err := config.FormatDSN()
+	require.NoError(t, err)
+	parsed, err := ParseDSN(dsn)
+	require.NoError(t, err)
+	assert.Equal(t, config.SessionProperties, parsed.SessionProperties)
+	assert.Equal(t, config.Roles, parsed.Roles)
+}

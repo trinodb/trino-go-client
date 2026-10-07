@@ -746,6 +746,29 @@ func (c *Config) validateHeaderKeys() error {
 	return nil
 }
 
+// validateDSNEntries rejects entries ParseDSN would read differently. The DSN
+// joins entries with ';' and splits each at the first ':', and has no way to
+// escape either, so a ';' in a key or value or a ':' in a key would move or
+// drop the rest of the entry. A Connector has no such limit.
+func (c *Config) validateDSNEntries() error {
+	for _, parameter := range []struct {
+		name    string
+		entries map[string]string
+	}{
+		{"session_properties", c.SessionProperties},
+		{"extra_credentials", c.ExtraCredentials},
+		{"roles", c.Roles},
+		{resourceEstimatesConfig, c.ResourceEstimates},
+	} {
+		for _, key := range slices.Sorted(maps.Keys(parameter.entries)) {
+			if strings.Contains(key, mapKeySeparator) || strings.Contains(key, mapEntrySeparator) || strings.Contains(parameter.entries[key], mapEntrySeparator) {
+				return fmt.Errorf("trino: %s entry %q cannot be expressed in a DSN, use NewConnector", parameter.name, key)
+			}
+		}
+	}
+	return nil
+}
+
 func validateMapKeys(parameter string, entries map[string]string) error {
 	for _, key := range slices.Sorted(maps.Keys(entries)) {
 		if key == "" {
@@ -940,6 +963,9 @@ func (c *Config) FormatDSN() (string, error) {
 	}
 
 	if err := c.validate(serverURL); err != nil {
+		return "", err
+	}
+	if err := c.validateDSNEntries(); err != nil {
 		return "", err
 	}
 	if c.SSLCertPath != "" {
