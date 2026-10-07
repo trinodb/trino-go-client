@@ -127,7 +127,15 @@ func TestSerial(t *testing.T) {
 		{name: "binary slice", value: [][]byte{{0x01}, nil}, want: "ARRAY[X'01', NULL]"},
 		{name: "invalid slice contents", value: []interface{}{1, byte('a')}, wantErr: "trino: unsupported arg type: byte/uint8"},
 		{name: "json", value: json.RawMessage(`{}`), wantErr: "trino: unsupported arg type: json.RawMessage"},
-		{name: "map", value: map[string]string{"a": "b"}, wantErr: "trino: unsupported arg type: map"},
+		{name: "string map", value: map[string]string{"b": "y'z", "a": "x"}, want: "MAP(ARRAY['a', 'b'], ARRAY['x', 'y''z'])"},
+		{name: "int keyed map sorted by literal", value: map[int64]string{10: "ten", 2: "two", -1: "minus one"}, want: "MAP(ARRAY[-1, 10, 2], ARRAY['minus one', 'ten', 'two'])"},
+		{name: "map with null value", value: map[string]any{"a": nil}, want: "MAP(ARRAY['a'], ARRAY[NULL])"},
+		{name: "map of slices", value: map[string][]int{"a": {1, 2}}, want: "MAP(ARRAY['a'], ARRAY[ARRAY[1, 2]])"},
+		{name: "nested map", value: map[string]map[bool]float64{"a": {true: 1.5}}, want: "MAP(ARRAY['a'], ARRAY[MAP(ARRAY[true], ARRAY[DOUBLE '1.5'])])"},
+		{name: "empty map", value: map[string]int{}, want: "MAP()"},
+		{name: "nil map", value: map[string]int(nil), want: "MAP()"},
+		{name: "map with unsupported key", value: map[byte]int{'a': 1}, wantErr: "trino: unsupported arg type: byte/uint8"},
+		{name: "map with unsupported value", value: map[string]json.RawMessage{"a": nil}, wantErr: "trino: unsupported arg type: json.RawMessage"},
 		{name: "struct", value: struct{ A int }{1}, wantErr: "trino: unsupported arg type: struct { A int }"},
 	}
 

@@ -2470,7 +2470,7 @@ func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
 		return nil
 	default:
 		{
-			if reflect.TypeOf(arg.Value).Kind() == reflect.Slice {
+			if kind := reflect.TypeOf(arg.Value).Kind(); kind == reflect.Slice || kind == reflect.Map {
 				return nil
 			}
 
