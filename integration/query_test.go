@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -475,18 +476,23 @@ func TestQueryForUsername(t *testing.T) {
 	}
 }
 
-type TestQueryProgressCallback struct {
-	progressMap map[time.Time]float64
-	statusMap   map[time.Time]string
+// progressRecorder keeps every callback in arrival order; the driver invokes
+// Update from its own goroutine.
+type progressRecorder struct {
+	mu      sync.Mutex
+	updates []trino.QueryProgressInfo
 }
 
-func (qpc *TestQueryProgressCallback) Update(qpi trino.QueryProgressInfo) {
-	if qpc.progressMap == nil {
-		qpc.progressMap = map[time.Time]float64{}
-		qpc.statusMap = map[time.Time]string{}
-	}
-	qpc.progressMap[time.Now()] = float64(qpi.QueryStats.ProgressPercentage)
-	qpc.statusMap[time.Now()] = qpi.QueryStats.State
+func (r *progressRecorder) Update(info trino.QueryProgressInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.updates = append(r.updates, info)
+}
+
+func (r *progressRecorder) recorded() []trino.QueryProgressInfo {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.updates)
 }
 
 func TestQueryProgressWithCallback(t *testing.T) {
@@ -500,16 +506,22 @@ func TestQueryProgressWithCallback(t *testing.T) {
 
 	db := integrationOpen(t, dsn)
 
-	callback := &TestQueryProgressCallback{}
-
-	_, err = db.Query("SELECT 2", sql.Named("X-Trino-Progress-Callback", callback))
+	_, err = db.Query("SELECT 2", sql.Named("X-Trino-Progress-Callback", &progressRecorder{}))
 	assert.EqualError(t, err, trino.ErrInvalidProgressCallbackHeader.Error(), "unexpected error")
 }
 
+// TestQueryProgressWithCallbackPeriod checks that the period only throttles
+// callbacks that repeat the query state. With a period longer than the query,
+// RUNNING is reported once although every result page is a progress update,
+// while the change to FINISHED is reported right away.
 func TestQueryProgressWithCallbackPeriod(t *testing.T) {
+	// The slowest server in CI streams the rows well within this limit, but
+	// not within the default of the integration tests.
+	queryTimeout := 30 * time.Second
 	c := &trino.Config{
 		ServerURI:         integrationDSN(t),
 		SessionProperties: map[string]string{"query_priority": "1"},
+		QueryTimeout:      &queryTimeout,
 	}
 
 	dsn, err := c.FormatDSN()
@@ -517,49 +529,43 @@ func TestQueryProgressWithCallbackPeriod(t *testing.T) {
 
 	db := integrationOpen(t, dsn)
 
-	progressMap := make(map[time.Time]float64)
-	statusMap := make(map[time.Time]string)
-	progressUpdater := &TestQueryProgressCallback{
-		progressMap: progressMap,
-		statusMap:   statusMap,
-	}
-	progressUpdaterPeriod, err := time.ParseDuration("1ms")
-	require.NoError(t, err)
-
-	rows, err := db.Query("SELECT 2",
-		sql.Named("X-Trino-Progress-Callback", progressUpdater),
-		sql.Named("X-Trino-Progress-Callback-Period", progressUpdaterPeriod),
+	recorder := &progressRecorder{}
+	// The comments span several result pages, each one a progress update.
+	rows, err := db.Query("SELECT comment FROM tpch.sf1.orders LIMIT 100000",
+		sql.Named("X-Trino-Progress-Callback", recorder),
+		sql.Named("X-Trino-Progress-Callback-Period", time.Minute),
 	)
 	require.NoError(t, err, "Failed executing query")
-	assert.NotNil(t, rows)
 
+	rowCount := 0
 	for rows.Next() {
-		var ts string
-		require.NoError(t, rows.Scan(&ts), "Failed scanning query result")
-
-		assert.Equal(t, "2", ts, "Expected value does not equal result value")
+		var comment string
+		require.NoError(t, rows.Scan(&comment), "Failed scanning query result")
+		rowCount++
 	}
-
 	require.NoError(t, rows.Err())
+	assert.Equal(t, 100_000, rowCount)
 	require.NoError(t, rows.Close())
 
-	// sort time in order to calculate interval
-	assert.NotEmpty(t, progressMap)
-	assert.NotEmpty(t, statusMap)
-	var keys []time.Time
-	for k := range statusMap {
-		keys = append(keys, k)
+	updates := recorder.recorded()
+	states := make([]string, len(updates))
+	for i, update := range updates {
+		states[i] = update.QueryStats.State
 	}
-	sort.Slice(keys, func(i, j int) bool {
-		return keys[i].Before(keys[j])
-	})
-
-	for i, k := range keys {
-		if i > 0 {
-			assert.GreaterOrEqual(t, k.Sub(keys[i-1]), progressUpdaterPeriod)
+	t.Logf("progress callbacks reported the states %v", states)
+	require.GreaterOrEqual(t, len(updates), 2, "expected the initial callback and the one for the finished query")
+	for i, update := range updates {
+		assert.NotEmpty(t, update.QueryId)
+		progress := float64(update.QueryStats.ProgressPercentage)
+		assert.GreaterOrEqual(t, progress, 0.0)
+		assert.LessOrEqual(t, progress, 100.0)
+		if i == 0 {
+			continue
 		}
-		assert.GreaterOrEqual(t, progressMap[k], 0.0)
+		assert.NotEqual(t, updates[i-1].QueryStats.State, update.QueryStats.State,
+			"callbacks %d and %d both report state %s within the period", i-1, i, update.QueryStats.State)
 	}
+	assert.Equal(t, "FINISHED", updates[len(updates)-1].QueryStats.State)
 }
 
 // TestQueryWarnings exercises the "warnings" named argument against a real
