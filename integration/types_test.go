@@ -468,6 +468,64 @@ func TestIntegrationIntervalArgs(t *testing.T) {
 	}
 }
 
+func TestIntegrationIntervalScan(t *testing.T) {
+	db := integrationOpen(t)
+	for _, tc := range []struct {
+		expression string
+		want       trino.Interval
+	}{
+		{"INTERVAL '1-2' YEAR TO MONTH", trino.Interval{Months: 14, Valid: true}},
+		{"INTERVAL '-1-2' YEAR TO MONTH", trino.Interval{Months: -14, Valid: true}},
+		{"INTERVAL '-5' MONTH", trino.Interval{Months: -5, Valid: true}},
+		{"INTERVAL '3 04:05:06.789' DAY TO SECOND", trino.Interval{Duration: 3*24*time.Hour + 4*time.Hour + 5*time.Minute + 6*time.Second + 789*time.Millisecond, Valid: true}},
+		{"INTERVAL '-3 04:05:06.789' DAY TO SECOND", trino.Interval{Duration: -(3*24*time.Hour + 4*time.Hour + 5*time.Minute + 6*time.Second + 789*time.Millisecond), Valid: true}},
+		{"INTERVAL '-0.5' SECOND", trino.Interval{Duration: -500 * time.Millisecond, Valid: true}},
+		{"CAST(NULL AS INTERVAL YEAR TO MONTH)", trino.Interval{}},
+		{"CAST(NULL AS INTERVAL DAY TO SECOND)", trino.Interval{}},
+	} {
+		got := trino.Interval{Months: 99, Valid: true}
+		require.NoError(t, db.QueryRow("SELECT "+tc.expression).Scan(&got), tc.expression)
+		assert.Equal(t, tc.want, got, tc.expression)
+	}
+
+	var intervals trino.NullSlice[trino.Interval]
+	require.NoError(t, db.QueryRow("SELECT ARRAY[INTERVAL '1-2' YEAR TO MONTH, NULL, INTERVAL '-0-1' YEAR TO MONTH]").Scan(&intervals))
+	assert.Equal(t, trino.NullSlice[trino.Interval]{Slice: []trino.Interval{
+		{Months: 14, Valid: true},
+		{},
+		{Months: -1, Valid: true},
+	}, Valid: true}, intervals)
+
+	var overflowing trino.Interval
+	err := db.QueryRow("SELECT INTERVAL '106752' DAY").Scan(&overflowing)
+	assert.ErrorContains(t, err, "overflows time.Duration")
+}
+
+func TestIntegrationIntervalTypeArgs(t *testing.T) {
+	db := integrationOpen(t)
+	for _, tc := range []struct {
+		arg     trino.Interval
+		literal string
+	}{
+		{trino.Interval{Months: 14, Valid: true}, "INTERVAL '1-2' YEAR TO MONTH"},
+		{trino.Interval{Months: -14, Valid: true}, "INTERVAL '-1-2' YEAR TO MONTH"},
+		{trino.Interval{Months: math.MinInt32, Valid: true}, "INTERVAL '-178956970-8' YEAR TO MONTH"},
+		{trino.Interval{Duration: -(3*24*time.Hour + 4*time.Hour + 5*time.Minute + 6*time.Second + 789*time.Millisecond), Valid: true}, "INTERVAL '-3 04:05:06.789' DAY TO SECOND"},
+	} {
+		var equal bool
+		require.NoError(t, db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal), tc.literal)
+		assert.True(t, equal, "%+v did not round-trip as %s", tc.arg, tc.literal)
+
+		var got trino.Interval
+		require.NoError(t, db.QueryRow("SELECT ?", tc.arg).Scan(&got), tc.literal)
+		assert.Equal(t, tc.arg, got)
+	}
+
+	var isNull bool
+	require.NoError(t, db.QueryRow("SELECT ? IS NULL", trino.Interval{}).Scan(&isNull))
+	assert.True(t, isNull)
+}
+
 func TestIntegrationTimeTzArgs(t *testing.T) {
 	db := integrationOpen(t)
 	for _, tc := range []struct {
