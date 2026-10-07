@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -231,6 +233,86 @@ func TestTransactionQueryRowOverSeveralPagesCancelsQuery(t *testing.T) {
 	}
 	require.Len(t, cancelled, 1, "closing the row before the last page must cancel the query")
 	assert.Equal(t, "txn-1", cancelled[0].header.Get(trinoTransactionHeader))
+}
+
+type transactionContextKey struct{}
+
+// statementContextTransport records, for every statement it sends, the
+// transactionContextKey value of the request's context.
+type statementContextTransport struct {
+	mu     sync.Mutex
+	values map[string]any
+}
+
+func (s *statementContextTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodPost && req.URL.Path == "/v1/statement" {
+		body, err := req.GetBody()
+		if err != nil {
+			return nil, err
+		}
+		query, err := io.ReadAll(body)
+		if err != nil {
+			return nil, err
+		}
+		s.mu.Lock()
+		s.values[string(query)] = req.Context().Value(transactionContextKey{})
+		s.mu.Unlock()
+	}
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+func (s *statementContextTransport) value(query string) any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.values[query]
+}
+
+// Values on the BeginTx context, such as trace spans, must reach the requests
+// that end the transaction, just like they reach the statements inside it.
+func TestTransactionFinishUsesBeginTxContextValues(t *testing.T) {
+	t.Parallel()
+	for _, finish := range []string{"COMMIT", "ROLLBACK"} {
+		t.Run(finish, func(t *testing.T) {
+			t.Parallel()
+			fc := newTransactionCoordinator(t, "")
+			transport := &statementContextTransport{values: map[string]any{}}
+			connector, err := NewConnector(&Config{ServerURI: fc.url(), HTTPClient: &http.Client{Transport: transport}})
+			require.NoError(t, err)
+			db := sql.OpenDB(connector)
+			t.Cleanup(func() { require.NoError(t, db.Close()) })
+
+			ctx := context.WithValue(context.Background(), transactionContextKey{}, "trace-1")
+			tx, err := db.BeginTx(ctx, nil)
+			require.NoError(t, err)
+			if finish == "COMMIT" {
+				require.NoError(t, tx.Commit())
+			} else {
+				require.NoError(t, tx.Rollback())
+			}
+
+			assert.Equal(t, "trace-1", transport.value("START TRANSACTION"))
+			assert.Equal(t, "trace-1", transport.value(finish))
+		})
+	}
+}
+
+// database/sql rolls the transaction back when the BeginTx context is
+// cancelled, and that ROLLBACK must not inherit the cancellation.
+func TestTransactionRolledBackWhenBeginTxContextCancelled(t *testing.T) {
+	t.Parallel()
+	fc := newTransactionCoordinator(t, "")
+	db := fc.open(t, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+	cancel()
+
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		posted := postedStatements(fc)
+		assert.Contains(c, posted, postedStatement{query: "ROLLBACK", transactionID: "txn-1"})
+	}, 5*time.Second, 10*time.Millisecond)
+	assert.ErrorIs(t, tx.Commit(), sql.ErrTxDone)
 }
 
 func TestTransactionIsolationLevels(t *testing.T) {

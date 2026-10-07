@@ -1566,7 +1566,7 @@ func (c *Conn) BeginTx(ctx context.Context, opts driver.TxOptions) (driver.Tx, e
 		c.deleteHTTPHeader(trinoTransactionHeader)
 		return nil, fmt.Errorf("trino: server did not return a %s header", trinoStartedTransactionHeader)
 	}
-	return &driverTx{conn: c}, nil
+	return &driverTx{conn: c, ctx: context.WithoutCancel(ctx)}, nil
 }
 
 // ResetSession implements the driver.SessionResetter interface. It drops
@@ -1670,6 +1670,10 @@ func isolationLevelName(level sql.IsolationLevel) (string, error) {
 
 type driverTx struct {
 	conn *Conn
+	// ctx carries the values of the BeginTx context to COMMIT and ROLLBACK,
+	// but not its cancellation: database/sql rolls back when that context is
+	// cancelled, and the ROLLBACK must still reach the server.
+	ctx context.Context
 }
 
 var _ driver.Tx = &driverTx{}
@@ -1701,7 +1705,7 @@ func (tx *driverTx) finish(query string) error {
 	// Whether or not the statement succeeds the transaction is over for this
 	// connection, and keeping a dead ID around would fail every later query.
 	defer conn.deleteHTTPHeader(trinoTransactionHeader)
-	return conn.execInternal(context.Background(), query)
+	return conn.execInternal(tx.ctx, query)
 }
 
 // isTrinoErrorName reports whether err is an error raised by the server with one
