@@ -571,6 +571,54 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 	}
 }
 
+// TestSpoolingProtocolDecodeErrorNamesTheSegmentIndex checks that a segment
+// that fails to decode is named by its index in the page, whether it was
+// downloaded or travelled inline.
+func TestSpoolingProtocolDecodeErrorNamesTheSegmentIndex(t *testing.T) {
+	t.Parallel()
+	validData := mustDecodeBase64("W1sxMDAwXSwgWzEwMDAxXV0=")
+	validMetadata := map[string]any{"segmentSize": len(validData), "rowOffset": 0}
+	corruptMetadata := map[string]any{"segmentSize": 6, "rowOffset": 2}
+	cases := []struct {
+		name     string
+		segments []map[string]any
+	}{
+		{
+			name:     "downloaded",
+			segments: []map[string]any{spooledSegment("valid", validMetadata), spooledSegment("corrupt", corruptMetadata)},
+		},
+		{
+			name:     "inline",
+			segments: []map[string]any{inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", validMetadata), inlineSegment("W1sxMDAw", corruptMetadata)},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json", tc.segments...))
+			fc.handleSegment("valid", func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write(validData)
+			})
+			fc.handleSegment("corrupt", func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte("[[1000"))
+			})
+			db := fc.open(t, "")
+
+			rows, err := db.Query("SELECT 1")
+			if err == nil {
+				t.Cleanup(func() { require.NoError(t, rows.Close()) })
+				for rows.Next() {
+					// force segment processing
+				}
+				err = rows.Err()
+			}
+
+			require.ErrorContains(t, err, "failed to decode spooled segment at index 1: failed to decode segment at rowOffset 2:")
+		})
+	}
+}
+
 // TestSpoolingProtocolWarningsCollectedAcrossPages checks that warnings
 // reported only on a later spooled page (consumed by
 // proccessSpollingSegments, not by fetch's first page) are still collected.
