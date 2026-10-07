@@ -1111,6 +1111,10 @@ types:
 * `time.Duration` - passed to Trino as an interval day to second. Because Trino
   does not support nanosecond precision for intervals, if the nanosecond part
   of the value is not zero, an error will be returned.
+* `trino.Interval` - passed to Trino as an interval year to month when
+  `Months` is set, and otherwise as an interval day to second like a
+  `time.Duration`. Setting both `Months` and `Duration` is an error, and an
+  `Interval` that is not `Valid` is passed as `NULL`.
 
 It's not yet possible to pass:
 * `byte`
@@ -1143,7 +1147,11 @@ When reading response rows, the driver supports most Trino data types, except:
 * `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use
   `sql.NullString` for nullable columns
 * `IPADDRESS` - returned as string
-* `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string
+* `INTERVAL YEAR TO MONTH` and `INTERVAL DAY TO SECOND` - returned as string,
+  like `1-2` or `-3 04:05:06.789`, or scanned into `trino.Interval`, which
+  holds a year to month interval as `Months` and a day to second interval as a
+  `time.Duration`. Scanning a day to second interval longer than about 292
+  years, which a `time.Duration` cannot hold, returns an error
 * `UUID` - returned as string
 * `VARIANT` (Trino 481+) - returned as `trino.Variant`, see
   [VARIANT](#variant)

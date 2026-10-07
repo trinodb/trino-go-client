@@ -177,6 +177,8 @@ func Serial(v interface{}) (string, error) {
 
 	case time.Duration:
 		return serialDuration(x)
+	case Interval:
+		return serialInterval(x)
 
 		// TODO - json.RawMesssage should probably be matched to 'JSON' in Trino
 	case json.RawMessage:
