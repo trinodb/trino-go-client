@@ -646,6 +646,25 @@ func TestRowColumnScansThroughTheWireFormat(t *testing.T) {
 	require.NoError(t, rows.Err())
 }
 
+// The coordinator reads the statement as text; the JDBC client labels it the
+// same way, so proxies and gateways in front of Trino see the same request.
+func TestStatementSentAsPlainText(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	require.NoError(t, rows.Close())
+
+	requests := fc.capturedRequests()
+	require.NotEmpty(t, requests)
+	assert.Equal(t, http.MethodPost, requests[0].method)
+	assert.Equal(t, "/v1/statement", requests[0].path)
+	assert.Equal(t, "text/plain; charset=utf-8", requests[0].header.Get("Content-Type"))
+}
+
 func TestColumnTypeNullable(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)

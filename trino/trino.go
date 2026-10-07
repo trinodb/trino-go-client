@@ -192,6 +192,8 @@ const (
 	trinoMaxOutOfOrdersSegments = `max_out_of_order_segments`
 
 	authorizationHeader = "Authorization"
+	contentTypeHeader   = "Content-Type"
+	statementMediaType  = "text/plain; charset=utf-8"
 
 	kerberosEnabledConfig            = "KerberosEnabled"
 	kerberosKeytabPathConfig         = "KerberosKeytabPath"
@@ -2791,6 +2793,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 		cancel()
 		return nil, st.conn.unsentRequestError(err)
 	}
+	req.Header.Set(contentTypeHeader, statementMediaType)
 
 	resp, err := st.conn.roundTrip(ctx, req)
 	if err != nil {
