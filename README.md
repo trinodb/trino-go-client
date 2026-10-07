@@ -1332,6 +1332,8 @@ Other errors the driver returns:
 * A `*trino.ErrQueryFailed` without a `*trino.ErrTrino` inside for an HTTP
   error, such as `401 Unauthorized`, or when the retries of a request were
   exhausted, see [`request_retry_timeout`](#request_retry_timeout).
+* A decoding error when a response is not well-formed JSON, which includes
+  invalid UTF-8 and a member name repeated within one object.
 
 ### Cancellation and timeouts
 

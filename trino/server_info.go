@@ -2,7 +2,7 @@ package trino
 
 import (
 	"context"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"net/http"
@@ -62,7 +62,7 @@ func (c *Conn) ServerInfo(ctx context.Context) (ServerInfo, error) {
 		Starting    bool   `json:"starting"`
 		Uptime      string `json:"uptime"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&wire); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &wire); err != nil {
 		return ServerInfo{}, fmt.Errorf("trino: decoding server info: %w", err)
 	}
 	info := ServerInfo{

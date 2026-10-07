@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -118,6 +119,35 @@ func TestProtocolErrorHandling(t *testing.T) {
 			require.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
+}
+
+// TestPageKeepsNumbersExact covers numbers a float64 cannot hold: integers
+// beyond 2^53, also inside an array scanned as []interface{}, where callers
+// get a json.Number, and decimals, which the server sends as strings.
+func TestPageKeepsNumbersExact(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	decimalType := typeSignature{RawType: "decimal", Arguments: []typeArgument{
+		{Kind: KIND_LONG, Value: json.RawMessage("38")},
+		{Kind: KIND_LONG, Value: json.RawMessage("2")},
+	}}
+	columns := []queryColumn{
+		column("bigint", scalarType("bigint")),
+		column("array(bigint)", arrayType(scalarType("bigint"))),
+		column("decimal(38,2)", decimalType),
+	}
+	fc.respond(statementPage(), columnsPage(columns, [][]any{
+		{int64(math.MaxInt64), []any{int64(1<<53 + 1)}, "123456789012345678901234567890.12"},
+	}))
+	db := fc.open(t, "")
+
+	var bigint int64
+	var array NullSlice[interface{}]
+	var decimal string
+	require.NoError(t, db.QueryRow("SELECT x").Scan(&bigint, &array, &decimal))
+	assert.Equal(t, int64(math.MaxInt64), bigint)
+	assert.Equal(t, NullSlice[interface{}]{Slice: []interface{}{json.Number("9007199254740993")}, Valid: true}, array)
+	assert.Equal(t, "123456789012345678901234567890.12", decimal)
 }
 
 func TestSetRoleHeader(t *testing.T) {

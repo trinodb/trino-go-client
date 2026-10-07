@@ -51,14 +51,15 @@
 package trino
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"database/sql"
 	"database/sql/driver"
 	"encoding/base64"
-	"encoding/json"
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -2499,6 +2500,91 @@ func (st *driverStmt) CheckNamedValue(arg *driver.NamedValue) error {
 	return driver.ErrSkip
 }
 
+// untypedNumbers decodes the numbers of values decoded into an interface{},
+// like the rows of a page or a segment, as described for decodeUntypedValue.
+var untypedNumbers = json.WithUnmarshalers(json.UnmarshalFromFunc(decodeUntypedValue))
+
+// decodeUntypedValue decodes a JSON number as a json.Number instead of the
+// float64 v2 picks, so integers beyond 2^53 and decimals stay exact and
+// values inside []interface{} and map[string]interface{} results keep the
+// type callers rely on. It reads nested arrays and objects itself because
+// returning errors.ErrUnsupported for anything but a number makes v2 call
+// back for every element, which decodes a page more than twice as slowly.
+func decodeUntypedValue(dec *jsontext.Decoder, v *any) error {
+	value, err := readUntypedValue(dec)
+	if err != nil {
+		return err
+	}
+	*v = value
+	return nil
+}
+
+func readUntypedValue(dec *jsontext.Decoder) (any, error) {
+	switch dec.PeekKind() {
+	case '[':
+		return readUntypedArray(dec)
+	case '{':
+		return readUntypedObject(dec)
+	}
+	token, err := dec.ReadToken()
+	if err != nil {
+		return nil, err
+	}
+	switch token.Kind() {
+	case 'n':
+		return nil, nil
+	case 'f', 't':
+		return token.Bool(), nil
+	case '"':
+		return token.String(), nil
+	}
+	return jsonv1.Number(token.String()), nil
+}
+
+func readUntypedArray(dec *jsontext.Decoder) ([]any, error) {
+	if _, err := dec.ReadToken(); err != nil {
+		return nil, err
+	}
+	// An empty array stays non-nil, so it is not taken for a NULL. Room for
+	// a few values up front saves the first reallocations of every row.
+	values := make([]any, 0, 4)
+	for dec.PeekKind() != ']' {
+		value, err := readUntypedValue(dec)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, value)
+	}
+	if _, err := dec.ReadToken(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
+func readUntypedObject(dec *jsontext.Decoder) (map[string]any, error) {
+	if _, err := dec.ReadToken(); err != nil {
+		return nil, err
+	}
+	values := make(map[string]any)
+	for dec.PeekKind() != '}' {
+		name, err := dec.ReadToken()
+		if err != nil {
+			return nil, err
+		}
+		// The token is only valid until the next read.
+		key := name.String()
+		value, err := readUntypedValue(dec)
+		if err != nil {
+			return nil, err
+		}
+		values[key] = value
+	}
+	if _, err := dec.ReadToken(); err != nil {
+		return nil, err
+	}
+	return values, nil
+}
+
 type stmtResponse struct {
 	ID          string    `json:"id"`
 	InfoURI     string    `json:"infoUri"`
@@ -2592,25 +2678,26 @@ type stmtStage struct {
 
 type jsonFloat64 float64
 
-func (f *jsonFloat64) UnmarshalJSON(data []byte) error {
-	var v float64
-	err := json.Unmarshal(data, &v)
+// UnmarshalJSONFrom decodes anything but a number, like the empty string
+// some servers send for the progress of a query, as zero.
+func (f *jsonFloat64) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	if dec.PeekKind() != '0' {
+		*f = 0
+		return dec.SkipValue()
+	}
+	token, err := dec.ReadToken()
 	if err != nil {
-		var jsonErr *json.UnmarshalTypeError
-		if errors.As(err, &jsonErr) {
-			if f != nil {
-				*f = 0
-			}
-			return nil
-		}
 		return err
 	}
-	p := (*float64)(f)
-	*p = v
+	value, err := token.Float()
+	if err != nil {
+		return err
+	}
+	*f = jsonFloat64(value)
 	return nil
 }
 
-var _ json.Unmarshaler = new(jsonFloat64)
+var _ json.UnmarshalerFrom = new(jsonFloat64)
 
 func (st *driverStmt) Query(args []driver.Value) (driver.Rows, error) {
 	return nil, driver.ErrSkip
@@ -2807,9 +2894,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 
 	defer resp.Body.Close()
 	var sr stmtResponse
-	d := json.NewDecoder(resp.Body)
-	d.UseNumber()
-	err = d.Decode(&sr)
+	err = json.UnmarshalRead(resp.Body, &sr)
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("trino: %w", err)
@@ -2871,9 +2956,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 					return
 				}
 				var qresp queryResponse
-				d := json.NewDecoder(resp.Body)
-				d.UseNumber()
-				err = d.Decode(&qresp)
+				err = json.UnmarshalRead(resp.Body, &qresp, untypedNumbers)
 				if err != nil {
 					st.errors <- fmt.Errorf("trino: %w", err)
 					return
@@ -3479,7 +3562,7 @@ func getOptionalInt64(metadata map[string]interface{}, key string) (int64, error
 }
 
 func parseInt64(val interface{}, key string) (int64, error) {
-	num, ok := val.(json.Number)
+	num, ok := val.(jsonv1.Number)
 	if !ok {
 		return 0, fmt.Errorf("invalid type for %s in segment metadata, expected json.Number, got %T", key, val)
 	}
@@ -3502,15 +3585,16 @@ func decodeSegment(data []byte, encoding string, metadata segmentMetadata) ([]qu
 		return nil, err
 	}
 
-	var queryDataList = make([]queryData, metadata.rowsCount)
-	decoder := json.NewDecoder(bytes.NewReader(decompressedSegment))
-	decoder.UseNumber()
-	err = decoder.Decode(&queryDataList)
+	var rows any
+	err = json.Unmarshal(decompressedSegment, &rows, untypedNumbers)
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode segment into JSON at rowOffset %d: %v", metadata.rowOffset, err)
 	}
-
-	return queryDataList, nil
+	untypedRows, ok := rows.([]any)
+	if !ok {
+		return nil, fmt.Errorf("unexpected data type for segment at rowOffset %d: expected []interface{}, got %T", metadata.rowOffset, rows)
+	}
+	return toQueryData(untypedRows)
 }
 
 func decompressSegment(data []byte, encoding string, metadata segmentMetadata) ([]byte, error) {
@@ -3559,6 +3643,18 @@ type queryColumn struct {
 
 type queryData []interface{}
 
+func toQueryData(rows []any) ([]queryData, error) {
+	data := make([]queryData, len(rows))
+	for i, row := range rows {
+		values, ok := row.([]any)
+		if !ok {
+			return nil, fmt.Errorf("unexpected data type for row at index %d: expected []interface{}, got %T", i, row)
+		}
+		data[i] = values
+	}
+	return data, nil
+}
+
 type namedTypeSignature struct {
 	FieldName     rowFieldName  `json:"fieldName"`
 	TypeSignature typeSignature `json:"typeSignature"`
@@ -3584,8 +3680,8 @@ const (
 
 type typeArgument struct {
 	// Kind determines if the typeSignature, namedTypeSignature, or long field has a value
-	Kind  typeKind        `json:"kind"`
-	Value json.RawMessage `json:"value"`
+	Kind  typeKind       `json:"kind"`
+	Value jsontext.Value `json:"value"`
 	// typeSignature decoded from Value when Kind is TYPE
 	typeSignature typeSignature
 	// namedTypeSignature decoded from Value when Kind is NAMED_TYPE
@@ -3698,13 +3794,9 @@ func (qr *driverRows) fetch() error {
 			switch data := qresp.Data.(type) {
 			case []interface{}:
 				// direct protocol
-				qr.data = make([]queryData, len(data))
-				for i, item := range data {
-					if row, ok := item.([]interface{}); ok {
-						qr.data[i] = row
-					} else {
-						return fmt.Errorf("unexpected data type for row at index %d: expected []interface{}, got %T", i, item)
-					}
+				qr.data, err = toQueryData(data)
+				if err != nil {
+					return err
 				}
 			case map[string]interface{}:
 				// spooling protocol
@@ -4657,7 +4749,7 @@ func scanNullInt64(v interface{}) (sql.NullInt64, error) {
 	if v == nil {
 		return sql.NullInt64{}, nil
 	}
-	vNumber, ok := v.(json.Number)
+	vNumber, ok := v.(jsonv1.Number)
 	if !ok {
 		return sql.NullInt64{},
 			fmt.Errorf("cannot convert %v (%T) to int64", v, v)
@@ -4674,7 +4766,7 @@ func scanNullFloat64(v interface{}) (sql.NullFloat64, error) {
 	if v == nil {
 		return sql.NullFloat64{}, nil
 	}
-	vNumber, ok := v.(json.Number)
+	vNumber, ok := v.(jsonv1.Number)
 	if ok {
 		vFloat, err := vNumber.Float64()
 		if err != nil {
