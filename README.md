@@ -1091,7 +1091,10 @@ types:
 * `bool`
 * `string`
 * `[]byte`
-* slices
+* slices - passed to Trino as an `ARRAY`
+* maps - passed to Trino as a `MAP`, built as
+  `MAP(ARRAY[keys...], ARRAY[values...])`; an empty or nil map is passed as
+  `MAP()`
 * `trino.Numeric` - a string representation of a number
 * `time.Time` - passed to Trino as a timestamp with a time zone
 * the result of `trino.Date(year, month, day)` - passed to Trino as a date
@@ -1108,7 +1111,6 @@ types:
 It's not yet possible to pass:
 * `byte`
 * `json.RawMessage`
-* maps
 * `VARIANT` values; pass the JSON text as a string and convert it with
   `CAST(json_parse(?) AS VARIANT)`
 

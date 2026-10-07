@@ -407,6 +407,36 @@ func TestIntegrationArgsConversion(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestIntegrationMapArgs(t *testing.T) {
+	db := integrationOpen(t)
+
+	t.Run("string keys", func(t *testing.T) {
+		arg := map[string]int64{"a": 1, "b": -2, "c'd": 3}
+		var got trino.NullMap[string, int64]
+		require.NoError(t, db.QueryRow("SELECT ?", arg).Scan(&got))
+		assert.Equal(t, trino.NullMap[string, int64]{Map: arg, Valid: true}, got)
+	})
+
+	t.Run("integer keys", func(t *testing.T) {
+		arg := map[int64]string{1: "one", 10: "ten", 2: "two"}
+		var got trino.NullMap[int64, string]
+		require.NoError(t, db.QueryRow("SELECT ?", arg).Scan(&got))
+		assert.Equal(t, trino.NullMap[int64, string]{Map: arg, Valid: true}, got)
+	})
+
+	t.Run("compared to a map literal", func(t *testing.T) {
+		var equal bool
+		require.NoError(t, db.QueryRow("SELECT ? = MAP(ARRAY[2, 1], ARRAY['two', 'one'])", map[int64]string{1: "one", 2: "two"}).Scan(&equal))
+		assert.True(t, equal)
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		var size int
+		require.NoError(t, db.QueryRow("SELECT cardinality(?)", map[string]int64{}).Scan(&size))
+		assert.Zero(t, size)
+	})
+}
+
 func TestIntegrationIntervalArgs(t *testing.T) {
 	db := integrationOpen(t)
 	for _, tc := range []struct {

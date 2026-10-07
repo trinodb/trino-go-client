@@ -21,6 +21,7 @@ import (
 	"math"
 	"reflect"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -198,8 +199,7 @@ func Serial(v interface{}) (string, error) {
 	}
 
 	if reflect.TypeOf(v).Kind() == reflect.Map {
-		// are Trino MAPs indifferent to order? Golang maps are, if Trino aren't then the two types can't be compatible
-		return "", UnsupportedArgError{"map"}
+		return serialMap(reflect.ValueOf(v))
 	}
 
 	// TODO - consider the remaining types in https://trino.io/docs/current/language/types.html (Row, IP, ...)
@@ -235,6 +235,40 @@ func serialSlice(v []interface{}) (string, error) {
 	}
 
 	return "ARRAY[" + strings.Join(ss, ", ") + "]", nil
+}
+
+// serialMap sorts the entries by their key literal, so that the same map
+// always produces the same query text; Trino maps are unordered either way.
+func serialMap(m reflect.Value) (string, error) {
+	if m.Len() == 0 {
+		return "MAP()", nil
+	}
+
+	type entry struct {
+		key   string
+		value string
+	}
+	entries := make([]entry, 0, m.Len())
+	for iter := m.MapRange(); iter.Next(); {
+		key, err := Serial(iter.Key().Interface())
+		if err != nil {
+			return "", err
+		}
+		value, err := Serial(iter.Value().Interface())
+		if err != nil {
+			return "", err
+		}
+		entries = append(entries, entry{key, value})
+	}
+	slices.SortFunc(entries, func(a, b entry) int { return strings.Compare(a.key, b.key) })
+
+	keys := make([]string, len(entries))
+	values := make([]string, len(entries))
+	for i, e := range entries {
+		keys[i] = e.key
+		values[i] = e.value
+	}
+	return "MAP(ARRAY[" + strings.Join(keys, ", ") + "], ARRAY[" + strings.Join(values, ", ") + "])", nil
 }
 
 const (
