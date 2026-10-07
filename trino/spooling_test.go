@@ -425,7 +425,7 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "WrongRowOffsetMetadataType",
 			segment: spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": "2", "segmentSize": 11}),
-			wantErr: `cannot unmarshal JSON string into Go int64 within "/segments/0/metadata/rowOffset"`,
+			wantErr: `unmarshal JSON string into Go int64 within "/segments/0/metadata/rowOffset"`,
 		},
 		{
 			name:    "MissingSegmentSizeMetadata",
@@ -435,7 +435,7 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "WrongSegmentSizeMetadataType",
 			segment: spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": "11"}),
-			wantErr: `cannot unmarshal JSON string into Go int64 within "/segments/0/metadata/segmentSize"`,
+			wantErr: `unmarshal JSON string into Go int64 within "/segments/0/metadata/segmentSize"`,
 		},
 		{
 			name:    "MissingMetadata",
@@ -445,7 +445,7 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "WrongMetadataType",
 			segment: spooledSegment("seg", "fake-metadata"),
-			wantErr: `cannot unmarshal JSON string into Go trino.segmentAttributes within "/segments/0/metadata"`,
+			wantErr: `unmarshal JSON string into Go trino.segmentAttributes within "/segments/0/metadata"`,
 		},
 		{
 			name:           "WrongUncompressSize",
@@ -475,7 +475,7 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 				{"x-amz-server-side-encryption-customer-algorithm", "AES256"},
 				{"x-amz-server-side-encryption-customer-key", "key"},
 			}),
-			wantErr: `cannot unmarshal JSON array into Go map[string][]string within "/segments/0/headers"`,
+			wantErr: `unmarshal JSON array into Go map[string][]string within "/segments/0/headers"`,
 		},
 		{
 			name: "HeaderValueWrongType",
@@ -484,19 +484,19 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 				"x-amz-server-side-encryption-customer-key":       []any{"key"},
 				"x-amz-server-side-encryption-customer-key-md5":   []any{123}, // Wrong type: integer instead of string
 			}),
-			wantErr: `cannot unmarshal JSON number into Go string within "/segments/0/headers/x-amz-server-side-encryption-customer-key-md5/0"`,
+			wantErr: `unmarshal JSON number into Go string within "/segments/0/headers/x-amz-server-side-encryption-customer-key-md5/0"`,
 		},
 		{
 			name: "HeaderTypeInvalid",
 			segment: withField(spooledSegment("seg", validMetadata), "headers", map[string]any{
 				"x-amz-server-side-encryption-customer-algorithm": "AES256", // Invalid type: string instead of []interface{}
 			}),
-			wantErr: `cannot unmarshal JSON string into Go []string within "/segments/0/headers/x-amz-server-side-encryption-customer-algorithm"`,
+			wantErr: `unmarshal JSON string into Go []string within "/segments/0/headers/x-amz-server-side-encryption-customer-algorithm"`,
 		},
 		{
 			name:    "InlineDataNotString",
 			segment: inlineSegment(123, map[string]any{"rowOffset": 0, "segmentSize": 8}),
-			wantErr: `cannot unmarshal JSON number into Go []uint8 within "/segments/0/data"`,
+			wantErr: `unmarshal JSON number into Go []uint8 within "/segments/0/data"`,
 		},
 		{
 			name:    "RowsCountMismatch",
@@ -511,12 +511,12 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "InlineDataNotBase64",
 			segment: inlineSegment("not base64!", map[string]any{"rowOffset": 0, "segmentSize": 8}),
-			wantErr: `cannot unmarshal JSON string into Go []uint8 within "/segments/0/data": illegal base64 data`,
+			wantErr: `unmarshal JSON string into Go []uint8 within "/segments/0/data": illegal base64 data`,
 		},
 		{
 			name:    "FractionalRowOffset",
 			segment: spooledSegment("seg", map[string]any{"rowOffset": 1.5, "segmentSize": 8}),
-			wantErr: `cannot unmarshal JSON number 1.5 into Go int64 within "/segments/0/metadata/rowOffset"`,
+			wantErr: `unmarshal JSON number 1.5 into Go int64 within "/segments/0/metadata/rowOffset"`,
 		},
 		{
 			name:           "MalformedSegmentJson",

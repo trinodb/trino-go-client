@@ -104,7 +104,7 @@ func TestProtocolErrorHandling(t *testing.T) {
 		{
 			name:    "spooling protocol invalid segments type",
 			data:    map[string]interface{}{"encoding": "json", "segments": "invalid"},
-			wantErr: `cannot unmarshal JSON string into Go []trino.dataSegment within "/segments"`,
+			wantErr: `unmarshal JSON string into Go []trino.dataSegment within "/segments"`,
 		},
 	}
 
