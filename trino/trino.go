@@ -2240,21 +2240,27 @@ func (c *Conn) removeHeaderEntry(key, name string) {
 
 // mergeRoles applies catalog=role updates to the comma-separated roles
 // header, replacing the entry of each updated catalog and keeping the rest.
+// Updates are split at commas like the header itself, and an entry without
+// a catalog is dropped, so the result has the shape the server reads back.
 func mergeRoles(current string, updates []string) string {
+	entries := strings.Split(current, commaSeparator)
+	for _, update := range updates {
+		entries = append(entries, strings.Split(update, commaSeparator)...)
+	}
 	roles := map[string]string{}
-	for _, entry := range append(strings.Split(current, commaSeparator), updates...) {
+	for _, entry := range entries {
 		catalog, role, ok := strings.Cut(entry, "=")
-		if !ok {
+		if !ok || catalog == "" {
 			continue
 		}
 		roles[catalog] = role
 	}
-	entries := make([]string, 0, len(roles))
+	merged := make([]string, 0, len(roles))
 	for catalog, role := range roles {
-		entries = append(entries, catalog+"="+role)
+		merged = append(merged, catalog+"="+role)
 	}
-	sort.Strings(entries)
-	return strings.Join(entries, commaSeparator)
+	sort.Strings(merged)
+	return strings.Join(merged, commaSeparator)
 }
 
 func (c *Conn) setHTTPHeader(name, value string) {
