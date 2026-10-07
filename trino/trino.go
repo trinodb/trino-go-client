@@ -413,6 +413,9 @@ func ParseDSN(dsn string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid DSN: %w", err)
 	}
+	if serverURL.Scheme == "" || serverURL.Host == "" {
+		return nil, errors.New("trino: invalid DSN, expected scheme://host[:port]")
+	}
 	if err := requireTLSForPassword(serverURL); err != nil {
 		return nil, err
 	}

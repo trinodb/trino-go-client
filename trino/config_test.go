@@ -1181,3 +1181,13 @@ func TestTLSTransportKeepsDefaultTransportSettings(t *testing.T) {
 	assert.Equal(t, http.DefaultTransport.(*http.Transport).TLSHandshakeTimeout, transport.TLSHandshakeTimeout)
 	assert.True(t, transport.TLSClientConfig.InsecureSkipVerify)
 }
+
+// ParseDSN used to turn "" or "localhost:8080" into the ServerURI "://",
+// which FormatDSN then refused and which only failed at the first request.
+func TestParseDSNRequiresSchemeAndHost(t *testing.T) {
+	t.Parallel()
+	for _, dsn := range []string{"", "localhost", "/hive/default", "?source=app", "http://", "http:///hive"} {
+		_, err := ParseDSN(dsn)
+		assert.ErrorContains(t, err, "expected scheme://host[:port]", "DSN %q", dsn)
+	}
+}
