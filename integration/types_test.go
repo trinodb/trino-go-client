@@ -407,6 +407,19 @@ func TestIntegrationArgsConversion(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// The smallest BIGINT has no positive counterpart, so Trino has to read the
+// minus sign as part of the literal rather than as a negation of 9223372036854775808.
+func TestIntegrationBigintBoundArgs(t *testing.T) {
+	db := integrationOpen(t)
+	for _, arg := range []int64{math.MinInt64, math.MaxInt64} {
+		var got int64
+		var typeName string
+		require.NoError(t, db.QueryRow("SELECT ?, typeof(?)", arg, arg).Scan(&got, &typeName), "%d", arg)
+		assert.Equal(t, arg, got)
+		assert.Equal(t, "bigint", typeName)
+	}
+}
+
 func TestIntegrationMapArgs(t *testing.T) {
 	db := integrationOpen(t)
 
