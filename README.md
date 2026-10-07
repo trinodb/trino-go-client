@@ -1151,6 +1151,9 @@ When reading response rows, the driver supports most Trino data types, except:
 For reading nullable columns, use `trino.NullTime` or similar structs from
 the `database/sql` package, like `sql.NullInt64`.
 
+Since Trino does not report whether a column can hold `NULL`,
+`sql.ColumnType.Nullable` reports every column as nullable.
+
 ### ARRAY, MAP and ROW
 
 To read `ARRAY`, `MAP` and `ROW` values, use the generic scanners, which nest
