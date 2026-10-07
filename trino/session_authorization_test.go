@@ -292,3 +292,25 @@ func TestFailedStatementRevertsAuthorizationChange(t *testing.T) {
 		})
 	}
 }
+
+func TestMergeRolesKeepsTheHeaderWellFormed(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		current string
+		updates []string
+		want    string
+	}{
+		{"replaces the catalog", "a=ROLE%7Bx%7D,b=ALL", []string{"a=NONE"}, "a=NONE,b=ALL"},
+		{"drops an update without a catalog", "a=ALL", []string{"=ROLE%7Bx%7D"}, "a=ALL"},
+		{"drops an update without a separator", "a=ALL", []string{"junk"}, "a=ALL"},
+		{"splits a folded update", "", []string{"a=ALL,b=NONE"}, "a=ALL,b=NONE"},
+		{"drops the empty entries of a folded update", "a=ALL", []string{"=,"}, "a=ALL"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, mergeRoles(tc.current, tc.updates))
+		})
+	}
+}

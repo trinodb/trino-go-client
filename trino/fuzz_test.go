@@ -188,7 +188,8 @@ func FuzzApplyResponseHeaders(f *testing.F) {
 		// The role header is rebuilt from catalog=role pairs only.
 		if roles := conn.httpHeaderValue(trinoRoleHeader); roles != "" {
 			for _, entry := range strings.Split(roles, commaSeparator) {
-				assert.Contains(t, entry, "=", "roles header %q", roles)
+				catalog, _, ok := strings.Cut(entry, "=")
+				assert.True(t, ok && catalog != "", "entry %q of roles header %q", entry, roles)
 			}
 		}
 	})
@@ -202,11 +203,6 @@ func FuzzMergeRoles(f *testing.F) {
 	f.Add("garbage,a=b", "=")
 	f.Fuzz(func(t *testing.T, current, update string) {
 		merged := mergeRoles(current, []string{update})
-		// The server URL-encodes role values, so a comma in an update is
-		// out of protocol; it is not a second entry to split again.
-		if strings.Contains(update, commaSeparator) {
-			return
-		}
 		assert.Equal(t, merged, mergeRoles(merged, nil))
 		seen := map[string]bool{}
 		for _, entry := range strings.Split(merged, commaSeparator) {
@@ -215,6 +211,7 @@ func FuzzMergeRoles(f *testing.F) {
 			}
 			catalog, _, ok := strings.Cut(entry, "=")
 			require.True(t, ok, "entry %q of %q", entry, merged)
+			assert.NotEmpty(t, catalog, "entry %q of %q", entry, merged)
 			assert.False(t, seen[catalog], "catalog %q twice in %q", catalog, merged)
 			seen[catalog] = true
 		}
