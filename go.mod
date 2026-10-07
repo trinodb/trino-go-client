@@ -1,6 +1,6 @@
 module github.com/trinodb/trino-go-client
 
-go 1.25.5
+go 1.27
 
 require (
 	github.com/jcmturner/gokrb5/v8 v8.4.4
