@@ -382,6 +382,9 @@ func TestParametersClientTags(t *testing.T) {
 
 type QuerySession struct {
 	ClientTags        []string               `json:"clientTags"`
+	TraceToken        string                 `json:"traceToken"`
+	ClientInfo        string                 `json:"clientInfo"`
+	Locale            string                 `json:"locale"`
 	ResourceEstimates QueryResourceEstimates `json:"resourceEstimates"`
 }
 
