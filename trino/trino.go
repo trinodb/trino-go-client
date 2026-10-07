@@ -3380,12 +3380,13 @@ type segmentMetadata struct {
 }
 
 type spooledMetadata struct {
-	uri       string
-	ackUri    string
-	encoding  string
-	headers   map[string][]string
-	metadata  segmentMetadata
-	expiresAt time.Time
+	segmentIndex int
+	uri          string
+	ackUri       string
+	encoding     string
+	headers      map[string][]string
+	metadata     segmentMetadata
+	expiresAt    time.Time
 }
 
 func (s dataSegment) segmentMetadata(segmentIndex int) (segmentMetadata, error) {
@@ -3417,12 +3418,13 @@ func (s dataSegment) spooledMetadata(segmentIndex int, metadata segmentMetadata,
 		return spooledMetadata{}, fmt.Errorf("missing 'ackUri' field in spooled segment at index %d", segmentIndex)
 	}
 	return spooledMetadata{
-		uri:       s.URI,
-		ackUri:    s.AckURI,
-		encoding:  encoding,
-		headers:   s.Headers,
-		metadata:  metadata,
-		expiresAt: parseSegmentExpiresAt(s.Metadata.ExpiresAt, location),
+		segmentIndex: segmentIndex,
+		uri:          s.URI,
+		ackUri:       s.AckURI,
+		encoding:     encoding,
+		headers:      s.Headers,
+		metadata:     metadata,
+		expiresAt:    parseSegmentExpiresAt(s.Metadata.ExpiresAt, location),
 	}, nil
 }
 
@@ -3920,9 +3922,10 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 
 					select {
 					case st.spooledSegmentsToDecode <- segmentToDecode{
-						encoding: metadata.encoding,
-						data:     segment,
-						metadata: metadata.metadata,
+						segmentIndex: metadata.segmentIndex,
+						encoding:     metadata.encoding,
+						data:         segment,
+						metadata:     metadata.metadata,
 					}:
 					case <-st.doneCh:
 						return
