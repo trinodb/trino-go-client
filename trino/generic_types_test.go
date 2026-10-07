@@ -251,6 +251,8 @@ func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 				Payload: []byte{0, 1},
 				Points:  NullSlice[NullRow[point]]{Slice: []NullRow[point]{{Row: point{X: 2}, Valid: true}}, Valid: true},
 				Raw:     int64(3),
+				// Unexported fields are never populated, so Equal pins it at zero.
+				hidden: "",
 			}, Valid: true},
 		},
 	}
