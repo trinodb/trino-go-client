@@ -40,6 +40,8 @@ func postedStatements(fc *fakeCoordinator) []postedStatement {
 // announces support by sending the transaction header, and hands back an ID
 // the client is expected to echo on later statements. A statement containing
 // failOn fails and, like the server, aborts the transaction it belonged to.
+// Any other statement is answered with the pages set by respond, if there are
+// any.
 func newTransactionCoordinator(t testing.TB, failOn string) *fakeCoordinator {
 	t.Helper()
 	fc := newFakeCoordinator(t)
@@ -86,6 +88,8 @@ func newTransactionCoordinator(t testing.TB, failOn string) *fakeCoordinator {
 			}
 			w.Header().Set(trinoClearTransactionHeader, "true")
 			writeQueryAccepted(fc, w)
+		case fc.hasPages():
+			fc.servePage(w, r, 0)
 		default:
 			writeQueryAccepted(fc, w)
 		}
@@ -194,6 +198,39 @@ func TestTransactionClearedAfterCommit(t *testing.T) {
 	posted := postedStatements(fc)
 	require.Len(t, posted, 3)
 	assert.Equal(t, postedStatement{query: "SELECT 1", transactionID: ""}, posted[2])
+}
+
+// Closing rows before the last page cancels the query, and Trino aborts the
+// transaction a cancelled query belonged to, so a QueryRow over a result that
+// spans several pages leaves the transaction unable to commit. The driver
+// cancels like the JDBC client does; the README tells users to read to the end.
+func TestTransactionQueryRowOverSeveralPagesCancelsQuery(t *testing.T) {
+	t.Parallel()
+	fc := newTransactionCoordinator(t, "")
+	fc.respond(
+		statementPage(),
+		resultPage([][]any{{1}}),
+		resultPage([][]any{{2}}),
+		emptyPage(),
+	)
+	db := fc.open(t, "")
+
+	tx, err := db.Begin()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	var value int
+	require.NoError(t, tx.QueryRow("SELECT orderkey FROM lineitem").Scan(&value))
+	assert.Equal(t, 1, value)
+
+	var cancelled []capturedRequest
+	for _, request := range fc.capturedRequests() {
+		if request.method == http.MethodDelete && request.path == "/v1/query/"+fakeQueryID {
+			cancelled = append(cancelled, request)
+		}
+	}
+	require.Len(t, cancelled, 1, "closing the row before the last page must cancel the query")
+	assert.Equal(t, "txn-1", cancelled[0].header.Get(trinoTransactionHeader))
 }
 
 func TestTransactionIsolationLevels(t *testing.T) {

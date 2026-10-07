@@ -7,6 +7,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/trinodb/trino-go-client/trino"
 )
 
 func TestIntegrationTransactionCommit(t *testing.T) {
@@ -141,6 +142,24 @@ func TestIntegrationTransactionReleasesConnection(t *testing.T) {
 	var one int
 	require.NoError(t, db.QueryRowContext(ctx, "SELECT 1").Scan(&one))
 	assert.Equal(t, 1, one)
+}
+
+// Trino aborts the transaction of a cancelled query, and closing rows before
+// the last page cancels it, so reading one row of a large result is enough to
+// make the commit fail.
+func TestIntegrationTransactionAbortedByRowsClosedEarly(t *testing.T) {
+	db := integrationOpen(t)
+
+	ctx := context.Background()
+	tx, err := db.BeginTx(ctx, nil)
+	require.NoError(t, err)
+
+	var orderKey int64
+	require.NoError(t, tx.QueryRowContext(ctx, "SELECT orderkey FROM tpch.sf1.lineitem").Scan(&orderKey))
+
+	var trinoErr *trino.ErrTrino
+	require.ErrorAs(t, tx.Commit(), &trinoErr)
+	assert.Equal(t, "TRANSACTION_ALREADY_ABORTED", trinoErr.ErrorName)
 }
 
 const hiveTransactionSchema = "hive.trino_go_client_transactions"
