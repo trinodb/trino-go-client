@@ -1237,3 +1237,16 @@ func TestFormatDSNKeepsColonsInValues(t *testing.T) {
 	assert.Equal(t, config.SessionProperties, parsed.SessionProperties)
 	assert.Equal(t, config.Roles, parsed.Roles)
 }
+
+// A Config without a server used to format into a DSN that ParseDSN refuses,
+// and NewConnector accepted it and failed at the first request.
+func TestConfigRequiresSchemeAndHost(t *testing.T) {
+	t.Parallel()
+	for _, serverURI := range []string{"", "localhost:8080", "http://", "/hive"} {
+		config := &Config{ServerURI: serverURI, Source: "app"}
+		_, err := config.FormatDSN()
+		assert.ErrorContains(t, err, "ServerURI must have a scheme and a host", "ServerURI %q", serverURI)
+		_, err = NewConnector(config)
+		assert.ErrorContains(t, err, "ServerURI must have a scheme and a host", "ServerURI %q", serverURI)
+	}
+}

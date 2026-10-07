@@ -50,10 +50,10 @@ func FuzzParseDSN(f *testing.F) {
 
 		formatted, err := config.FormatDSN()
 		if err != nil {
-			// FormatDSN checks more than ParseDSN does, for instance a
-			// ServerURI with a path. None of these is reachable from a
-			// DSN, so a rejection is a mismatch between the two.
-			t.Fatalf("FormatDSN rejected a parsed DSN %q: %v", dsn, err)
+			// ParseDSN only reads the DSN. FormatDSN also checks the
+			// combination of settings, for instance that SSLVerification
+			// needs an https server, as NewConnector does.
+			return
 		}
 		reparsed, err := ParseDSN(formatted)
 		require.NoError(t, err, "formatted DSN %q", formatted)

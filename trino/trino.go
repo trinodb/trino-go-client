@@ -653,6 +653,9 @@ func ParseDSN(dsn string) (*Config, error) {
 
 // validate checks the settings that do not depend on DSN syntax.
 func (c *Config) validate(serverURL *url.URL) error {
+	if serverURL.Scheme == "" || serverURL.Host == "" {
+		return errors.New("trino: client configuration error, ServerURI must have a scheme and a host")
+	}
 	if err := requireTLSForPassword(serverURL); err != nil {
 		return err
 	}
