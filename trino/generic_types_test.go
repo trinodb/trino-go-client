@@ -2,7 +2,8 @@ package trino
 
 import (
 	"database/sql"
-	"encoding/json"
+	jsonv1 "encoding/json"
+	"encoding/json/v2"
 	"math"
 	"reflect"
 	"testing"
@@ -102,7 +103,7 @@ func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 			column: column("array(bigint)", arrayType(scalarType("bigint"))),
 			value:  []any{1, nil},
 			dest:   func() any { return &NullSlice[interface{}]{} },
-			want:   NullSlice[interface{}]{Slice: []interface{}{json.Number("1"), nil}, Valid: true},
+			want:   NullSlice[interface{}]{Slice: []interface{}{jsonv1.Number("1"), nil}, Valid: true},
 		},
 		{
 			name:   "nested array keeps a NULL inner array apart from an empty one",
@@ -430,7 +431,7 @@ func TestGenericScannersScanDirectly(t *testing.T) {
 	t.Parallel()
 
 	var slice NullSlice[NullSlice[sql.NullInt64]]
-	require.NoError(t, slice.Scan([]interface{}{nil, []interface{}{json.Number("1")}}))
+	require.NoError(t, slice.Scan([]interface{}{nil, []interface{}{jsonv1.Number("1")}}))
 	assert.Equal(t, NullSlice[NullSlice[sql.NullInt64]]{Slice: []NullSlice[sql.NullInt64]{{}, {Slice: []sql.NullInt64{{Int64: 1, Valid: true}}, Valid: true}}, Valid: true}, slice)
 
 	var row NullRow[point]

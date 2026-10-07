@@ -3,7 +3,8 @@ package trino
 import (
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"os"
 	"reflect"
 	"strings"
@@ -256,7 +257,7 @@ func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
 	variantType := typeSignature{RawType: "variant", Arguments: []typeArgument{}}
-	variantArgument := typeArgument{Kind: KIND_TYPE, Value: json.RawMessage(`{"rawType":"variant","arguments":[]}`)}
+	variantArgument := typeArgument{Kind: KIND_TYPE, Value: jsontext.Value(`{"rawType":"variant","arguments":[]}`)}
 	columns := []queryColumn{
 		{Name: "v", Type: "variant", TypeSignature: variantType},
 		{Name: "a", Type: "array(variant)", TypeSignature: typeSignature{RawType: "array", Arguments: []typeArgument{variantArgument}}},
@@ -266,18 +267,18 @@ func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
 			TypeSignature: typeSignature{
 				RawType: "map",
 				Arguments: []typeArgument{
-					{Kind: KIND_TYPE, Value: json.RawMessage(`{"rawType":"varchar","arguments":[]}`)},
+					{Kind: KIND_TYPE, Value: jsontext.Value(`{"rawType":"varchar","arguments":[]}`)},
 					variantArgument,
 				},
 			},
 		},
 		rowColumn("r", "row(x variant)", namedField("x", variantType)),
 	}
-	object := json.RawMessage(`{"metadata":"EQIAAQJhYg==","value":"AgIAAQAFChQCAAAAFAEAAAA="}`)
-	double := json.RawMessage(`{"metadata":"AQAA","value":"HAAAAAAAAPg/"}`)
-	variantNull := json.RawMessage(`{"metadata":"AQAA","value":"AA=="}`)
-	date := json.RawMessage(`{"metadata":"AQAA","value":"LFdHAAA="}`)
-	uuid := json.RawMessage(`{"metadata":"AQAA","value":"UBIVH9J1hhHpj54qhuQIWlk="}`)
+	object := jsontext.Value(`{"metadata":"EQIAAQJhYg==","value":"AgIAAQAFChQCAAAAFAEAAAA="}`)
+	double := jsontext.Value(`{"metadata":"AQAA","value":"HAAAAAAAAPg/"}`)
+	variantNull := jsontext.Value(`{"metadata":"AQAA","value":"AA=="}`)
+	date := jsontext.Value(`{"metadata":"AQAA","value":"LFdHAAA="}`)
+	uuid := jsontext.Value(`{"metadata":"AQAA","value":"UBIVH9J1hhHpj54qhuQIWlk="}`)
 	fc.respond(statementPage(), columnsPage(columns, [][]any{
 		{object, []any{double, variantNull, nil}, map[string]any{"k": date}, []any{uuid}},
 		{variantNull, nil, nil, []any{nil}},
@@ -365,7 +366,7 @@ func TestVariantColumnRejectsMalformedValues(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
 	columns := []queryColumn{{Name: "v", Type: "variant", TypeSignature: typeSignature{RawType: "variant", Arguments: []typeArgument{}}}}
-	fc.respond(statementPage(), columnsPage(columns, [][]any{{json.RawMessage(`{"metadata":"AQAA","value":"GAE="}`)}}))
+	fc.respond(statementPage(), columnsPage(columns, [][]any{{jsontext.Value(`{"metadata":"AQAA","value":"GAE="}`)}}))
 	db := fc.open(t, "")
 
 	rows, err := db.Query("SELECT v")

@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
-	"encoding/json"
+	"encoding/json/v2"
 	"net/http"
 	"strings"
 	"testing"
@@ -49,7 +49,7 @@ func TestKerberosFailureAfterStatementInvalidatesConnection(t *testing.T) {
 	fc := newFakeTLSCoordinator(t)
 	fc.onStatement(func(w http.ResponseWriter, r *http.Request, query string) {
 		nextURI := strings.Replace(fc.url(), "127.0.0.1", "localhost", 1) + "/v1/statement/" + fakeQueryID + "/1"
-		assert.NoError(t, json.NewEncoder(w).Encode(&stmtResponse{ID: fakeQueryID, NextURI: nextURI}))
+		assert.NoError(t, json.MarshalWrite(w, &stmtResponse{ID: fakeQueryID, NextURI: nextURI}))
 	})
 	krb5Files := newKerberosTestFiles(t, "alice", "trino/127.0.0.1")
 	db := openKerberos(t, fc, Config{

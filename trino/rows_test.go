@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
+	jsonv1 "encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -22,7 +24,7 @@ func TestQueryCancellation(t *testing.T) {
 	t.Parallel()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&stmtResponse{
+		json.MarshalWrite(w, &stmtResponse{
 			Error: ErrTrino{
 				ErrorName: "USER_CANCELLED",
 			},
@@ -60,14 +62,14 @@ func TestFetchNoStackOverflow(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(&stmtResponse{
+		_ = json.MarshalWrite(w, &stmtResponse{
 			Error: ErrTrino{
 				ErrorName: "TEST",
 			},
 		})
 	}))
 	t.Cleanup(ts.Close)
-	require.NoError(t, json.NewEncoder(&nextPage).Encode(&stmtResponse{
+	require.NoError(t, json.MarshalWrite(&nextPage, &stmtResponse{
 		ID:      "fake-query",
 		NextURI: ts.URL + "/v1/statement/20210817_140827_00000_arvdv/1",
 	}))
@@ -128,8 +130,8 @@ func TestPageKeepsNumbersExact(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
 	decimalType := typeSignature{RawType: "decimal", Arguments: []typeArgument{
-		{Kind: KIND_LONG, Value: json.RawMessage("38")},
-		{Kind: KIND_LONG, Value: json.RawMessage("2")},
+		{Kind: KIND_LONG, Value: jsontext.Value("38")},
+		{Kind: KIND_LONG, Value: jsontext.Value("2")},
 	}}
 	columns := []queryColumn{
 		column("bigint", scalarType("bigint")),
@@ -146,7 +148,7 @@ func TestPageKeepsNumbersExact(t *testing.T) {
 	var decimal string
 	require.NoError(t, db.QueryRow("SELECT x").Scan(&bigint, &array, &decimal))
 	assert.Equal(t, int64(math.MaxInt64), bigint)
-	assert.Equal(t, NullSlice[interface{}]{Slice: []interface{}{json.Number("9007199254740993")}, Valid: true}, array)
+	assert.Equal(t, NullSlice[interface{}]{Slice: []interface{}{jsonv1.Number("9007199254740993")}, Valid: true}, array)
 	assert.Equal(t, "123456789012345678901234567890.12", decimal)
 }
 
