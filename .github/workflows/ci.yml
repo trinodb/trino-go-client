@@ -19,6 +19,49 @@ jobs:
         with:
           go-version: ${{ matrix.go }}
       - run: go test -v -race -timeout 30s ./...
+  lint:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The integration module has its own go.mod, so every tool runs in both.
+        module: ['.', 'integration']
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27'
+      - run: go vet ./...
+        working-directory: ${{ matrix.module }}
+      # Tools run through `go run <module>@<version>` so neither go.mod gains a
+      # requirement. Bump the versions here.
+      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+        working-directory: ${{ matrix.module }}
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+        working-directory: ${{ matrix.module }}
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27'
+      # Plain `go test` only replays the seed corpus; this runs each target as a
+      # fuzzer. The integration module needs Docker in TestMain and has no
+      # targets, so only the driver module is covered.
+      - name: Fuzz every target
+        run: |
+          set -euo pipefail
+          found=0
+          for pkg in $(go list ./...); do
+            for target in $(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true); do
+              found=1
+              echo "::group::$pkg $target"
+              go test "$pkg" -run='^$' -fuzz="^${target}\$" -fuzztime=30s
+              echo "::endgroup::"
+            done
+          done
+          test "$found" = 1
   integration:
     runs-on: ubuntu-latest
     strategy:
