@@ -3090,6 +3090,7 @@ var _ driver.RowsColumnTypeScanType = &driverRows{}
 var _ driver.RowsColumnTypeDatabaseTypeName = &driverRows{}
 var _ driver.RowsColumnTypeLength = &driverRows{}
 var _ driver.RowsColumnTypePrecisionScale = &driverRows{}
+var _ driver.RowsColumnTypeNullable = &driverRows{}
 
 // Close closes the rows iterator.
 func (qr *driverRows) Close() error {
@@ -3171,6 +3172,12 @@ func (qr *driverRows) ColumnTypeLength(index int) (int64, bool) {
 
 func (qr *driverRows) ColumnTypePrecisionScale(index int) (precision, scale int64, ok bool) {
 	return qr.coltype[index].precision.value, qr.coltype[index].scale.value, qr.coltype[index].precision.hasValue
+}
+
+// ColumnTypeNullable reports every column as nullable, because the protocol
+// never says whether a column can hold NULL.
+func (qr *driverRows) ColumnTypeNullable(index int) (nullable, ok bool) {
+	return true, true
 }
 
 // Next is called to populate the next row of data into

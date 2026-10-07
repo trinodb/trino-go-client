@@ -646,6 +646,24 @@ func TestRowColumnScansThroughTheWireFormat(t *testing.T) {
 	require.NoError(t, rows.Err())
 }
 
+func TestColumnTypeNullable(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	defer rows.Close()
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err)
+	require.Len(t, columnTypes, 1)
+	nullable, ok := columnTypes[0].Nullable()
+	assert.True(t, ok, "nullability must be reported")
+	assert.True(t, nullable, "every column must be reported as nullable")
+}
+
 func TestNamedWarningsArgumentMustBeWarningsPointer(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
