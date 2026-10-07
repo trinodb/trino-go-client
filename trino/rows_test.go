@@ -53,8 +53,7 @@ func TestFetchNoStackOverflow(t *testing.T) {
 	t.Cleanup(func() { debug.SetMaxStack(previousSetting) })
 	var count atomic.Int32
 	var nextPage bytes.Buffer
-	var ts *httptest.Server
-	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if count.Add(1) <= 51 {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write(nextPage.Bytes())

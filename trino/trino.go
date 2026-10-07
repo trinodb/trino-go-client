@@ -3986,42 +3986,37 @@ func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context, decoder 
 
 func (qr *driverRows) proccessSpollingSegments() {
 	go func() {
-		var qresp queryResponse
-		var err error
-		for {
-			select {
-			case qresp = <-qr.stmt.queryResponses:
+		// A closed channel yields the zero queryResponse, whose empty ID is
+		// also the explicit end marker, so both end up draining the workers.
+		for qresp := range qr.stmt.queryResponses {
+			if qresp.ID == "" {
+				break
+			}
+			if qr.stmt.warnings != nil {
+				qr.stmt.warnings.add(qresp.Warnings)
+			}
 
-				if qresp.ID == "" {
-					qr.waitForAllSpoolingWorkersFinish()
-					return
-				}
-				if qr.stmt.warnings != nil {
-					qr.stmt.warnings.add(qresp.Warnings)
-				}
+			qr.stmt.sendHeartbeatURI(qresp.NextURI)
+			if err := qr.initColumns(&qresp); err != nil {
+				qr.stmt.errors <- err
+			}
 
-				qr.stmt.sendHeartbeatURI(qresp.NextURI)
-				err = qr.initColumns(&qresp)
+			switch qresp.Data.Kind() {
+			case '{':
+				spooled, err := decodeSpooledData(qresp.Data)
 				if err != nil {
 					qr.stmt.errors <- err
+					break
 				}
-
-				switch qresp.Data.Kind() {
-				case '{':
-					spooled, err := decodeSpooledData(qresp.Data)
-					if err != nil {
-						qr.stmt.errors <- err
-						break
-					}
-					qr.queueSpoolingSegments(spooled)
-				case 0, 'n':
-					// do nothing: trino response without data (e.g only status information)
-				default:
-					qr.stmt.errors <- fmt.Errorf("trino: unexpected data in query %s response, expected the spooled segments, got %s", qresp.ID, qresp.Data)
-				}
-				qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
+				qr.queueSpoolingSegments(spooled)
+			case 0, 'n':
+				// do nothing: trino response without data (e.g only status information)
+			default:
+				qr.stmt.errors <- fmt.Errorf("trino: unexpected data in query %s response, expected the spooled segments, got %s", qresp.ID, qresp.Data)
 			}
+			qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
 		}
+		qr.waitForAllSpoolingWorkersFinish()
 	}()
 }
 
