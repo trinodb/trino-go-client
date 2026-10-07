@@ -2,7 +2,7 @@ package trino
 
 import (
 	"database/sql"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"reflect"
 	"testing"
 	"time"
@@ -107,7 +107,7 @@ func TestGetScanTypeRejectsMalformedSignatures(t *testing.T) {
 		"nested array":            arrayType(arrayType(typeSignature{RawType: "array"})),
 		"map without value":       {RawType: "map", Arguments: []typeArgument{typeArg(scalarType("varchar"))}},
 		"map in array":            arrayType(typeSignature{RawType: "map"}),
-		"array of a long literal": {RawType: "array", Arguments: []typeArgument{{Kind: KIND_LONG, Value: json.RawMessage("1")}}},
+		"array of a long literal": {RawType: "array", Arguments: []typeArgument{{Kind: KIND_LONG, Value: jsontext.Value("1")}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := parsedScanType(t, signature)
@@ -138,7 +138,12 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 	t.Parallel()
 	pointType := rowType(namedField("x", scalarType("integer")))
 	point := Row{names: []string{"x"}, values: []interface{}{int64(1)}, Valid: true}
-	date := time.Date(2017, 7, 10, 0, 0, 0, 0, time.Local)
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	require.NoError(t, err)
+	// Elements are decoded in the connection's zone, map keys are parsed by
+	// NullMap in its Location, time.Local by default.
+	date := time.Date(2017, 7, 10, 0, 0, 0, 0, tokyo)
+	localDate := time.Date(2017, 7, 10, 0, 0, 0, 0, time.Local)
 	instant := time.Date(2017, 7, 10, 1, 2, 3, 0, time.UTC)
 	columns := []struct {
 		signature typeSignature
@@ -194,7 +199,7 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 			signature: arrayType(arrayType(arrayType(arrayType(scalarType("bigint"))))),
 			value:     []any{[]any{[]any{[]any{1}}}},
 			want: NullSlice[NullSlice[NullSlice[interface{}]]]{Slice: []NullSlice[NullSlice[interface{}]]{{
-				Slice: []NullSlice[interface{}]{{Slice: []interface{}{[]interface{}{json.Number("1")}}, Valid: true}},
+				Slice: []NullSlice[interface{}]{{Slice: []interface{}{[]interface{}{int64(1)}}, Valid: true}},
 				Valid: true,
 			}}, Valid: true},
 		},
@@ -224,7 +229,7 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 		{
 			signature: mapType(scalarType("date"), scalarType("varbinary")),
 			value:     map[string]any{"2017-07-10": "YQ=="},
-			want:      NullMap[sql.NullTime, []byte]{Map: map[sql.NullTime][]byte{{Time: date, Valid: true}: []byte("a")}, Valid: true},
+			want:      NullMap[sql.NullTime, []byte]{Map: map[sql.NullTime][]byte{{Time: localDate, Valid: true}: []byte("a")}, Valid: true},
 		},
 		{
 			signature: mapType(scalarType("varbinary"), scalarType("varchar")),
@@ -240,7 +245,7 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 			signature: mapType(scalarType("varchar"), arrayType(scalarType("bigint"))),
 			value:     map[string]any{"a": []any{1}, "b": nil},
 			want: NullMap[sql.NullString, interface{}]{Map: map[sql.NullString]interface{}{
-				{String: "a", Valid: true}: []interface{}{json.Number("1")},
+				{String: "a", Valid: true}: []interface{}{int64(1)},
 				{String: "b", Valid: true}: nil,
 			}, Valid: true},
 		},
@@ -248,7 +253,7 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 			signature: mapType(scalarType("varchar"), mapType(scalarType("varchar"), scalarType("bigint"))),
 			value:     map[string]any{"a": map[string]any{"b": 1}},
 			want: NullMap[sql.NullString, interface{}]{Map: map[sql.NullString]interface{}{
-				{String: "a", Valid: true}: map[string]interface{}{"b": json.Number("1")},
+				{String: "a", Valid: true}: map[string]interface{}{"b": int64(1)},
 			}, Valid: true},
 		},
 		{
@@ -263,7 +268,7 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 			signature: arrayType(arrayType(mapType(scalarType("varchar"), scalarType("bigint")))),
 			value:     []any{[]any{map[string]any{"a": 1}}},
 			want: NullSlice[NullSlice[interface{}]]{Slice: []NullSlice[interface{}]{{
-				Slice: []interface{}{map[string]interface{}{"a": json.Number("1")}},
+				Slice: []interface{}{map[string]interface{}{"a": int64(1)}},
 				Valid: true,
 			}}, Valid: true},
 		},
@@ -278,7 +283,7 @@ func TestScanTypeScansEveryColumn(t *testing.T) {
 	}
 	fc := newFakeCoordinator(t)
 	fc.respond(statementPage(), columnsPage(queryColumns, [][]any{values, nulls}))
-	db := fc.open(t, "")
+	db := fc.open(t, "?timezone=Asia%2FTokyo")
 
 	rows, err := db.Query("SELECT x")
 	require.NoError(t, err)

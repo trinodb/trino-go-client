@@ -1132,7 +1132,33 @@ WHERE col_json = CAST(? AS JSON) OR col_timestamp = CAST(? AS TIMESTAMP)
 
 ### Response rows
 
-When reading response rows, the driver supports most Trino data types, except:
+The driver decodes each value straight into the Go value of its column type,
+which is what a column scanned into an `interface{}` holds:
+
+| Trino type | Go type |
+| --- | --- |
+| `NULL` of any type | `nil` |
+| `BOOLEAN` | `bool` |
+| `TINYINT`, `SMALLINT`, `INTEGER`, `BIGINT` | `int64` |
+| `REAL`, `DOUBLE` | `float64` |
+| `DECIMAL`, `NUMBER`, `CHAR`, `VARCHAR`, `JSON`, `UUID`, `IPADDRESS`, `INTERVAL YEAR TO MONTH`, `INTERVAL DAY TO SECOND`, `Geometry`, `SphericalGeography`, `color` | `string` |
+| `VARBINARY` and every type without a textual form, like `HyperLogLog` | `[]byte` |
+| `DATE`, `TIME`, `TIMESTAMP`, with or without a time zone | `time.Time` |
+| `VARIANT` | `trino.Variant` |
+| `ARRAY` | `[]interface{}` |
+| `MAP` | `map[string]interface{}` |
+| `ROW` | `trino.Row` |
+| `BingTile`, `KdbTree` | `map[string]interface{}` |
+
+The elements of an `ARRAY`, the values of a `MAP` and the fields of a `ROW`
+are decoded the same way, at any depth, so an `ARRAY(VARBINARY)` holds
+`[]byte` elements and an `ARRAY(TIMESTAMP)` holds `time.Time` elements. The
+keys of a `MAP` are strings, the way the server sends them, like `"1"` for a
+`MAP(INTEGER, VARCHAR)`; `trino.NullMap` converts them into its key type. A
+value that does not match its column type fails the query with an error
+naming the row and the column.
+
+The details for some of the types:
 * time and timestamps with precision - all time types are returned as
   `time.Time`. All precisions up to nanoseconds (`TIMESTAMP(9)` or `TIME(9)`)
   are supported (since this is the maximum precision Golang's `time.Time`
@@ -1141,9 +1167,9 @@ When reading response rows, the driver supports most Trino data types, except:
   precision, or convert the value to a string that then can be parsed manually.
 * `DATE`, `TIME` and `TIMESTAMP` without a time zone - returned as `time.Time`
   in the zone of the connection (see the `timezone` parameter), which is the
-  zone the server used to produce them. When scanning arrays or maps of these
-  types with `trino.NullSlice` or `trino.NullMap`, set their `Location`
-  field to the same zone, as they use `time.Local` by default.
+  zone the server used to produce them, also inside an `ARRAY`, `MAP` or
+  `ROW`. `MAP` keys of these types are parsed by `trino.NullMap`, in the zone
+  of its `Location` field, `time.Local` by default.
 * `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use
   `sql.NullString` for nullable columns
 * `IPADDRESS` - returned as string
@@ -1157,7 +1183,7 @@ When reading response rows, the driver supports most Trino data types, except:
   [VARIANT](#variant)
 * `Geometry`, `SphericalGeography` and `color` - returned as string
 * `BingTile` and `KdbTree` - returned as `map[string]interface{}`, the JSON
-  object the server sent
+  object the server sent, with numbers as `float64`
 * any other type, like `HyperLogLog`, `SetDigest`, `QDigest`, and `TDigest` -
   returned as `[]byte`, decoded from the base64 form the server sends, the
   same as `VARBINARY`
@@ -1198,11 +1224,15 @@ Elements, map keys and values, and row fields can be `bool`, `string`,
 nullable types from `database/sql` (`sql.NullBool`, `sql.NullString`,
 `sql.NullInt64`, `sql.NullInt32`, `sql.NullInt16`, `sql.NullFloat64`,
 `sql.NullTime`), `trino.NullTime`, `trino.NullBinary`, `trino.Variant`,
-another generic scanner, or any other type that implements `sql.Scanner`. A
-`NULL` element scanned into a plain type that cannot hold it, like `int64`, is
-an error. Set the `Location` field of `trino.NullSlice` and `trino.NullMap`
-to the zone of the connection for elements without a time zone, as they use
-`time.Local` by default; it is passed down to nested scanners.
+another generic scanner, or any other type that implements `sql.Scanner`,
+whose `Scan` receives the element as listed in
+[Response rows](#response-rows). A `NULL` element scanned into a plain type
+that cannot hold it, like `int64`, is an error. An integer element also
+scans into a floating point type, and so does a `DECIMAL` element, which is
+a string otherwise. `MAP` keys without a time zone, like `DATE` keys, are
+parsed in the zone of the `Location` field of `trino.NullMap`, or of the
+`trino.NullSlice` or `trino.NullMap` it is nested in, and `time.Local` when
+no `Location` is set.
 
 `trino.NullRow[T]` maps each `ROW` field to an exported field of the struct
 `T`, by the name in a `trino:"name"` struct tag, or by the Go field name,
@@ -1238,11 +1268,10 @@ err := db.QueryRow("SELECT CAST(ROW(1, 'a') AS ROW(x INTEGER, y VARCHAR))").Scan
 // row.Field("y") == "a", true
 ```
 
-An `ARRAY` or `MAP` scanned into an `interface{}` holds the decoded JSON
-response, `[]interface{}` or `map[string]interface{}`, with `ROW` and
-`VARIANT` elements converted into `trino.Row` and `trino.Variant` and every
-other element left as the JSON value, so a `VARBINARY` element is still a
-base64 string. Prefer the generic scanners, which convert every element.
+An `ARRAY` or `MAP` scanned into an `interface{}` holds a `[]interface{}` or
+a `map[string]interface{}` whose elements are converted the way a plain
+column would be: a `VARBINARY` element is a `[]byte`, a number an `int64` or
+a `float64`, a `DECIMAL` a `string` and a `TIMESTAMP` a `time.Time`.
 
 `sql.ColumnType.ScanType()` reports the generic scanners, instantiated with
 the scan types of the elements, keys and values, like
@@ -1332,6 +1361,10 @@ Other errors the driver returns:
 * A `*trino.ErrQueryFailed` without a `*trino.ErrTrino` inside for an HTTP
   error, such as `401 Unauthorized`, or when the retries of a request were
   exhausted, see [`request_retry_timeout`](#request_retry_timeout).
+* A decoding error when a response is not well-formed JSON, which includes
+  invalid UTF-8 and a member name repeated within one object, or when a value
+  does not match the type of its column, naming the row and the column. A
+  malformed first page fails `Query`, a later one `rows.Err()`.
 
 ### Cancellation and timeouts
 

@@ -2,7 +2,7 @@ package trino
 
 import (
 	"database/sql"
-	"encoding/json"
+	"encoding/json/v2"
 	"math"
 	"reflect"
 	"testing"
@@ -40,8 +40,8 @@ type everyKind struct {
 
 // TestGenericScannersThroughTheWireFormat scans every generic scanner from a
 // response that went through the same JSON encoding and decoding a real
-// coordinator's does, so elements arrive in the shape ConvertValue leaves
-// them: raw JSON values for ARRAY and MAP, converted ones inside a ROW.
+// coordinator's does, so elements arrive decoded the way a plain column of
+// their type would be.
 func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 	t.Parallel()
 	tokyo, err := time.LoadLocation("Asia/Tokyo")
@@ -102,7 +102,7 @@ func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 			column: column("array(bigint)", arrayType(scalarType("bigint"))),
 			value:  []any{1, nil},
 			dest:   func() any { return &NullSlice[interface{}]{} },
-			want:   NullSlice[interface{}]{Slice: []interface{}{json.Number("1"), nil}, Valid: true},
+			want:   NullSlice[interface{}]{Slice: []interface{}{int64(1), nil}, Valid: true},
 		},
 		{
 			name:   "nested array keeps a NULL inner array apart from an empty one",
@@ -129,13 +129,13 @@ func TestGenericScannersThroughTheWireFormat(t *testing.T) {
 			}, Valid: true},
 		},
 		{
-			name:   "nested array of timestamps uses the outer location",
+			name:   "nested array of timestamps in the connection's zone",
 			column: column("array(array(timestamp(3)))", arrayType(arrayType(scalarType("timestamp")))),
 			value:  nest(2, "2017-07-10 01:02:03.000"),
-			dest:   func() any { return &NullSlice[NullSlice[time.Time]]{Location: tokyo} },
+			dest:   func() any { return &NullSlice[NullSlice[time.Time]]{} },
 			want: NullSlice[NullSlice[time.Time]]{Slice: []NullSlice[time.Time]{
-				{Slice: []time.Time{time.Date(2017, 7, 10, 1, 2, 3, 0, tokyo)}, Valid: true, Location: nil},
-			}, Valid: true, Location: tokyo},
+				{Slice: []time.Time{time.Date(2017, 7, 10, 1, 2, 3, 0, tokyo)}, Valid: true},
+			}, Valid: true},
 		},
 		{
 			name:   "map of arrays",
@@ -315,10 +315,10 @@ func TestGenericScannersRejectMismatchedValues(t *testing.T) {
 		},
 		{
 			name:    "mismatch at depth",
-			column:  column("array(array(varchar))", arrayType(arrayType(scalarType("varchar")))),
-			value:   []any{[]any{"a"}, []any{"b", 1}},
-			dest:    &NullSlice[NullSlice[string]]{},
-			wantErr: "trino: element 1: element 1: cannot convert 1 (json.Number) to string",
+			column:  column("array(array(bigint))", arrayType(arrayType(scalarType("bigint")))),
+			value:   []any{[]any{nil}, []any{nil, 1}},
+			dest:    &NullSlice[NullSlice[sql.NullString]]{},
+			wantErr: "trino: element 1: element 1: cannot convert 1 (int64) to string",
 		},
 		{
 			name:    "unsupported element type",
@@ -339,7 +339,7 @@ func TestGenericScannersRejectMismatchedValues(t *testing.T) {
 			column:  column("map(varchar,varchar)", mapType(scalarType("varchar"), scalarType("varchar"))),
 			value:   map[string]any{"a": "b"},
 			dest:    &NullMap[int64, string]{},
-			wantErr: `trino: key "a": cannot convert a (json.Number) to int64`,
+			wantErr: `trino: key "a": strconv.ParseInt: parsing "a": invalid syntax`,
 		},
 		{
 			name:    "map value of the wrong type",
@@ -430,7 +430,7 @@ func TestGenericScannersScanDirectly(t *testing.T) {
 	t.Parallel()
 
 	var slice NullSlice[NullSlice[sql.NullInt64]]
-	require.NoError(t, slice.Scan([]interface{}{nil, []interface{}{json.Number("1")}}))
+	require.NoError(t, slice.Scan([]interface{}{nil, []interface{}{int64(1)}}))
 	assert.Equal(t, NullSlice[NullSlice[sql.NullInt64]]{Slice: []NullSlice[sql.NullInt64]{{}, {Slice: []sql.NullInt64{{Int64: 1, Valid: true}}, Valid: true}}, Valid: true}, slice)
 
 	var row NullRow[point]
@@ -440,14 +440,56 @@ func TestGenericScannersScanDirectly(t *testing.T) {
 	assert.Equal(t, NullRow[point]{}, row, "a zero Row is a NULL row")
 }
 
+// TestScanElementConversions covers the conversions between element types
+// that do not hold the same Go type.
+func TestScanElementConversions(t *testing.T) {
+	t.Parallel()
+	variant, err := newVariant([]byte{1, 0, 0}, []byte{1 << 2}, time.UTC)
+	require.NoError(t, err)
+	cases := []struct {
+		name    string
+		value   interface{}
+		dest    sql.Scanner
+		want    interface{}
+		wantErr string
+	}{
+		{name: "integer into float64", value: int64(3), dest: &NullSlice[float64]{}, want: []float64{3}},
+		{name: "integer into float32", value: int64(3), dest: &NullSlice[float32]{}, want: []float32{3}},
+		{name: "decimal into float64", value: "1.25", dest: &NullSlice[sql.NullFloat64]{}, want: []sql.NullFloat64{{Float64: 1.25, Valid: true}}},
+		{name: "variant into string", value: variant, dest: &NullSlice[string]{}, want: []string{"true"}},
+		{name: "variant", value: variant, dest: &NullSlice[Variant]{}, want: []Variant{variant}},
+		{name: "integer into int8", value: int64(-128), dest: &NullSlice[int8]{}, want: []int8{-128}},
+		{name: "float into integer", value: 1.0, dest: &NullSlice[int64]{}, wantErr: "trino: element 0: cannot convert 1 (float64) to int64"},
+		{name: "string into bytes", value: "AAE=", dest: &NullSlice[[]byte]{}, wantErr: "trino: element 0: cannot convert AAE= (string) to []uint8"},
+		{name: "string into float64", value: "one", dest: &NullSlice[float64]{}, wantErr: `trino: element 0: cannot convert one (string) to float64: strconv.ParseFloat: parsing "one": invalid syntax`},
+		{name: "string into time", value: "2017-07-10", dest: &NullSlice[time.Time]{}, wantErr: "trino: element 0: cannot convert 2017-07-10 (string) to time.Time"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := tc.dest.Scan([]interface{}{tc.value})
+
+			if tc.wantErr != "" {
+				require.EqualError(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, reflect.ValueOf(tc.dest).Elem().FieldByName("Slice").Interface())
+		})
+	}
+}
+
 // scanOneValue serves a single row with a single column holding value from a
-// fake coordinator and scans it into dest.
+// fake coordinator, whose connection is in the Asia/Tokyo zone, and scans it
+// into dest.
 func scanOneValue(t *testing.T, col queryColumn, value any, dest any) error {
 	t.Helper()
 	fc := newFakeCoordinator(t)
 	col.Name = "_col0"
 	fc.respond(statementPage(), columnsPage([]queryColumn{col}, [][]any{{value}}))
-	db := fc.open(t, "")
+	db := fc.open(t, "?timezone=Asia%2FTokyo")
 	return db.QueryRow("SELECT x").Scan(dest)
 }
 

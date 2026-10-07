@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -61,7 +61,7 @@ func TestRoundTripRetryQueryError(t *testing.T) {
 					return
 				}
 				w.WriteHeader(http.StatusOK)
-				json.NewEncoder(w).Encode(&stmtResponse{
+				json.MarshalWrite(w, &stmtResponse{
 					Error: ErrTrino{
 						ErrorName: "TEST",
 					},
@@ -97,7 +97,7 @@ func TestRoundTripRetryNextURIGet(t *testing.T) {
 	ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode(&stmtResponse{ID: "q", NextURI: ts.URL + "/next"})
+			json.MarshalWrite(w, &stmtResponse{ID: "q", NextURI: ts.URL + "/next"})
 			return
 		}
 		if int(getRequests.Add(1)) <= failures {
@@ -105,7 +105,7 @@ func TestRoundTripRetryNextURIGet(t *testing.T) {
 			return
 		}
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&queryResponse{})
+		json.MarshalWrite(w, &queryResponse{})
 	}))
 	t.Cleanup(ts.Close)
 
@@ -498,7 +498,7 @@ func TestRoundTripRefusesRedirects(t *testing.T) {
 	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		redirectedRequests.Add(1)
 		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(&stmtResponse{})
+		json.MarshalWrite(w, &stmtResponse{})
 	}))
 	t.Cleanup(target.Close)
 	for _, status := range []int{

@@ -16,7 +16,7 @@ package trino
 
 import (
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"math"
 	"reflect"
@@ -181,7 +181,8 @@ func Serial(v interface{}) (string, error) {
 		return serialInterval(x)
 
 		// TODO - json.RawMesssage should probably be matched to 'JSON' in Trino
-	case json.RawMessage:
+		// json.RawMessage is an alias of jsontext.Value since Go 1.27.
+	case jsontext.Value:
 		return "", UnsupportedArgError{"json.RawMessage"}
 	}
 

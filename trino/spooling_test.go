@@ -236,7 +236,7 @@ func TestSpoolingProtocolExpiredSegment(t *testing.T) {
 	notExpired := time.Now().Add(time.Hour).In(warsaw)
 	cases := []struct {
 		name        string
-		expiresAt   any
+		expiresAt   string
 		status      int
 		wantExpired bool
 	}{
@@ -245,7 +245,6 @@ func TestSpoolingProtocolExpiredSegment(t *testing.T) {
 		{name: "not expired and missing", expiresAt: notExpired.Format("2006-01-02T15:04:05.000"), status: http.StatusNotFound},
 		{name: "malformed and missing", expiresAt: "yesterday", status: http.StatusNotFound},
 		{name: "malformed but served", expiresAt: "yesterday", status: http.StatusOK},
-		{name: "not a string", expiresAt: 1593599415, status: http.StatusNotFound},
 	}
 
 	for _, tc := range cases {
@@ -292,7 +291,7 @@ func TestParseSegmentExpiresAt(t *testing.T) {
 	require.NoError(t, err)
 	cases := []struct {
 		name      string
-		expiresAt any
+		expiresAt string
 		want      time.Time
 	}{
 		{name: "seconds", expiresAt: "2020-07-01T12:30:15", want: time.Date(2020, time.July, 1, 12, 30, 15, 0, warsaw)},
@@ -300,18 +299,13 @@ func TestParseSegmentExpiresAt(t *testing.T) {
 		{name: "no seconds", expiresAt: "2020-07-01T12:30", want: time.Date(2020, time.July, 1, 12, 30, 0, 0, warsaw)},
 		{name: "offset", expiresAt: "2020-07-01T12:30:15Z", want: time.Date(2020, time.July, 1, 12, 30, 15, 0, time.UTC)},
 		{name: "malformed", expiresAt: "2020-07-01 12:30:15"},
-		{name: "not a string", expiresAt: 1593599415},
 		{name: "missing"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			metadata := map[string]interface{}{}
-			if tc.expiresAt != nil {
-				metadata["expiresAt"] = tc.expiresAt
-			}
-			got := parseSegmentExpiresAt(metadata, warsaw)
+			got := parseSegmentExpiresAt(tc.expiresAt, warsaw)
 			assert.True(t, tc.want.Equal(got), "got %v, want %v", got, tc.want)
 		})
 	}
@@ -431,7 +425,7 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "WrongRowOffsetMetadataType",
 			segment: spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": "2", "segmentSize": 11}),
-			wantErr: "invalid type for rowOffset in segment metadata, expected json.Number",
+			wantErr: `cannot unmarshal JSON string into Go int64 within "/segments/0/metadata/rowOffset"`,
 		},
 		{
 			name:    "MissingSegmentSizeMetadata",
@@ -441,7 +435,7 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "WrongSegmentSizeMetadataType",
 			segment: spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": "11"}),
-			wantErr: "invalid type for segmentSize in segment metadata, expected json.Number",
+			wantErr: `cannot unmarshal JSON string into Go int64 within "/segments/0/metadata/segmentSize"`,
 		},
 		{
 			name:    "MissingMetadata",
@@ -451,7 +445,7 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "WrongMetadataType",
 			segment: spooledSegment("seg", "fake-metadata"),
-			wantErr: "metadata is invalid or cannot be parsed as map[string]interface{} in segment at index 0",
+			wantErr: `cannot unmarshal JSON string into Go trino.segmentAttributes within "/segments/0/metadata"`,
 		},
 		{
 			name:           "WrongUncompressSize",
@@ -468,12 +462,12 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "MissingUri",
 			segment: withoutField(spooledSegment("seg", validMetadata), "uri"),
-			wantErr: "missing or invalid 'uri' field in spooled segment at index 0",
+			wantErr: "missing 'uri' field in spooled segment at index 0",
 		},
 		{
 			name:    "MissingUriAck",
 			segment: withoutField(spooledSegment("seg", validMetadata), "ackUri"),
-			wantErr: "missing or invalid 'ackUri' field in spooled segment at index 0",
+			wantErr: "missing 'ackUri' field in spooled segment at index 0",
 		},
 		{
 			name: "wrongHeadersFormat",
@@ -481,7 +475,7 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 				{"x-amz-server-side-encryption-customer-algorithm", "AES256"},
 				{"x-amz-server-side-encryption-customer-key", "key"},
 			}),
-			wantErr: "invalid 'headers' field in spooled segment at index 0: expected map[string]interface{}",
+			wantErr: `cannot unmarshal JSON array into Go map[string][]string within "/segments/0/headers"`,
 		},
 		{
 			name: "HeaderValueWrongType",
@@ -490,35 +484,45 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 				"x-amz-server-side-encryption-customer-key":       []any{"key"},
 				"x-amz-server-side-encryption-customer-key-md5":   []any{123}, // Wrong type: integer instead of string
 			}),
-			wantErr: "unsupported header value type json.Number",
+			wantErr: `cannot unmarshal JSON number into Go string within "/segments/0/headers/x-amz-server-side-encryption-customer-key-md5/0"`,
 		},
 		{
 			name: "HeaderTypeInvalid",
 			segment: withField(spooledSegment("seg", validMetadata), "headers", map[string]any{
 				"x-amz-server-side-encryption-customer-algorithm": "AES256", // Invalid type: string instead of []interface{}
 			}),
-			wantErr: "unsupported header type string",
+			wantErr: `cannot unmarshal JSON string into Go []string within "/segments/0/headers/x-amz-server-side-encryption-customer-algorithm"`,
 		},
 		{
 			name:    "InlineDataNotString",
 			segment: inlineSegment(123, map[string]any{"rowOffset": 0, "segmentSize": 8}),
-			wantErr: "missing or invalid 'data' field in inline segment at index 0",
+			wantErr: `cannot unmarshal JSON number into Go []uint8 within "/segments/0/data"`,
+		},
+		{
+			name:    "RowsCountMismatch",
+			segment: inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 0, "rowsCount": 3}),
+			wantErr: "segment at rowOffset 0 has 2 rows but its metadata says 3",
+		},
+		{
+			name:    "UnsupportedSegmentType",
+			segment: withField(spooledSegment("seg", validMetadata), "type", "remote"),
+			wantErr: `unsupported type "remote" of segment at index 0`,
 		},
 		{
 			name:    "InlineDataNotBase64",
 			segment: inlineSegment("not base64!", map[string]any{"rowOffset": 0, "segmentSize": 8}),
-			wantErr: "error decoding base64 data in inline segment at index 0",
+			wantErr: `cannot unmarshal JSON string into Go []uint8 within "/segments/0/data": illegal base64 data`,
 		},
 		{
 			name:    "FractionalRowOffset",
 			segment: spooledSegment("seg", map[string]any{"rowOffset": 1.5, "segmentSize": 8}),
-			wantErr: "error converting rowOffset to int64",
+			wantErr: `cannot unmarshal JSON number 1.5 into Go int64 within "/segments/0/metadata/rowOffset"`,
 		},
 		{
 			name:           "MalformedSegmentJson",
 			segment:        spooledSegment("seg", map[string]any{"rowOffset": 0, "segmentSize": 6}),
 			downloadedData: []byte("[[1000"),
-			wantErr:        "failed to decode segment into JSON at rowOffset 0",
+			wantErr:        "failed to decode segment at rowOffset 0: row 0: jsontext: unexpected EOF",
 		},
 		{
 			name:                          "ErrorDownloadingSegment",
@@ -551,17 +555,18 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 			})
 			db := fc.open(t, "")
 
+			// A page whose segments do not decode fails the query right
+			// away; the other errors surface while reading the rows.
 			rows, err := db.Query("SELECT 1")
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, rows.Close()) })
-
-			for rows.Next() {
-				// force segment processing
+			if err == nil {
+				t.Cleanup(func() { require.NoError(t, rows.Close()) })
+				for rows.Next() {
+					// force segment processing
+				}
+				err = rows.Err()
 			}
 
-			err = rows.Err()
-			require.Error(t, err)
-			require.Contains(t, err.Error(), tc.wantErr)
+			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }

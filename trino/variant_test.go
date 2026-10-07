@@ -3,7 +3,8 @@ package trino
 import (
 	"database/sql"
 	"encoding/base64"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"os"
 	"reflect"
 	"strings"
@@ -158,7 +159,7 @@ func TestVariantValue(t *testing.T) {
 
 func TestVariantSQLNull(t *testing.T) {
 	t.Parallel()
-	converted, err := decodeVariant(nil, time.UTC)
+	converted, err := decodeJSON(t, typeSignature{RawType: "variant"}, `null`, time.UTC)
 	require.NoError(t, err)
 	assert.Nil(t, converted)
 
@@ -195,16 +196,21 @@ func TestDecodeVariantRejectsMalformedValues(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
-		encoded interface{}
+		encoded string
 		wantErr string
 	}{
-		{name: "not an object", encoded: "AA==", wantErr: "cannot convert AA== (string) to variant"},
-		{name: "no metadata", encoded: map[string]interface{}{"value": "AA=="}, wantErr: "variant has no metadata"},
-		{name: "no value", encoded: map[string]interface{}{"metadata": "AQAA"}, wantErr: "variant has no value"},
+		{name: "not an object", encoded: `"AA=="`, wantErr: "expected a variant object, got a string"},
+		{name: "no metadata", encoded: `{"value": "AA=="}`, wantErr: "variant has no metadata"},
+		{name: "no value", encoded: `{"metadata": "AQAA"}`, wantErr: "variant has no value"},
 		{
 			name:    "value not base64",
-			encoded: map[string]interface{}{"metadata": "AQAA", "value": "!"},
-			wantErr: "variant value is not base64: illegal base64 data at input byte 0",
+			encoded: `{"metadata": "AQAA", "value": "!"}`,
+			wantErr: "variant value: cannot decode base64 string: illegal base64 data at input byte 0",
+		},
+		{
+			name:    "metadata not a string",
+			encoded: `{"metadata": 1, "value": "AA=="}`,
+			wantErr: "variant metadata: expected a base64 string, got a number",
 		},
 		{name: "empty value", encoded: encodedVariant([]byte{1, 0, 0}, nil), wantErr: "variant value is empty"},
 		{name: "metadata version", encoded: encodedVariant([]byte{2, 0, 0}, []byte{0}), wantErr: "unsupported variant metadata version 2"},
@@ -235,7 +241,7 @@ func TestDecodeVariantRejectsMalformedValues(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := decodeVariant(tc.encoded, time.UTC)
+			_, err := decodeJSON(t, typeSignature{RawType: "variant"}, tc.encoded, time.UTC)
 			assert.EqualError(t, err, tc.wantErr)
 		})
 	}
@@ -256,7 +262,7 @@ func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
 	variantType := typeSignature{RawType: "variant", Arguments: []typeArgument{}}
-	variantArgument := typeArgument{Kind: KIND_TYPE, Value: json.RawMessage(`{"rawType":"variant","arguments":[]}`)}
+	variantArgument := typeArgument{Kind: KIND_TYPE, Value: jsontext.Value(`{"rawType":"variant","arguments":[]}`)}
 	columns := []queryColumn{
 		{Name: "v", Type: "variant", TypeSignature: variantType},
 		{Name: "a", Type: "array(variant)", TypeSignature: typeSignature{RawType: "array", Arguments: []typeArgument{variantArgument}}},
@@ -266,18 +272,18 @@ func TestVariantColumnScansThroughTheWireFormat(t *testing.T) {
 			TypeSignature: typeSignature{
 				RawType: "map",
 				Arguments: []typeArgument{
-					{Kind: KIND_TYPE, Value: json.RawMessage(`{"rawType":"varchar","arguments":[]}`)},
+					{Kind: KIND_TYPE, Value: jsontext.Value(`{"rawType":"varchar","arguments":[]}`)},
 					variantArgument,
 				},
 			},
 		},
 		rowColumn("r", "row(x variant)", namedField("x", variantType)),
 	}
-	object := json.RawMessage(`{"metadata":"EQIAAQJhYg==","value":"AgIAAQAFChQCAAAAFAEAAAA="}`)
-	double := json.RawMessage(`{"metadata":"AQAA","value":"HAAAAAAAAPg/"}`)
-	variantNull := json.RawMessage(`{"metadata":"AQAA","value":"AA=="}`)
-	date := json.RawMessage(`{"metadata":"AQAA","value":"LFdHAAA="}`)
-	uuid := json.RawMessage(`{"metadata":"AQAA","value":"UBIVH9J1hhHpj54qhuQIWlk="}`)
+	object := jsontext.Value(`{"metadata":"EQIAAQJhYg==","value":"AgIAAQAFChQCAAAAFAEAAAA="}`)
+	double := jsontext.Value(`{"metadata":"AQAA","value":"HAAAAAAAAPg/"}`)
+	variantNull := jsontext.Value(`{"metadata":"AQAA","value":"AA=="}`)
+	date := jsontext.Value(`{"metadata":"AQAA","value":"LFdHAAA="}`)
+	uuid := jsontext.Value(`{"metadata":"AQAA","value":"UBIVH9J1hhHpj54qhuQIWlk="}`)
 	fc.respond(statementPage(), columnsPage(columns, [][]any{
 		{object, []any{double, variantNull, nil}, map[string]any{"k": date}, []any{uuid}},
 		{variantNull, nil, nil, []any{nil}},
@@ -365,15 +371,12 @@ func TestVariantColumnRejectsMalformedValues(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
 	columns := []queryColumn{{Name: "v", Type: "variant", TypeSignature: typeSignature{RawType: "variant", Arguments: []typeArgument{}}}}
-	fc.respond(statementPage(), columnsPage(columns, [][]any{{json.RawMessage(`{"metadata":"AQAA","value":"GAE="}`)}}))
+	fc.respond(statementPage(), columnsPage(columns, [][]any{{jsontext.Value(`{"metadata":"AQAA","value":"GAE="}`)}}))
 	db := fc.open(t, "")
 
-	rows, err := db.Query("SELECT v")
-	require.NoError(t, err)
-	defer rows.Close()
+	_, err := db.Query("SELECT v")
 
-	assert.False(t, rows.Next())
-	assert.ErrorContains(t, rows.Err(), "variant value is truncated")
+	assert.ErrorContains(t, err, `trino: row 0: column "v": variant value is truncated`)
 }
 
 // FuzzNewVariant checks that whatever newVariant accepts can be read without
@@ -402,18 +405,16 @@ func FuzzNewVariant(f *testing.F) {
 
 func decodeVariantVector(t *testing.T, metadata, value string, location *time.Location) Variant {
 	t.Helper()
-	converted, err := decodeVariant(map[string]interface{}{"metadata": metadata, "value": value}, location)
+	converted, err := decodeJSON(t, typeSignature{RawType: "variant"}, `{"metadata":"`+metadata+`","value":"`+value+`"}`, location)
 	require.NoError(t, err)
 	variant, ok := converted.(Variant)
-	require.True(t, ok, "decodeVariant returned %T", converted)
+	require.True(t, ok, "decoded %T", converted)
 	return variant
 }
 
-func encodedVariant(metadata, value []byte) map[string]interface{} {
-	return map[string]interface{}{
-		"metadata": base64.StdEncoding.EncodeToString(metadata),
-		"value":    base64.StdEncoding.EncodeToString(value),
-	}
+// encodedVariant returns the JSON object the server sends for a VARIANT value.
+func encodedVariant(metadata, value []byte) string {
+	return `{"metadata":"` + base64.StdEncoding.EncodeToString(metadata) + `","value":"` + base64.StdEncoding.EncodeToString(value) + `"}`
 }
 
 // deeplyNestedArray encodes depth arrays nested in each other around a null,

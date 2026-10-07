@@ -3,7 +3,7 @@ package integration
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/v2"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -417,7 +417,7 @@ func getQueryInfo(dsn, queryId string) (QueryInfo, error) {
 	defer resp.Body.Close()
 
 	var queryInfo QueryInfo
-	if err := json.NewDecoder(resp.Body).Decode(&queryInfo); err != nil {
+	if err := json.UnmarshalRead(resp.Body, &queryInfo); err != nil {
 		return QueryInfo{}, err
 	}
 

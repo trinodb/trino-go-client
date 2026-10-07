@@ -1,11 +1,13 @@
 package trino
 
 import (
+	"cmp"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"math"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -24,193 +26,196 @@ func TestTypeConversion(t *testing.T) {
 		dataType  string
 		rawType   string
 		arguments []typeArgument
-		sample    interface{}
-		want      interface{}
+		// sample is the JSON form of a value; bogus is one of the wrong
+		// kind, an object unless the type accepts objects.
+		sample string
+		bogus  string
+		want   interface{}
 	}{
 		{
 			dataType: "boolean",
 			rawType:  "boolean",
-			sample:   true,
+			sample:   `true`,
 			want:     true,
 		},
 		{
 			dataType: "varchar(1)",
 			rawType:  "varchar",
-			sample:   "hello",
+			sample:   `"hello"`,
 			want:     "hello",
 		},
 		{
 			dataType: "bigint",
 			rawType:  "bigint",
-			sample:   json.Number("1234516165077230279"),
+			sample:   `1234516165077230279`,
 			want:     int64(1234516165077230279),
 		},
 		{
 			dataType: "double",
 			rawType:  "double",
-			sample:   json.Number("1.0"),
+			sample:   `1.0`,
 			want:     float64(1),
 		},
 		{
 			dataType: "date",
 			rawType:  "date",
-			sample:   "2017-07-10",
+			sample:   `"2017-07-10"`,
 			want:     time.Date(2017, 7, 10, 0, 0, 0, 0, time.Local),
 		},
 		{
 			dataType: "time",
 			rawType:  "time",
-			sample:   "01:02:03.000",
+			sample:   `"01:02:03.000"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.Local),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.000 UTC",
+			sample:   `"01:02:03.000 UTC"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 0, utc),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.000 +03:00",
+			sample:   `"01:02:03.000 +03:00"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.000+03:00",
+			sample:   `"01:02:03.000+03:00"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.000 -05:00",
+			sample:   `"01:02:03.000 -05:00"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.000-05:00",
+			sample:   `"01:02:03.000-05:00"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 0, time.FixedZone("", -5*3600)),
 		},
 		{
 			dataType: "time",
 			rawType:  "time",
-			sample:   "01:02:03.123456789",
+			sample:   `"01:02:03.123456789"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.Local),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.123456789 UTC",
+			sample:   `"01:02:03.123456789 UTC"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, utc),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.123456789 +03:00",
+			sample:   `"01:02:03.123456789 +03:00"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.123456789+03:00",
+			sample:   `"01:02:03.123456789+03:00"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.123456789 -05:00",
+			sample:   `"01:02:03.123456789 -05:00"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.123456789-05:00",
+			sample:   `"01:02:03.123456789-05:00"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, time.FixedZone("", -5*3600)),
 		},
 		{
 			dataType: "time with time zone",
 			rawType:  "time with time zone",
-			sample:   "01:02:03.123456789 Europe/Paris",
+			sample:   `"01:02:03.123456789 Europe/Paris"`,
 			want:     time.Date(0, 1, 1, 1, 2, 3, 123456789, paris),
 		},
 		{
 			dataType: "timestamp",
 			rawType:  "timestamp",
-			sample:   "2017-07-10 01:02:03.000",
+			sample:   `"2017-07-10 01:02:03.000"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.Local),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.000 UTC",
+			sample:   `"2017-07-10 01:02:03.000 UTC"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, utc),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.000 +03:00",
+			sample:   `"2017-07-10 01:02:03.000 +03:00"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.000+03:00",
+			sample:   `"2017-07-10 01:02:03.000+03:00"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", 3*3600)),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.000 -04:00",
+			sample:   `"2017-07-10 01:02:03.000 -04:00"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.000-04:00",
+			sample:   `"2017-07-10 01:02:03.000-04:00"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 0, time.FixedZone("", -4*3600)),
 		},
 		{
 			dataType: "timestamp",
 			rawType:  "timestamp",
-			sample:   "2017-07-10 01:02:03.123456789",
+			sample:   `"2017-07-10 01:02:03.123456789"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.Local),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.123456789 UTC",
+			sample:   `"2017-07-10 01:02:03.123456789 UTC"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, utc),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.123456789 +03:00",
+			sample:   `"2017-07-10 01:02:03.123456789 +03:00"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.123456789+03:00",
+			sample:   `"2017-07-10 01:02:03.123456789+03:00"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", 3*3600)),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.123456789 -04:00",
+			sample:   `"2017-07-10 01:02:03.123456789 -04:00"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.123456789-04:00",
+			sample:   `"2017-07-10 01:02:03.123456789-04:00"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.FixedZone("", -4*3600)),
 		},
 		{
 			dataType: "timestamp with time zone",
 			rawType:  "timestamp with time zone",
-			sample:   "2017-07-10 01:02:03.123456789 Europe/Paris",
+			sample:   `"2017-07-10 01:02:03.123456789 Europe/Paris"`,
 			want:     time.Date(2017, 7, 10, 1, 2, 3, 123456789, paris),
 		},
 		{
@@ -234,11 +239,12 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			sample: nil,
+			sample: `null`,
+			bogus:  `[]`,
 			want:   nil,
 		},
 		{
-			// arrays return data as-is for slice scanners
+			// arrays decode their elements like plain columns
 			dataType: "array(varchar)",
 			rawType:  "array",
 			arguments: []typeArgument{
@@ -251,8 +257,8 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			sample: nil,
-			want:   nil,
+			sample: `["a", null]`,
+			want:   []interface{}{"a", nil},
 		},
 		{
 			// rows convert into a Row, field by field, the same way a plain column would
@@ -312,12 +318,7 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			sample: []interface{}{
-				json.Number("1"),
-				"a",
-				"2017-07-10 01:02:03.000 UTC",
-				[]interface{}{"b"},
-			},
+			sample: `[1, "a", "2017-07-10 01:02:03.000 UTC", ["b"]]`,
 			want: Row{
 				names: []string{"field0", "field1", "field2", "field3"},
 				values: []interface{}{
@@ -341,7 +342,7 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			sample: []interface{}{"a"},
+			sample: `["a"]`,
 			want:   Row{names: []string{"field0"}, values: []interface{}{"a"}, Valid: true},
 		},
 		{
@@ -368,7 +369,7 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			sample: []interface{}{[]interface{}{json.Number("1")}},
+			sample: `[[1]]`,
 			want: Row{
 				names:  []string{"inner"},
 				values: []interface{}{Row{names: []string{"x"}, values: []interface{}{int64(1)}, Valid: true}},
@@ -396,7 +397,7 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			sample: []interface{}{[]interface{}{json.Number("1")}, nil},
+			sample: `[[1], null]`,
 			want: []interface{}{
 				Row{names: []string{"x"}, values: []interface{}{int64(1)}, Valid: true},
 				nil,
@@ -424,7 +425,8 @@ func TestTypeConversion(t *testing.T) {
 					},
 				},
 			},
-			sample: map[string]interface{}{"k": []interface{}{json.Number("1")}},
+			sample: `{"k": [1]}`,
+			bogus:  `[]`,
 			want: map[string]interface{}{
 				"k": Row{names: []string{"x"}, values: []interface{}{int64(1)}, Valid: true},
 			},
@@ -432,101 +434,113 @@ func TestTypeConversion(t *testing.T) {
 		{
 			dataType: "number",
 			rawType:  "number",
-			sample:   "3.1415926535897932384626433832795028841971693993751",
+			sample:   `"3.1415926535897932384626433832795028841971693993751"`,
 			want:     "3.1415926535897932384626433832795028841971693993751",
 		},
 		{
 			dataType: "number",
 			rawType:  "number",
-			sample:   "12345678901234567890123456789012345678901234567890",
+			sample:   `"12345678901234567890123456789012345678901234567890"`,
 			want:     "12345678901234567890123456789012345678901234567890",
 		},
 		{
 			dataType: "number",
 			rawType:  "number",
-			sample:   "NaN",
+			sample:   `"NaN"`,
 			want:     "NaN",
 		},
 		{
 			dataType: "number",
 			rawType:  "number",
-			sample:   "Infinity",
+			sample:   `"Infinity"`,
 			want:     "Infinity",
 		},
 		{
 			dataType: "number",
 			rawType:  "number",
-			sample:   "-Infinity",
+			sample:   `"-Infinity"`,
 			want:     "-Infinity",
 		},
 		{
 			dataType: "Geometry",
 			rawType:  "Geometry",
-			sample:   "Point (0 0)",
+			sample:   `"Point (0 0)"`,
 			want:     "Point (0 0)",
 		},
-		{dataType: "tinyint", rawType: "tinyint", sample: json.Number("-128"), want: int64(-128)},
-		{dataType: "smallint", rawType: "smallint", sample: json.Number("32767"), want: int64(32767)},
-		{dataType: "integer", rawType: "integer", sample: json.Number("42"), want: int64(42)},
-		{dataType: "real", rawType: "real", sample: json.Number("1.5"), want: float64(1.5)},
-		{dataType: "decimal(10,5)", rawType: "decimal", sample: "1.23000", want: "1.23000"},
-		{dataType: "varbinary", rawType: "varbinary", sample: "//8P/z////8=", want: []byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff}},
-		{dataType: "json", rawType: "json", sample: `{"aaa": 1}`, want: `{"aaa": 1}`},
-		{dataType: "ipaddress", rawType: "ipaddress", sample: "10.0.0.1", want: "10.0.0.1"},
-		{dataType: "uuid", rawType: "uuid", sample: "12151fd2-7586-11e9-8f9e-2a86e4085a59", want: "12151fd2-7586-11e9-8f9e-2a86e4085a59"},
-		{dataType: "interval year to month", rawType: "interval year to month", sample: "0-3", want: "0-3"},
-		{dataType: "interval day to second", rawType: "interval day to second", sample: "2 00:00:00.000", want: "2 00:00:00.000"},
-		{dataType: "unknown", rawType: "unknown", sample: nil, want: nil},
+		{dataType: "tinyint", rawType: "tinyint", sample: `-128`, want: int64(-128)},
+		{dataType: "smallint", rawType: "smallint", sample: `32767`, want: int64(32767)},
+		{dataType: "integer", rawType: "integer", sample: `42`, want: int64(42)},
+		{dataType: "real", rawType: "real", sample: `1.5`, want: float64(1.5)},
+		{dataType: "decimal(10,5)", rawType: "decimal", sample: `"1.23000"`, want: "1.23000"},
+		{dataType: "varbinary", rawType: "varbinary", sample: `"//8P/z////8="`, want: []byte{0xff, 0xff, 0x0f, 0xff, 0x3f, 0xff, 0xff, 0xff}},
+		{dataType: "json", rawType: "json", sample: `"{\"aaa\": 1}"`, want: `{"aaa": 1}`},
+		{dataType: "ipaddress", rawType: "ipaddress", sample: `"10.0.0.1"`, want: "10.0.0.1"},
+		{dataType: "uuid", rawType: "uuid", sample: `"12151fd2-7586-11e9-8f9e-2a86e4085a59"`, want: "12151fd2-7586-11e9-8f9e-2a86e4085a59"},
+		{dataType: "interval year to month", rawType: "interval year to month", sample: `"0-3"`, want: "0-3"},
+		{dataType: "interval day to second", rawType: "interval day to second", sample: `"2 00:00:00.000"`, want: "2 00:00:00.000"},
+		{dataType: "unknown", rawType: "unknown", sample: `null`, want: nil},
 
 		{
 			dataType: "SphericalGeography",
 			rawType:  "SphericalGeography",
-			sample:   "Point (0 0)",
+			sample:   `"Point (0 0)"`,
 			want:     "Point (0 0)",
 		},
-		{dataType: "color", rawType: "color", sample: "red", want: "red"},
-		{dataType: "HyperLogLog", rawType: "HyperLogLog", sample: "AAI=", want: []byte{0x00, 0x02}},
-		{dataType: "SetDigest", rawType: "SetDigest", sample: "AAI=", want: []byte{0x00, 0x02}},
-		{dataType: "qdigest(double)", rawType: "qdigest", sample: "AAI=", want: []byte{0x00, 0x02}},
-		{dataType: "tdigest", rawType: "tdigest", sample: "AAI=", want: []byte{0x00, 0x02}},
-		{dataType: "ObjectId", rawType: "ObjectId", sample: "AAI=", want: []byte{0x00, 0x02}},
+		{dataType: "color", rawType: "color", sample: `"red"`, want: "red"},
+		{dataType: "HyperLogLog", rawType: "HyperLogLog", sample: `"AAI="`, want: []byte{0x00, 0x02}},
+		{dataType: "SetDigest", rawType: "SetDigest", sample: `"AAI="`, want: []byte{0x00, 0x02}},
+		{dataType: "qdigest(double)", rawType: "qdigest", sample: `"AAI="`, want: []byte{0x00, 0x02}},
+		{dataType: "tdigest", rawType: "tdigest", sample: `"AAI="`, want: []byte{0x00, 0x02}},
+		{dataType: "ObjectId", rawType: "ObjectId", sample: `"AAI="`, want: []byte{0x00, 0x02}},
 		{
 			dataType: "BingTile",
 			rawType:  "BingTile",
-			sample:   map[string]interface{}{"x": json.Number("1"), "y": json.Number("2"), "zoom": json.Number("3")},
-			want:     map[string]interface{}{"x": json.Number("1"), "y": json.Number("2"), "zoom": json.Number("3")},
+			sample:   `{"x": 1, "y": 2, "zoom": 3}`,
+			bogus:    `{`,
+			want:     map[string]interface{}{"x": float64(1), "y": float64(2), "zoom": float64(3)},
 		},
 		{
 			dataType: "KdbTree",
 			rawType:  "KdbTree",
-			sample:   map[string]interface{}{"root": map[string]interface{}{"leafId": json.Number("0")}},
-			want:     map[string]interface{}{"root": map[string]interface{}{"leafId": json.Number("0")}},
+			sample:   `{"root": {"leafId": 0}}`,
+			bogus:    `{`,
+			want:     map[string]interface{}{"root": map[string]interface{}{"leafId": float64(0)}},
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(fmt.Sprintf("%s %v", tc.dataType, tc.sample), func(t *testing.T) {
-			converter, err := newTypeConverter(tc.dataType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments}, time.Local)
-			require.NoError(t, err)
+			signature := typeSignature{RawType: tc.rawType, Arguments: tc.arguments}
 
-			t.Run("nil", func(t *testing.T) {
-				_, err := converter.ConvertValue(nil)
+			t.Run("null", func(t *testing.T) {
+				got, err := decodeJSON(t, signature, `null`, time.Local)
 				assert.NoError(t, err)
+				assert.Nil(t, got)
 			})
 
 			t.Run("bogus", func(t *testing.T) {
-				_, err := converter.ConvertValue(struct{}{})
-				assert.Error(t, err, "bogus data scanned with no error")
+				bogus := cmp.Or(tc.bogus, `{}`)
+				_, err := decodeJSON(t, signature, bogus, time.Local)
+				assert.Error(t, err, "bogus data decoded with no error")
 			})
 
 			t.Run("sample", func(t *testing.T) {
-				got, err := converter.ConvertValue(tc.sample)
+				got, err := decodeJSON(t, signature, tc.sample, time.Local)
 				require.NoError(t, err)
 
 				assert.Equal(t, tc.want, got)
 			})
 		})
 	}
+}
+
+// decodeJSON decodes text, the JSON form of one value, the way a value of
+// the type signature describes is decoded from a page.
+func decodeJSON(t testing.TB, signature typeSignature, text string, location *time.Location) (any, error) {
+	t.Helper()
+	decoder, err := newValueDecoder(signature, location)
+	require.NoError(t, err)
+	return decodeValue(jsontext.NewDecoder(strings.NewReader(text)), decoder)
 }
 
 // nest wraps value in depth levels of []interface{}, the shape Trino arrays
@@ -548,21 +562,21 @@ func TestSliceTypeConversion(t *testing.T) {
 	}{
 		{name: "[]bool", scanner: &NullSlice[sql.NullBool]{}, depth: 1, sample: true},
 		{name: "[]string", scanner: &NullSlice[sql.NullString]{}, depth: 1, sample: "hello"},
-		{name: "[]int64", scanner: &NullSlice[sql.NullInt64]{}, depth: 1, sample: json.Number("1")},
-		{name: "[]float64", scanner: &NullSlice[sql.NullFloat64]{}, depth: 1, sample: json.Number("1.0")},
-		{name: "[]time.Time", scanner: &NullSlice[NullTime]{}, depth: 1, sample: "2017-07-01"},
+		{name: "[]int64", scanner: &NullSlice[sql.NullInt64]{}, depth: 1, sample: int64(1)},
+		{name: "[]float64", scanner: &NullSlice[sql.NullFloat64]{}, depth: 1, sample: 1.5},
+		{name: "[]time.Time", scanner: &NullSlice[NullTime]{}, depth: 1, sample: time.Date(2017, 7, 1, 0, 0, 0, 0, time.UTC)},
 		{name: "[]map[string]interface{}", scanner: &NullSlice[NullMap[string, interface{}]]{}, depth: 1, sample: map[string]interface{}{"hello": "world"}},
 		{name: "[][]bool", scanner: &NullSlice[NullSlice[sql.NullBool]]{}, depth: 2, sample: true},
 		{name: "[][]string", scanner: &NullSlice[NullSlice[sql.NullString]]{}, depth: 2, sample: "hello"},
-		{name: "[][]int64", scanner: &NullSlice[NullSlice[sql.NullInt64]]{}, depth: 2, sample: json.Number("1")},
-		{name: "[][]float64", scanner: &NullSlice[NullSlice[sql.NullFloat64]]{}, depth: 2, sample: json.Number("1.0")},
-		{name: "[][]time.Time", scanner: &NullSlice[NullSlice[NullTime]]{}, depth: 2, sample: "2017-07-01"},
+		{name: "[][]int64", scanner: &NullSlice[NullSlice[sql.NullInt64]]{}, depth: 2, sample: int64(1)},
+		{name: "[][]float64", scanner: &NullSlice[NullSlice[sql.NullFloat64]]{}, depth: 2, sample: 1.5},
+		{name: "[][]time.Time", scanner: &NullSlice[NullSlice[NullTime]]{}, depth: 2, sample: time.Date(2017, 7, 1, 0, 0, 0, 0, time.UTC)},
 		{name: "[][]map[string]interface{}", scanner: &NullSlice[NullSlice[NullMap[string, interface{}]]]{}, depth: 2, sample: map[string]interface{}{"hello": "world"}},
 		{name: "[][][]bool", scanner: &NullSlice[NullSlice[NullSlice[sql.NullBool]]]{}, depth: 3, sample: true},
 		{name: "[][][]string", scanner: &NullSlice[NullSlice[NullSlice[sql.NullString]]]{}, depth: 3, sample: "hello"},
-		{name: "[][][]int64", scanner: &NullSlice[NullSlice[NullSlice[sql.NullInt64]]]{}, depth: 3, sample: json.Number("1")},
-		{name: "[][][]float64", scanner: &NullSlice[NullSlice[NullSlice[sql.NullFloat64]]]{}, depth: 3, sample: json.Number("1.0")},
-		{name: "[][][]time.Time", scanner: &NullSlice[NullSlice[NullSlice[NullTime]]]{}, depth: 3, sample: "2017-07-01"},
+		{name: "[][][]int64", scanner: &NullSlice[NullSlice[NullSlice[sql.NullInt64]]]{}, depth: 3, sample: int64(1)},
+		{name: "[][][]float64", scanner: &NullSlice[NullSlice[NullSlice[sql.NullFloat64]]]{}, depth: 3, sample: 1.5},
+		{name: "[][][]time.Time", scanner: &NullSlice[NullSlice[NullSlice[NullTime]]]{}, depth: 3, sample: time.Date(2017, 7, 1, 0, 0, 0, 0, time.UTC)},
 		{name: "[][][]map[string]interface{}", scanner: &NullSlice[NullSlice[NullSlice[NullMap[string, interface{}]]]]{}, depth: 3, sample: map[string]interface{}{"hello": "world"}},
 	}
 
@@ -597,31 +611,29 @@ func scannerValid(t testing.TB, scanner sql.Scanner) bool {
 	return field.Bool()
 }
 
-func TestConvertValueFloatSpecialValues(t *testing.T) {
+func TestDecodeFloatSpecialValues(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		sample  any
+		sample  string
 		check   func(float64) bool
 		wantErr string
 	}{
-		{sample: "NaN", check: math.IsNaN},
-		{sample: "Infinity", check: func(f float64) bool { return math.IsInf(f, 1) }},
-		{sample: "-Infinity", check: func(f float64) bool { return math.IsInf(f, -1) }},
-		{sample: "1.5", check: func(f float64) bool { return f == 1.5 }},
-		{sample: "one", wantErr: "cannot convert one (string) to float64"},
-		{sample: json.Number("one"), wantErr: "cannot convert one (json.Number) to float64"},
-		{sample: true, wantErr: "cannot convert true (bool) to float64"},
+		{sample: `"NaN"`, check: math.IsNaN},
+		{sample: `"Infinity"`, check: func(f float64) bool { return math.IsInf(f, 1) }},
+		{sample: `"-Infinity"`, check: func(f float64) bool { return math.IsInf(f, -1) }},
+		{sample: `"1.5"`, check: func(f float64) bool { return f == 1.5 }},
+		{sample: `1.5`, check: func(f float64) bool { return f == 1.5 }},
+		{sample: `"one"`, wantErr: `strconv.ParseFloat: parsing "one": invalid syntax`},
+		{sample: `true`, wantErr: "expected a number, got a boolean"},
 	}
 
 	for _, rawType := range []string{"real", "double"} {
-		converter, err := newTypeConverter(rawType, typeSignature{RawType: rawType}, time.Local)
-		require.NoError(t, err)
 		for _, tc := range cases {
 			t.Run(fmt.Sprintf("%s %v", rawType, tc.sample), func(t *testing.T) {
-				got, err := converter.ConvertValue(tc.sample)
+				got, err := decodeJSON(t, typeSignature{RawType: rawType}, tc.sample, time.Local)
 
 				if tc.wantErr != "" {
-					require.ErrorContains(t, err, tc.wantErr)
+					require.EqualError(t, err, tc.wantErr)
 					return
 				}
 				require.NoError(t, err)
@@ -633,27 +645,44 @@ func TestConvertValueFloatSpecialValues(t *testing.T) {
 
 // Types the driver does not know by name decode as base64, the same as the
 // Java client's default, so a value that is not base64 is the only error path.
-func TestConvertValueRejectsInvalidBase64ForUnknownType(t *testing.T) {
+func TestDecodeRejectsInvalidBase64(t *testing.T) {
 	t.Parallel()
-	converter, err := newTypeConverter("HyperLogLog", typeSignature{RawType: "HyperLogLog"}, time.Local)
-	require.NoError(t, err)
+	for _, rawType := range []string{"varbinary", "HyperLogLog"} {
+		t.Run(rawType, func(t *testing.T) {
+			_, err := decodeJSON(t, typeSignature{RawType: rawType}, `"not base64!"`, time.Local)
 
-	_, err = converter.ConvertValue("not base64!")
-
-	require.ErrorContains(t, err, "cannot decode base64 string into []byte")
+			require.ErrorContains(t, err, "cannot decode base64 string")
+		})
+	}
 }
 
-func TestConvertValueRejectsInvalidVarbinary(t *testing.T) {
+func TestDecodeRejectsWrongKinds(t *testing.T) {
 	t.Parallel()
-	converter, err := newTypeConverter("varbinary", typeSignature{RawType: "varbinary"}, time.Local)
-	require.NoError(t, err)
+	cases := []struct {
+		rawType string
+		sample  string
+		wantErr string
+	}{
+		{rawType: "bigint", sample: `"1"`, wantErr: "expected an integer, got a string"},
+		{rawType: "bigint", sample: `1.5`, wantErr: "expected an integer, got 1.5"},
+		{rawType: "bigint", sample: `9223372036854775808`, wantErr: "integer 9223372036854775808 is out of range"},
+		{rawType: "boolean", sample: `1`, wantErr: "expected a boolean, got a number"},
+		{rawType: "varchar", sample: `[]`, wantErr: "expected a string, got an array"},
+		{rawType: "timestamp", sample: `1`, wantErr: "expected a date or time string, got a number"},
+		{rawType: "timestamp", sample: `"yesterday"`, wantErr: `parsing time "yesterday"`},
+		{rawType: "varbinary", sample: `true`, wantErr: "expected a base64 string, got a boolean"},
+	}
 
-	_, err = converter.ConvertValue("not base64!")
+	for _, tc := range cases {
+		t.Run(tc.rawType+" "+tc.sample, func(t *testing.T) {
+			_, err := decodeJSON(t, typeSignature{RawType: tc.rawType}, tc.sample, time.Local)
 
-	require.ErrorContains(t, err, "cannot decode base64 string into []byte")
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
 
-func TestNewTypeConverterRejectsWrongArgumentKinds(t *testing.T) {
+func TestNewColumnTypeRejectsWrongArgumentKinds(t *testing.T) {
 	t.Parallel()
 	typeArg := typeArgument{Kind: KIND_TYPE}
 	longArg := typeArgument{Kind: KIND_LONG, long: 10}
@@ -672,10 +701,23 @@ func TestNewTypeConverterRejectsWrongArgumentKinds(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := newTypeConverter(tc.rawType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments}, time.Local)
+			_, err := newColumnType(tc.rawType, typeSignature{RawType: tc.rawType, Arguments: tc.arguments})
 
 			require.ErrorIs(t, err, ErrInvalidResponseType)
 		})
+	}
+}
+
+func TestNewValueDecoderRejectsMissingArguments(t *testing.T) {
+	t.Parallel()
+	for _, signature := range []typeSignature{
+		{RawType: "array"},
+		{RawType: "map", Arguments: []typeArgument{{Kind: KIND_TYPE}}},
+		{RawType: "array", Arguments: []typeArgument{{Kind: KIND_LONG, long: 1}}},
+	} {
+		_, err := newValueDecoder(signature, time.Local)
+
+		require.ErrorIs(t, err, ErrInvalidResponseType, "%+v", signature)
 	}
 }
 
@@ -747,7 +789,7 @@ func TestRowAccessors(t *testing.T) {
 // is reported rather than silently misaligning names and values.
 func TestRowFieldCountMismatch(t *testing.T) {
 	t.Parallel()
-	converter, err := newTypeConverter("row(integer)", typeSignature{
+	signature := typeSignature{
 		RawType: "row",
 		Arguments: []typeArgument{
 			{
@@ -758,12 +800,13 @@ func TestRowFieldCountMismatch(t *testing.T) {
 				},
 			},
 		},
-	}, time.Local)
-	require.NoError(t, err)
+	}
 
-	_, err = converter.ConvertValue([]interface{}{json.Number("1"), json.Number("2")})
+	_, err := decodeJSON(t, signature, `[1, 2]`, time.Local)
+	require.EqualError(t, err, "row has 2 fields but its type has 1")
 
-	require.ErrorContains(t, err, "row has 2 fields but its type has 1")
+	_, err = decodeJSON(t, signature, `[]`, time.Local)
+	require.EqualError(t, err, "row has 0 fields but its type has 1")
 }
 
 // NullTime.Scan accepts only time.Time and NullTime; anything else leaves
@@ -777,7 +820,7 @@ func TestNullTimeScanLeavesOtherTypesInvalid(t *testing.T) {
 	assert.False(t, value.Valid)
 }
 
-func TestParseNullTimeWithLocationRejectsBadInput(t *testing.T) {
+func TestParseZonedTimeRejectsBadInput(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
@@ -791,14 +834,14 @@ func TestParseNullTimeWithLocationRejectsBadInput(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseNullTimeWithLocation(tc.input)
+			_, err := parseZonedTime(tc.input)
 
 			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
 }
 
-// Values without a zone are interpreted in the converter's location, values
+// Values without a zone are interpreted in the decoder's location, values
 // carrying a zone keep it.
 func TestTypeConversionUsesLocation(t *testing.T) {
 	t.Parallel()
@@ -818,10 +861,7 @@ func TestTypeConversionUsesLocation(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.dataType, func(t *testing.T) {
-			converter, err := newTypeConverter(tc.dataType, typeSignature{RawType: tc.dataType}, tokyo)
-			require.NoError(t, err)
-
-			got, err := converter.ConvertValue(tc.sample)
+			got, err := decodeJSON(t, typeSignature{RawType: tc.dataType}, `"`+tc.sample+`"`, tokyo)
 
 			require.NoError(t, err)
 			assert.Equal(t, tc.want, got)
@@ -830,34 +870,42 @@ func TestTypeConversionUsesLocation(t *testing.T) {
 	}
 }
 
-func TestNullSliceLocation(t *testing.T) {
+// Elements arrive in the connection's zone already; Location only parses
+// map keys, which the server sends as strings, and is passed down.
+func TestNullMapLocation(t *testing.T) {
 	t.Parallel()
 	tokyo, err := time.LoadLocation("Asia/Tokyo")
 	require.NoError(t, err)
-	want := NullTime{Valid: true, Time: time.Date(2017, 7, 10, 1, 2, 3, 0, tokyo)}
-	sample := "2017-07-10 01:02:03.000"
+	want := time.Date(2017, 7, 10, 1, 2, 3, 0, tokyo)
+	sample := map[string]interface{}{"2017-07-10 01:02:03.000": "a"}
 
-	t.Run("one dimension", func(t *testing.T) {
-		scanner := NullSlice[NullTime]{Location: tokyo}
-		require.NoError(t, scanner.Scan(nest(1, sample)))
-		assert.Equal(t, []NullTime{want}, scanner.Slice)
+	t.Run("map", func(t *testing.T) {
+		scanner := NullMap[time.Time, string]{Location: tokyo}
+		require.NoError(t, scanner.Scan(sample))
+		assert.Equal(t, map[time.Time]string{want: "a"}, scanner.Map)
 	})
 
-	t.Run("two dimensions", func(t *testing.T) {
-		scanner := NullSlice[NullSlice[NullTime]]{Location: tokyo}
-		require.NoError(t, scanner.Scan(nest(2, sample)))
-		assert.Equal(t, []NullTime{want}, scanner.Slice[0].Slice)
-	})
-
-	t.Run("three dimensions", func(t *testing.T) {
-		scanner := NullSlice[NullSlice[NullSlice[NullTime]]]{Location: tokyo}
-		require.NoError(t, scanner.Scan(nest(3, sample)))
-		assert.Equal(t, []NullTime{want}, scanner.Slice[0].Slice[0].Slice)
+	t.Run("map in an array", func(t *testing.T) {
+		scanner := NullSlice[NullMap[NullTime, string]]{Location: tokyo}
+		require.NoError(t, scanner.Scan([]interface{}{sample}))
+		assert.Equal(t, map[NullTime]string{{Time: want, Valid: true}: "a"}, scanner.Slice[0].Map)
 	})
 
 	t.Run("nil location means time.Local", func(t *testing.T) {
-		var scanner NullSlice[NullTime]
-		require.NoError(t, scanner.Scan(nest(1, sample)))
-		assert.Equal(t, time.Local, scanner.Slice[0].Time.Location())
+		var scanner NullMap[time.Time, string]
+		require.NoError(t, scanner.Scan(sample))
+		for key := range scanner.Map {
+			assert.Equal(t, time.Local, key.Location())
+		}
+	})
+
+	t.Run("key with a zone keeps it", func(t *testing.T) {
+		var scanner NullMap[time.Time, string]
+		require.NoError(t, scanner.Scan(map[string]interface{}{"2017-07-10 01:02:03.000 Asia/Tokyo": "a"}))
+		require.Len(t, scanner.Map, 1)
+		for key := range scanner.Map {
+			assert.True(t, want.Equal(key), "got %v", key)
+			assert.Equal(t, "Asia/Tokyo", key.Location().String())
+		}
 	})
 }

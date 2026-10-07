@@ -8,8 +8,10 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
-	"encoding/json"
+	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -376,7 +378,7 @@ func (fc *fakeCoordinator) unexpected(w http.ResponseWriter, r *http.Request) {
 // (decoding real responses is what the driver needs); re-encoding them here
 // is test-only scaffolding, kept out of the public API.
 func (fc *fakeCoordinator) writeJSON(w http.ResponseWriter, v any) {
-	if err := json.NewEncoder(w).Encode(wireEncode(v)); err != nil {
+	if err := json.MarshalWrite(w, wireEncode(v)); err != nil {
 		fc.t.Errorf("fake coordinator: encoding response: %v", err)
 	}
 }
@@ -469,8 +471,20 @@ func columnsPage(columns []queryColumn, data any) page {
 	return pageOf(&queryResponse{
 		ID:      fakeQueryID,
 		Columns: columns,
-		Data:    data,
+		Data:    jsonData(data),
 	})
+}
+
+// jsonData encodes the data of a page the way the coordinator sends it.
+func jsonData(data any) jsontext.Value {
+	if data == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		panic(fmt.Sprintf("encoding page data: %v", err))
+	}
+	return encoded
 }
 
 // spooledPage serves the segments under the spooling protocol. Relative uri
@@ -484,10 +498,10 @@ func spooledPage(encoding string, segments ...map[string]any) page {
 		return &queryResponse{
 			ID:      fakeQueryID,
 			Columns: []queryColumn{integerColumn("_col0")},
-			Data: map[string]any{
+			Data: jsonData(map[string]any{
 				"encoding": encoding,
 				"segments": resolved,
-			},
+			}),
 		}
 	}}
 }
@@ -524,7 +538,7 @@ func timestampColumn(name string) queryColumn {
 		Type: "timestamp(3)",
 		TypeSignature: typeSignature{
 			RawType:   "timestamp",
-			Arguments: []typeArgument{{Kind: KIND_LONG, Value: json.RawMessage("3")}},
+			Arguments: []typeArgument{{Kind: KIND_LONG, Value: jsontext.Value("3")}},
 		},
 	}
 }

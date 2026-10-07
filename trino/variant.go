@@ -161,40 +161,6 @@ func (v *Variant) Scan(value interface{}) error {
 // applies.
 const variantMaxDepth = 10000
 
-// decodeVariant converts the object the server sends for a VARIANT value
-// once the VARIANT_BINARY capability is announced: the base64-encoded
-// metadata and value of the binary encoding.
-func decodeVariant(v interface{}, location *time.Location) (interface{}, error) {
-	if v == nil {
-		return nil, nil
-	}
-	encoded, ok := v.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("cannot convert %v (%T) to variant", v, v)
-	}
-	metadata, err := decodeVariantField(encoded, "metadata")
-	if err != nil {
-		return nil, err
-	}
-	value, err := decodeVariantField(encoded, "value")
-	if err != nil {
-		return nil, err
-	}
-	return newVariant(metadata, value, location)
-}
-
-func decodeVariantField(encoded map[string]interface{}, name string) ([]byte, error) {
-	text, ok := encoded[name].(string)
-	if !ok {
-		return nil, fmt.Errorf("variant has no %s", name)
-	}
-	decoded, err := base64.StdEncoding.DecodeString(text)
-	if err != nil {
-		return nil, fmt.Errorf("variant %s is not base64: %w", name, err)
-	}
-	return decoded, nil
-}
-
 // newVariant validates the whole value up front, so that reading it later,
 // which slices the bytes without checking, cannot panic.
 func newVariant(metadataBytes, value []byte, location *time.Location) (Variant, error) {
