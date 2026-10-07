@@ -775,3 +775,37 @@ func TestIntegrationDSNPathSetsCatalogAndSchema(t *testing.T) {
 	assert.Equal(t, "tpch", catalog)
 	assert.Equal(t, "sf1", schema)
 }
+
+// The unit tests only see what the driver sends to a fake coordinator. This
+// reads the session the real coordinator recorded for the query.
+func TestIntegrationSessionHeadersReachServer(t *testing.T) {
+	// The server keeps finished queries, so a fixed source would find the
+	// query of an earlier run.
+	source := "session-headers-test-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	params := url.Values{}
+	params.Set("source", source)
+	params.Set("trace_token", "integration-trace-token")
+	params.Set("client_info", "integration client info")
+	params.Set("language", "pl-PL")
+	dsn := integrationDSN(t) + "?" + params.Encode()
+	db := integrationOpen(t, dsn)
+
+	query := "SELECT 'session headers'"
+	rows, err := db.Query(query)
+	require.NoError(t, err)
+	for rows.Next() {
+	}
+	require.NoError(t, rows.Err())
+	require.NoError(t, rows.Close())
+
+	var queryID string
+	err = db.QueryRow("SELECT query_id FROM system.runtime.queries WHERE source = ? AND query = ?", source, query).Scan(&queryID)
+	require.NoError(t, err)
+	queryInfo, err := getQueryInfo(dsn, queryID)
+	require.NoError(t, err)
+
+	assert.Equal(t, "integration-trace-token", queryInfo.Session.TraceToken, "trace token")
+	assert.Equal(t, "integration client info", queryInfo.Session.ClientInfo, "client info")
+	// The server serializes java.util.Locale with an underscore.
+	assert.Equal(t, "pl_PL", queryInfo.Session.Locale, "locale")
+}
