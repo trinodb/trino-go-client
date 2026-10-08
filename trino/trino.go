@@ -742,6 +742,9 @@ func (c *Config) validateHeaderKeys() error {
 		return err
 	}
 	for _, tag := range c.ClientTags {
+		if tag == "" {
+			return errors.New("trino: clientTags tag is empty")
+		}
 		if strings.Contains(tag, commaSeparator) {
 			return fmt.Errorf("trino: clientTags tag %q must not contain ','", tag)
 		}
