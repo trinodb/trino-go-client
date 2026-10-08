@@ -415,6 +415,22 @@ func (p page) withWarnings(ws ...Warning) page {
 	return p
 }
 
+// withState reports the query in the given state on the page's response.
+func (p page) withState(state string) page {
+	inner := p.response
+	p.response = func(baseURL string) any {
+		response := inner(baseURL)
+		switch r := response.(type) {
+		case *stmtResponse:
+			r.Stats.State = state
+		case *queryResponse:
+			r.Stats.State = state
+		}
+		return response
+	}
+	return p
+}
+
 // wireEncode returns v as is, unless it is a *stmtResponse or *queryResponse
 // carrying warnings, in which case it returns a shadow value whose Warnings
 // field encodes in the coordinator's nested io.trino.client.Warning shape.
@@ -509,6 +525,12 @@ func spooledPage(encoding string, segments ...map[string]any) page {
 // emptyPage is a final page that carries no columns and no data.
 func emptyPage() page {
 	return pageOf(&queryResponse{})
+}
+
+// finalPage is the last page of a finished query the way the coordinator
+// serves it: the query ID and stats, but no columns, data or nextUri.
+func finalPage() page {
+	return pageOf(&queryResponse{ID: fakeQueryID})
 }
 
 func (p page) withHeader(name, value string) page {
