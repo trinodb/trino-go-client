@@ -933,6 +933,13 @@ with the `QueryId` and the current query statistics. It is invoked when the
 query is submitted, when a result page is received, and once more when the
 query finishes.
 
+The callback runs on its own goroutine, one invocation at a time and in the
+order the updates arrived. The driver waits for it to accept every update
+rather than dropping any, so a change of the query state is never missed, but
+a callback slower than the result pages delays fetching the next page. Keep it
+quick, or hand the update off to another goroutine if it does more than record
+the statistics.
+
 For a query using the spooling protocol, `FailedSegmentAcknowledgments` counts
 the segments the driver read but could not acknowledge. Those segments stay in
 storage until they expire. Acknowledgments can finish after the query does, so
