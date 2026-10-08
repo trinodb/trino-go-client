@@ -753,17 +753,29 @@ func TestInvalidHeaderKeys(t *testing.T) {
 
 func TestInvalidClientTags(t *testing.T) {
 	t.Parallel()
-	conf := &Config{
-		ServerURI:  "http://foobar@localhost:8080",
-		ClientTags: []string{"valid", "a,b"},
+	cases := []struct {
+		name    string
+		tags    []string
+		wantErr string
+	}{
+		{"comma", []string{"valid", "a,b"}, `trino: clientTags tag "a,b" must not contain ','`},
+		{"empty", []string{"valid", ""}, "trino: clientTags tag is empty"},
 	}
-	wantErr := `trino: clientTags tag "a,b" must not contain ','`
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			conf := &Config{
+				ServerURI:  "http://foobar@localhost:8080",
+				ClientTags: tc.tags,
+			}
 
-	_, err := NewConnector(conf)
-	assert.EqualError(t, err, wantErr, "NewConnector")
+			_, err := NewConnector(conf)
+			assert.EqualError(t, err, tc.wantErr, "NewConnector")
 
-	_, err = conf.FormatDSN()
-	assert.EqualError(t, err, wantErr, "FormatDSN")
+			_, err = conf.FormatDSN()
+			assert.EqualError(t, err, tc.wantErr, "FormatDSN")
+		})
+	}
 }
 
 func TestInvalidResourceEstimates(t *testing.T) {
