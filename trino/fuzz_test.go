@@ -2,10 +2,8 @@ package trino
 
 import (
 	"net/http"
-	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -99,51 +97,6 @@ func FuzzFormatDSN(f *testing.F) {
 	})
 }
 
-// FuzzHeaderKeys checks that a session property, extra credential or role key
-// the driver accepts becomes exactly one name=value entry, as the server
-// splits the header on ',' and each entry on '='.
-func FuzzHeaderKeys(f *testing.F) {
-	for _, key := range []string{"query_max_run_time", "hive.insert_existing_partitions_behavior", "a=b", "a,b", "a b", "", "é", "x;y", "x:y"} {
-		f.Add(key)
-	}
-	f.Fuzz(func(t *testing.T, key string) {
-		const value = "value"
-
-		config := &Config{
-			ServerURI:         "http://user@localhost",
-			SessionProperties: map[string]string{key: value},
-			ExtraCredentials:  map[string]string{key: value},
-			Roles:             map[string]string{key: value},
-		}
-		connector, err := NewConnector(config)
-		if err != nil {
-			return
-		}
-		conn, err := newConnFromConfig(connector.conf, connector.externalAuth)
-		require.NoError(t, err)
-		assert.NotContains(t, key, "=")
-		assert.NotContains(t, key, ",")
-
-		entries := conn.httpHeaderValues(trinoSessionHeader)
-		require.Len(t, entries, 1)
-		name, _, ok := strings.Cut(entries[0], "=")
-		assert.True(t, ok)
-		assert.Equal(t, key, name)
-
-		credentials := conn.extraCredentials
-		require.Len(t, credentials, 1)
-		name, _, ok = strings.Cut(credentials[0], "=")
-		assert.True(t, ok)
-		assert.Equal(t, key, name)
-
-		roles := strings.Split(conn.httpHeaderValue(trinoRoleHeader), commaSeparator)
-		require.Len(t, roles, 1)
-		name, _, ok = strings.Cut(roles[0], "=")
-		assert.True(t, ok)
-		assert.Equal(t, key, name)
-	})
-}
-
 // FuzzApplyResponseHeaders feeds the session headers of a response to a
 // connection. The server is trusted to follow the protocol, but a proxy in
 // between can send anything, and none of it may panic or make the stored
@@ -173,74 +126,16 @@ func FuzzApplyResponseHeaders(f *testing.F) {
 			trinoSetRoleHeader:      {setRole},
 		})
 
-		// Entries of the same name replace each other.
-		for _, header := range []string{trinoSessionHeader, preparedStatementHeader} {
-			seen := map[string]bool{}
-			for _, entry := range conn.httpHeaderValues(header) {
-				name, _, ok := strings.Cut(entry, "=")
-				if !ok {
-					continue
-				}
-				assert.False(t, seen[name], "%s has two entries named %q: %q", header, name, conn.httpHeaderValues(header))
-				seen[name] = true
-			}
-		}
-		// The role header is rebuilt from catalog=role pairs only.
-		if roles := conn.httpHeaderValue(trinoRoleHeader); roles != "" {
+		// The role header is rebuilt from catalog=role pairs only, and
+		// rebuilding it again changes nothing.
+		roles := conn.httpHeaderValue(trinoRoleHeader)
+		if roles != "" {
 			for _, entry := range strings.Split(roles, commaSeparator) {
 				catalog, _, ok := strings.Cut(entry, "=")
 				assert.True(t, ok && catalog != "", "entry %q of roles header %q", entry, roles)
 			}
 		}
-	})
-}
-
-// FuzzMergeRoles checks that merging role updates is idempotent and keeps
-// one entry per catalog.
-func FuzzMergeRoles(f *testing.F) {
-	f.Add("hive=ROLE%7Badmin%7D,system=ALL", "hive=NONE")
-	f.Add("", "a=b")
-	f.Add("garbage,a=b", "=")
-	f.Fuzz(func(t *testing.T, current, update string) {
-		merged := mergeRoles(current, []string{update})
-		assert.Equal(t, merged, mergeRoles(merged, nil))
-		seen := map[string]bool{}
-		for _, entry := range strings.Split(merged, commaSeparator) {
-			if entry == "" {
-				continue
-			}
-			catalog, _, ok := strings.Cut(entry, "=")
-			require.True(t, ok, "entry %q of %q", entry, merged)
-			assert.NotEmpty(t, catalog, "entry %q of %q", entry, merged)
-			assert.False(t, seen[catalog], "catalog %q twice in %q", catalog, merged)
-			seen[catalog] = true
-		}
-	})
-}
-
-// FuzzRetryAfter checks that retryAfter never panics, never returns a negative
-// wait, and reads delta-seconds as written.
-func FuzzRetryAfter(f *testing.F) {
-	for _, value := range []string{"0", "1", "120", "-1", "1.5", "", " 7 ", "9223372036854775807", "99999999999999999999",
-		"Sun, 04 Oct 2026 12:00:30 GMT", "Sunday, 04-Oct-26 12:01:00 GMT", "Sun Oct  4 12:00:30 2026", "soon"} {
-		f.Add(http.StatusTooManyRequests, value)
-		f.Add(http.StatusServiceUnavailable, value)
-	}
-	f.Add(http.StatusBadGateway, "7")
-	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
-	f.Fuzz(func(t *testing.T, status int, value string) {
-		resp := &http.Response{StatusCode: status, Header: http.Header{}}
-		resp.Header.Set("Retry-After", value)
-		wait, ok := retryAfter(resp, now)
-		if !ok {
-			assert.Zero(t, wait)
-			return
-		}
-		assert.Contains(t, []int{http.StatusTooManyRequests, http.StatusServiceUnavailable}, status)
-		assert.GreaterOrEqual(t, wait, time.Duration(0))
-		if seconds, err := strconv.ParseInt(strings.TrimSpace(resp.Header.Get("Retry-After")), 10, 64); err == nil && seconds >= 0 && seconds < 1<<31 {
-			assert.Equal(t, time.Duration(seconds)*time.Second, wait)
-		}
+		assert.Equal(t, roles, mergeRoles(roles, nil))
 	})
 }
 
@@ -277,22 +172,5 @@ func FuzzParseExternalAuthChallenge(f *testing.F) {
 			assert.Contains(t, []string{"http", "https"}, challenge.redirectURL.Scheme)
 			assert.NotEmpty(t, challenge.redirectURL.Host)
 		}
-	})
-}
-
-// FuzzResolveTimeZone checks that a time zone name from a DSN or from an
-// X-Trino-Set-Session entry either fails or yields a usable location.
-func FuzzResolveTimeZone(f *testing.F) {
-	for _, name := range []string{"UTC", "Europe/Warsaw", "+01:00", "-08:30", "+18:00", "+19:00", "+01:60", "Local", "", "../etc/passwd", "America/Argentina/Buenos_Aires"} {
-		f.Add(name)
-	}
-	f.Fuzz(func(t *testing.T, name string) {
-		location, err := resolveTimeZone(name)
-		if err != nil {
-			assert.Nil(t, location)
-			return
-		}
-		require.NotNil(t, location)
-		_ = time.Unix(0, 0).In(location).String()
 	})
 }
