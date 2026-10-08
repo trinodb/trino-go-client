@@ -528,6 +528,152 @@ func TestRoundTripRefusesRedirects(t *testing.T) {
 	assert.Nil(t, http.DefaultClient.CheckRedirect, "the shared default client must not be modified")
 }
 
+// The nextUri GET and the cancel DELETE carry the same headers as the
+// statement POST, so they refuse redirects too.
+func TestRoundTripRefusesRedirectsAfterTheStatement(t *testing.T) {
+	t.Parallel()
+	requests := []struct {
+		name   string
+		method string
+		path   string
+		pages  func() []page
+		// send makes the driver send the request and returns the error
+		// the caller sees.
+		send func(t *testing.T, db *sql.DB) error
+	}{
+		{
+			name:   "nextUri GET",
+			method: http.MethodGet,
+			path:   "/v1/statement/" + fakeQueryID + "/1",
+			pages: func() []page {
+				return []page{statementPage(), resultPage([][]any{{1}})}
+			},
+			send: func(t *testing.T, db *sql.DB) error {
+				rows, err := db.Query("SELECT 1")
+				if err != nil {
+					return err
+				}
+				collectInts(t, rows)
+				return rows.Err()
+			},
+		},
+		{
+			name:   "cancel DELETE",
+			method: http.MethodDelete,
+			path:   "/v1/query/" + fakeQueryID,
+			pages: func() []page {
+				return []page{statementPage(), resultPage([][]any{{1}}), resultPage([][]any{{2}}), resultPage([][]any{{3}})}
+			},
+			send: func(t *testing.T, db *sql.DB) error {
+				rows, err := db.Query("SELECT 1")
+				require.NoError(t, err)
+				require.True(t, rows.Next())
+				return rows.Close()
+			},
+		},
+	}
+	for _, request := range requests {
+		for _, status := range []int{
+			http.StatusMovedPermanently,
+			http.StatusFound,
+			http.StatusSeeOther,
+			http.StatusTemporaryRedirect,
+			http.StatusPermanentRedirect,
+		} {
+			t.Run(request.name+"/"+http.StatusText(status), func(t *testing.T) {
+				t.Parallel()
+				fc := newFakeCoordinator(t)
+				fc.respond(request.pages()...)
+				fc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
+					if r.Method != request.method || r.URL.Path != request.path {
+						return false
+					}
+					http.Redirect(w, r, fc.url()+"/moved", status)
+					return true
+				})
+
+				err := request.send(t, fc.open(t, ""))
+				var queryFailed *ErrQueryFailed
+				require.ErrorAs(t, err, &queryFailed)
+				assert.Equal(t, status, queryFailed.StatusCode)
+				assert.ErrorContains(t, err, "redirect to "+fc.url()+"/moved not followed")
+				for _, r := range fc.capturedRequests() {
+					assert.NotEqual(t, "/moved", r.path, "the redirect target should not receive the request")
+				}
+			})
+		}
+	}
+}
+
+// Closing rows that have more than one page left sends a DELETE for the query.
+// The coordinator answers it with 204; any other answer is returned from Close.
+func TestRowsCloseCancelsTheQuery(t *testing.T) {
+	t.Parallel()
+	t.Run(http.StatusText(http.StatusNoContent), func(t *testing.T) {
+		t.Parallel()
+		deletes, err := cancelQuery(t, http.StatusNoContent)
+		require.NoError(t, err)
+		assert.Equal(t, 1, deletes)
+	})
+	for _, status := range []int{
+		http.StatusTooManyRequests,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+		http.StatusGatewayTimeout,
+	} {
+		t.Run("retried "+http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			deletes, err := cancelQuery(t, status)
+			assert.Equal(t, 2, deletes)
+			var queryFailed *ErrQueryFailed
+			require.ErrorAs(t, err, &queryFailed)
+			assert.Equal(t, status, queryFailed.StatusCode)
+			assert.ErrorContains(t, err, "giving up after 2 attempts")
+		})
+	}
+	for _, status := range []int{
+		http.StatusBadRequest,
+		http.StatusUnauthorized,
+		http.StatusForbidden,
+		http.StatusNotFound,
+		http.StatusInternalServerError,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			deletes, err := cancelQuery(t, status)
+			assert.Equal(t, 1, deletes)
+			var queryFailed *ErrQueryFailed
+			require.ErrorAs(t, err, &queryFailed)
+			assert.Equal(t, status, queryFailed.StatusCode)
+		})
+	}
+}
+
+// cancelQuery closes rows while the query has two pages left, answers every
+// DELETE with status, and returns the number of DELETEs and the error from
+// Close.
+func cancelQuery(t *testing.T, status int) (int, error) {
+	t.Helper()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}), resultPage([][]any{{2}}), resultPage([][]any{{3}}))
+	var deletes atomic.Int32
+	fc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodDelete {
+			return false
+		}
+		deletes.Add(1)
+		w.WriteHeader(status)
+		return true
+	})
+	db := fc.open(t, "?request_retry_max_attempts=2")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	require.True(t, rows.Next())
+	err = rows.Close()
+	return int(deletes.Load()), err
+}
+
 func TestRoundTripBogusData(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32

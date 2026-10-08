@@ -176,6 +176,43 @@ func failingSegmentCoordinator(t *testing.T, failures *atomic.Int32) *fakeCoordi
 	return fc
 }
 
+func TestSpoolingProtocolSegmentDownloadRetriesClosedConnection(t *testing.T) {
+	shortenSegmentDownloadRetries(t)
+	var downloads atomic.Int32
+	fc := newFakeCoordinator(t)
+	// A reused connection lets the HTTP transport resend the download
+	// itself, which would hide the retry from the count.
+	fc.server.Config.SetKeepAlivesEnabled(false)
+	fc.respond(statementPage(), spooledPage("json",
+		spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+	))
+	fc.handleSegment("seg", func(w http.ResponseWriter, r *http.Request) {
+		if downloads.Add(1) == 1 {
+			closeConnection(t, w)
+			return
+		}
+		_, _ = w.Write([]byte("[[1000]]"))
+	})
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	require.NoError(t, err)
+	assert.Equal(t, []int{1000}, collectInts(t, rows))
+	require.NoError(t, rows.Err())
+	assert.EqualValues(t, 2, downloads.Load())
+}
+
+// closedConnection in place of a status closes the connection without a
+// response.
+const closedConnection = 0
+
+// closeConnection closes the connection without sending a response.
+func closeConnection(t testing.TB, w http.ResponseWriter) {
+	conn, _, err := http.NewResponseController(w).Hijack()
+	require.NoError(t, err)
+	require.NoError(t, conn.Close())
+}
+
 // Shares the mutable segmentDownloadInitialDelay with the other tests below,
 // so it cannot run in parallel with them.
 func TestSpoolingProtocolSegmentDownloadRetryTimeout(t *testing.T) {
@@ -715,6 +752,40 @@ func TestSpoolingProtocolFollowsSegmentRedirects(t *testing.T) {
 	}
 }
 
+// The acknowledgment goes where the segment came from, so it follows
+// redirects like the download.
+func TestSpoolingProtocolFollowsAckRedirects(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{
+		http.StatusMovedPermanently,
+		http.StatusFound,
+		http.StatusSeeOther,
+		http.StatusTemporaryRedirect,
+		http.StatusPermanentRedirect,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json",
+				spooledSegment("seg", map[string]any{"segmentSize": 8, "rowOffset": 0, "rowsCount": 1}),
+			))
+			fc.serveSegment("seg", []byte("[[1000]]"))
+			fc.handleAck("seg", func(w http.ResponseWriter, r *http.Request) {
+				http.Redirect(w, r, fc.url()+"/v1/spooled/ack/moved", status)
+			})
+			db := fc.open(t, "")
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			assert.Equal(t, []int{1000}, collectInts(t, rows))
+			require.NoError(t, rows.Err())
+			require.Eventually(t, func() bool {
+				return slices.Equal(fc.ackedSegments(), []string{"moved"})
+			}, 5*time.Second, time.Millisecond, "the acknowledgment should reach the redirect target")
+		})
+	}
+}
+
 func TestSpoolingProtocolStopsEndlessSegmentRedirects(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)
@@ -864,6 +935,31 @@ func TestSpoolingProtocolReportsFailedAcknowledgments(t *testing.T) {
 	assert.Contains(t, fc.ackedSegments(), "seg0")
 }
 
+// An acknowledgment is sent once, even when the answer would make another
+// request retry, and its failure is only counted.
+func TestSpoolingProtocolDoesNotRetryAcknowledgments(t *testing.T) {
+	t.Parallel()
+	for _, status := range []int{http.StatusNotFound, http.StatusTooManyRequests, http.StatusInternalServerError} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			fc := twoSegmentCoordinator(t)
+			var acks atomic.Int32
+			fc.handleAck("seg1", func(w http.ResponseWriter, r *http.Request) {
+				acks.Add(1)
+				w.WriteHeader(status)
+			})
+			updater := &recordingProgressUpdater{}
+
+			queryWithProgress(t, fc, updater)
+
+			assert.EqualValues(t, 1, acks.Load())
+			failed := updater.failedAcks()
+			require.NotEmpty(t, failed)
+			assert.EqualValues(t, 1, failed[len(failed)-1])
+		})
+	}
+}
+
 func TestSpoolingProtocolNoExtraUpdateWhenAcknowledgmentsSucceed(t *testing.T) {
 	t.Parallel()
 	fc := twoSegmentCoordinator(t)
@@ -938,6 +1034,42 @@ func TestHeartbeat(t *testing.T) {
 			stopAfter:    maxHeartbeatFailures,
 		},
 		{
+			name:         "disabled after consecutive empty responses",
+			statuses:     []int{http.StatusNoContent},
+			releaseAfter: maxHeartbeatFailures,
+			stopAfter:    maxHeartbeatFailures,
+		},
+		{
+			name:         "disabled after consecutive redirects",
+			statuses:     []int{http.StatusFound},
+			releaseAfter: maxHeartbeatFailures,
+			stopAfter:    maxHeartbeatFailures,
+		},
+		{
+			name:         "disabled after consecutive rejections",
+			statuses:     []int{http.StatusForbidden},
+			releaseAfter: maxHeartbeatFailures,
+			stopAfter:    maxHeartbeatFailures,
+		},
+		{
+			name:         "disabled after consecutive rate limits",
+			statuses:     []int{http.StatusTooManyRequests},
+			releaseAfter: maxHeartbeatFailures,
+			stopAfter:    maxHeartbeatFailures,
+		},
+		{
+			name:         "disabled while the coordinator is unavailable",
+			statuses:     []int{http.StatusServiceUnavailable},
+			releaseAfter: maxHeartbeatFailures,
+			stopAfter:    maxHeartbeatFailures,
+		},
+		{
+			name:         "disabled after consecutive closed connections",
+			statuses:     []int{closedConnection},
+			releaseAfter: maxHeartbeatFailures,
+			stopAfter:    maxHeartbeatFailures,
+		},
+		{
 			// a 404 is transient: it's also returned by a coordinator that
 			// doesn't know the query, e.g. behind a load balancer
 			name:         "retried when the coordinator does not know the query",
@@ -960,11 +1092,19 @@ func TestHeartbeat(t *testing.T) {
 			releaseDownload := sync.OnceFunc(func() { close(release) })
 			fc := newHeartbeatCoordinator(t, func(w http.ResponseWriter, r *http.Request) {
 				attempt := attempts.Add(1)
-				w.WriteHeader(tc.statuses[min(int(attempt), len(tc.statuses))-1])
 				if attempt >= tc.releaseAfter {
-					releaseDownload()
+					defer releaseDownload()
 				}
+				status := tc.statuses[min(int(attempt), len(tc.statuses))-1]
+				if status == closedConnection {
+					closeConnection(t, w)
+					return
+				}
+				w.WriteHeader(status)
 			}, release)
+			// A reused connection lets the HTTP transport resend a heartbeat
+			// whose connection was closed, which would add to the count.
+			fc.server.Config.SetKeepAlivesEnabled(false)
 			// a failing test must not leave the download parked on the fake
 			t.Cleanup(releaseDownload)
 			db := fc.open(t, "?heartbeat_interval="+interval.String())
