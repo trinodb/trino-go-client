@@ -2922,8 +2922,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 		st.lastProgress = srStats
 		select {
 		case st.statsCh <- srStats:
-		default:
-			// ignore when can't send stats
+		case <-st.doneCh:
 		}
 		st.conn.progressUpdaterPeriod.LastCallbackTime = time.Now()
 		st.conn.progressUpdaterPeriod.LastQueryState = sr.Stats.State
@@ -4186,10 +4185,12 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 		return
 	}
 
+	// Wait for the updater to take the update rather than dropping it while
+	// the callback is still busy with the previous one, so a state change
+	// reported only once, like the query finishing, is never lost.
 	select {
 	case qr.statsCh <- qrStats:
-	default:
-		// ignore when can't send stats
+	case <-qr.doneCh:
 	}
 	qr.stmt.conn.progressUpdaterPeriod.LastCallbackTime = currentTime
 	qr.stmt.conn.progressUpdaterPeriod.LastQueryState = qrStats.QueryStats.State
@@ -4872,5 +4873,7 @@ type queryProgressCallbackPeriod struct {
 type ProgressUpdater interface {
 	// Update the query progress, immediately when the query starts, when receiving data, and once when the query is finished.
 	// A spooled query whose segment acknowledgments failed gets one more update when its statement is closed.
+	// Updates are delivered in order from a separate goroutine, one at a time: a change of the query state
+	// is never dropped, so a callback slower than the result pages delays fetching the next one.
 	Update(QueryProgressInfo)
 }
