@@ -1393,3 +1393,37 @@ func TestSpoolingProtocolSegmentSequenceErrors(t *testing.T) {
 		})
 	}
 }
+
+// A segment without rows is skipped; Rows.Next must not index an empty batch.
+func TestSpoolingProtocolSkipsSegmentsWithoutRows(t *testing.T) {
+	t.Parallel()
+	empty := base64.StdEncoding.EncodeToString([]byte("[]"))
+	row := func(rowOffset int, value string) map[string]any {
+		data := "[[" + value + "]]"
+		return inlineSegment(base64.StdEncoding.EncodeToString([]byte(data)), map[string]any{
+			"rowOffset": rowOffset, "segmentSize": len(data), "rowsCount": 1,
+		})
+	}
+	cases := []struct {
+		name     string
+		segments []map[string]any
+		want     []int
+	}{
+		{"only segment", []map[string]any{inlineSegment(empty, map[string]any{"rowOffset": 0, "segmentSize": 2})}, nil},
+		{"rowsCount zero", []map[string]any{inlineSegment(empty, map[string]any{"rowOffset": 0, "segmentSize": 2, "rowsCount": 0})}, nil},
+		{"between segments", []map[string]any{row(0, "1000"), inlineSegment(empty, map[string]any{"rowOffset": 1, "segmentSize": 2}), row(1, "1001")}, []int{1000, 1001}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json", tc.segments...), emptyPage())
+
+			rows, err := fc.open(t, "").Query("SELECT 1")
+			require.NoError(t, err)
+			values := collectInts(t, rows)
+			require.NoError(t, rows.Err())
+			assert.Equal(t, tc.want, values)
+		})
+	}
+}
