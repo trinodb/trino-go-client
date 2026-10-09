@@ -31,13 +31,14 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: '1.27'
+      # The tools module pins the linters and their dependencies, so neither
+      # go.mod gains a requirement. Bump the versions in tools/go.mod.
+      - run: go build -C tools -o $RUNNER_TEMP/bin/ honnef.co/go/tools/cmd/staticcheck golang.org/x/vuln/cmd/govulncheck
       - run: go vet ./...
         working-directory: ${{ matrix.module }}
-      # Tools run through `go run <module>@<version>` so neither go.mod gains a
-      # requirement. Bump the versions here.
-      - run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.1 ./...
+      - run: $RUNNER_TEMP/bin/staticcheck ./...
         working-directory: ${{ matrix.module }}
-      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 ./...
+      - run: $RUNNER_TEMP/bin/govulncheck ./...
         working-directory: ${{ matrix.module }}
   fuzz:
     runs-on: ubuntu-latest
