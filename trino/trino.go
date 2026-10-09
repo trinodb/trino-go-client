@@ -2879,11 +2879,15 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
 	query := st.query
 	// A prepared statement is executed more than once. Stop what is left of
-	// the previous execution; the warnings sink belongs to the execution that
-	// passed it, not to the ones after it.
+	// the previous execution, and start from the connection's settings rather
+	// than the named arguments an earlier execution passed.
 	st.stopQuery()
 	st.warnings = nil
+	st.user = ""
+	st.timeZone = nil
 	st.usingSpooledProtocol = false
+	st.spoolingWorkerCount = 0
+	st.spoolingMaxOutOfOrderSegments = 0
 	st.progressUpdater = nil
 	st.progressUpdaterPeriod = queryProgressCallbackPeriod{}
 	hs := make(http.Header)
