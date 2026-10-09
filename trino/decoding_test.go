@@ -145,3 +145,32 @@ func decodeTestRows(t *testing.T, columns []queryColumn, location *time.Location
 	require.NoError(t, err)
 	return decoder.decodeRows([]byte(page), 0)
 }
+
+// The server names the zone of every TIMESTAMP WITH TIME ZONE value, so only
+// zone IDs are loaded; other spellings of a zone would each stay cached.
+func TestLoadZoneAcceptsOnlyZoneIDs(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"Europe/Warsaw", "America/Argentina/Buenos_Aires", "Etc/GMT+5", "UTC"} {
+		_, err := loadZone(name)
+		assert.NoError(t, err, name)
+	}
+	for _, name := range []string{"Europe/./Warsaw", "Europe//Warsaw", "Europe/Warsaw/", "/Europe/Warsaw", "Europe/../Europe/Warsaw", "Europe/Warsaw ", "", "Local"} {
+		_, err := loadZone(name)
+		assert.Error(t, err, name)
+	}
+}
+
+// Not parallel, so that no other test loads a zone while the cache is full.
+func TestLoadZoneStopsCachingAtLimit(t *testing.T) {
+	cached := cachedZones.Load()
+	t.Cleanup(func() { cachedZones.Store(cached) })
+	cachedZones.Store(maxCachedZones)
+
+	location, err := loadZone("Antarctica/Troll")
+
+	require.NoError(t, err)
+	assert.Equal(t, "Antarctica/Troll", location.String())
+	_, ok := zones.Load("Antarctica/Troll")
+	assert.False(t, ok)
+	assert.Equal(t, int64(maxCachedZones), cachedZones.Load())
+}
