@@ -50,6 +50,9 @@ func (d *rowsDecoder) decodeRows(data []byte, expectedRows int) ([]queryData, er
 	if err := readDelimiter(dec, '[', "an array of rows"); err != nil {
 		return nil, err
 	}
+	// The smallest row, "[]", takes two bytes, so a larger count comes from
+	// metadata that does not match the data and must not size an allocation.
+	expectedRows = min(max(expectedRows, 0), len(data)/2)
 	rows := make([]queryData, 0, expectedRows)
 	values := d.valuesOfRows(expectedRows, len(data))
 	columns := len(d.decoders)
