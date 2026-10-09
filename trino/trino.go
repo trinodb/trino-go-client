@@ -3738,6 +3738,15 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 			select {
 			case segment, ok := <-qr.stmt.decodedSegments:
 				if !ok {
+					if len(buffer) > 0 {
+						qr.sendStreamerError(fmt.Errorf("spooled segments missing: expected rowOffset %d, %d segments not delivered", nextExpectedOffset, len(buffer)))
+					}
+					return
+				}
+
+				// A segment without rows cannot overlap any other.
+				if len(segment.queryData) > 0 && segment.rowOffset < nextExpectedOffset {
+					qr.sendStreamerError(fmt.Errorf("spooled segment at rowOffset %d overlaps rows already delivered up to rowOffset %d", segment.rowOffset, nextExpectedOffset))
 					return
 				}
 
@@ -3745,9 +3754,9 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 
 				if nextExpectedOffset != segment.rowOffset {
 					if len(buffer) >= qr.stmt.spoolingMaxOutOfOrderSegments {
-						qr.stmt.errors <- fmt.Errorf(
+						qr.sendStreamerError(fmt.Errorf(
 							"all %d out-of-order segments buffered (limit: %d). This indicates a bug or inconsistency in the segments metadata response (e.g., missing, duplicate, or misordered segments, or row offsets not matching the expected sequence)",
-							len(buffer), qr.stmt.spoolingMaxOutOfOrderSegments)
+							len(buffer), qr.stmt.spoolingMaxOutOfOrderSegments))
 					}
 
 					continue
@@ -3790,6 +3799,15 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 			}
 		}
 	}()
+}
+
+// sendStreamerError reports an error from the ordered streamer unless the
+// rows are being closed.
+func (qr *driverRows) sendStreamerError(err error) {
+	select {
+	case qr.stmt.errors <- err:
+	case <-qr.doneCh:
+	}
 }
 
 func (qr *driverRows) fetch() error {
