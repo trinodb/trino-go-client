@@ -2,6 +2,7 @@ package trino
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/base64"
 	"errors"
@@ -1319,4 +1320,30 @@ func TestSpoolingNamedArgumentsAreValidated(t *testing.T) {
 			assert.Empty(t, fc.capturedRequests(), "the query must be rejected before anything is sent")
 		})
 	}
+}
+
+// A storage response that never completes must not hang Rows.Next past the
+// query's deadline.
+func TestSpoolingProtocolSegmentDownloadHonorsDeadline(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	fc.handleSegment("slow", func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	})
+	fc.respond(statementPage(), spooledPage("json", spooledSegment("slow", map[string]any{"rowOffset": 0, "segmentSize": 17})), emptyPage())
+	db := fc.open(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	rows, err := db.QueryContext(ctx, "SELECT 1")
+	require.NoError(t, err)
+	collectInts(t, rows)
+	assert.ErrorIs(t, rows.Err(), context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), 3*time.Second, "reading rows must stop at the context deadline")
 }

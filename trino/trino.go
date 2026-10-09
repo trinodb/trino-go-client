@@ -3343,6 +3343,11 @@ func (qr *driverRows) Next(dest []driver.Value) (err error) {
 
 			qr.rowindex = 0
 
+		case <-qr.ctx.Done():
+			qr.stmt.cancelDecodersWorkers()
+			qr.stmt.cancelDownloadWorkers()
+			qr.err = qr.ctx.Err()
+			return qr.err
 		case err := <-qr.stmt.errors:
 			if err == nil {
 				// Channel was closed, which means the statement
@@ -3886,9 +3891,9 @@ func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context, decoder 
 		st.heartbeatInterval = defaultHeartbeatInterval
 	}
 
-	downloadSegmentsCtx, cancelDownloadWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	downloadSegmentsCtx, cancelDownloadWorkers := context.WithCancel(ctx)
 	st.cancelDownloadWorkers = cancelDownloadWorkers
-	decodeSegmentCtx, cancelDecodersWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	decodeSegmentCtx, cancelDecodersWorkers := context.WithCancel(ctx)
 	st.cancelDecodersWorkers = cancelDecodersWorkers
 
 	st.segmentsToProccess = make(chan segmentToProccess, 1000)
