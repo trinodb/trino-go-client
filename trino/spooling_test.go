@@ -1,12 +1,15 @@
 package trino
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -487,13 +490,13 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:           "WrongUncompressSize",
 			segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 11}),
-			wantErr:        "failed to decode spooled segment at index 0: segment size mismatch: expected 11 bytes, got 29 byte",
+			wantErr:        "failed to fetch spooled segment at index 0: segment size mismatch: expected 11 bytes, got more",
 			downloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
 			name:           "WrongCompresSize",
 			segment:        spooledSegment("seg", map[string]any{"uncompressedSize": 2, "rowOffset": 2, "segmentSize": 29}),
-			wantErr:        "decompressed size mismatch: expected 2 bytes, got 16 bytes",
+			wantErr:        "failed to decompress zstd segment at rowOffset 2: decompressed size exceeds configured limit",
 			downloadedData: mustDecodeBase64("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw="),
 		},
 		{
@@ -571,7 +574,44 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 		{
 			name:    "InlineWrongUncompressSize",
 			segment: inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": 1, "rowOffset": 2, "segmentSize": 29}),
-			wantErr: "failed to decode spooled segment at index 0: decompressed size mismatch: expected 1 bytes, got 16 bytes",
+			wantErr: "failed to decode spooled segment at index 0: failed to decompress zstd segment at rowOffset 2: decompressed size exceeds configured limit",
+		},
+		{
+			name:    "NegativeRowsCount",
+			segment: inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"rowOffset": 0, "segmentSize": 17, "rowsCount": -1}),
+			wantErr: "negative value in segment metadata",
+		},
+		{
+			name:    "NegativeUncompressedSize",
+			segment: inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"rowOffset": 0, "segmentSize": 17, "uncompressedSize": -1}),
+			wantErr: "negative value in segment metadata",
+		},
+		{
+			// Only the decoded rows may size the result, not the count.
+			name:    "RowsCountLargerThanTheData",
+			segment: inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"rowOffset": 0, "segmentSize": 17, "rowsCount": int64(1) << 50}),
+			wantErr: "segment at rowOffset 0 has 2 rows but its metadata says 1125899906842624",
+		},
+		{
+			name:    "ZstdUncompressedSizeLargerThanPossible",
+			segment: inlineSegment("KLUv/QQAgQAAW1sxMDAwXSxbMTAwMDFdXZfUttw=", map[string]any{"uncompressedSize": int64(1) << 30, "rowOffset": 0, "segmentSize": 29}),
+			wantErr: "is not possible for a 29-byte zstd segment",
+		},
+		{
+			name:    "SegmentSizeAboveMaxInt32",
+			segment: spooledSegment("seg", map[string]any{"rowOffset": 0, "segmentSize": int64(math.MaxInt32) + 1}),
+			wantErr: "size above 2147483647 in segment metadata at index 0: segmentSize 2147483648",
+		},
+		{
+			name:    "UncompressedSizeAboveMaxInt32",
+			segment: spooledSegment("seg", map[string]any{"rowOffset": 0, "segmentSize": 29, "uncompressedSize": int64(math.MaxInt32) + 1}),
+			wantErr: "size above 2147483647 in segment metadata at index 0: segmentSize 29, uncompressedSize 2147483648",
+		},
+		{
+			name:           "DownloadLongerThanSegmentSize",
+			segment:        spooledSegment("seg", map[string]any{"rowOffset": 0, "segmentSize": 4}),
+			downloadedData: bytes.Repeat([]byte(" "), 1<<20),
+			wantErr:        "failed to fetch spooled segment at index 0: segment size mismatch: expected 4 bytes, got more",
 		},
 		{
 			name:    "InlineWrongCompresSize",
@@ -606,6 +646,23 @@ func TestSpoolingProtocolSegmentErrorHandling(t *testing.T) {
 			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+// A frame header can declare more content than the segment metadata, which
+// must not size the decompression buffer. This one declares 4 GiB for a
+// 17-byte segment; the buffer is never written, so only the allocation
+// statistics show it.
+func TestDecompressSegmentIgnoresZstdFrameContentSize(t *testing.T) {
+	data := mustDecodeBase64("KLUv/cAAAAAAAAEAAAABAAA=")
+	metadata := segmentMetadata{segmentSize: int64(len(data)), uncompressedSize: 17}
+
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	_, err := decompressSegment(data, "json+zstd", metadata)
+	runtime.ReadMemStats(&after)
+
+	require.ErrorContains(t, err, "failed to decompress zstd segment at rowOffset 0")
+	assert.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(1<<30), "the frame header must not size the buffer")
 }
 
 // TestSpoolingProtocolDecodeErrorNamesTheSegmentIndex checks that a segment
@@ -703,6 +760,35 @@ func TestSpoolingProtocolAcknowledgesSegments(t *testing.T) {
 		acked := fc.ackedSegments()
 		return slices.Contains(acked, "seg0") && slices.Contains(acked, "seg1")
 	}, 5*time.Second, time.Millisecond, "every downloaded segment must be acknowledged")
+}
+
+// A segment that does not match its metadata fails the query, so it is never
+// read again and must not be left in storage until it expires.
+func TestSpoolingProtocolAcknowledgesSegmentsOfTheWrongSize(t *testing.T) {
+	t.Parallel()
+	for name, segmentSize := range map[string]int{"shorter": 9, "longer": 7} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), spooledPage("json",
+				spooledSegment("seg", map[string]any{"segmentSize": segmentSize, "rowOffset": 0, "rowsCount": 1}),
+			))
+			fc.serveSegment("seg", []byte("[[1000]]"))
+			db := fc.open(t, "")
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			for rows.Next() {
+				// force segment processing
+			}
+			require.ErrorContains(t, rows.Err(), "failed to fetch spooled segment at index 0: segment size mismatch")
+			require.NoError(t, rows.Close())
+
+			require.Eventually(t, func() bool {
+				return slices.Contains(fc.ackedSegments(), "seg")
+			}, 5*time.Second, time.Millisecond, "a segment of the wrong size must be acknowledged")
+		})
+	}
 }
 
 // In the COORDINATOR_STORAGE_REDIRECT and WORKER_PROXY retrieval modes the

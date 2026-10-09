@@ -3095,7 +3095,11 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 		return nil, fmt.Errorf("error fetching segment from uri '%s': %w", sf.spooledMetadata.uri, err)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	// Read one byte past the declared size, so a longer body is detected
+	// without reading all of it.
+	segmentSize := sf.spooledMetadata.metadata.segmentSize
+	data, err := io.ReadAll(io.LimitReader(resp.Body, segmentSize+1))
+	resp.Body.Close()
 	if err != nil {
 		return nil, fmt.Errorf("error reading response body: %w", err)
 	}
@@ -3137,6 +3141,16 @@ func (sf *SegmentFetcher) fetchSegment() ([]byte, error) {
 		}
 	}()
 
+	// A segment that does not match its metadata is still acknowledged: the
+	// query fails, so the segment is never read again.
+	if int64(len(data)) > segmentSize {
+		return nil, fmt.Errorf("failed to fetch spooled segment at index %d: segment size mismatch: expected %d bytes, got more",
+			sf.spooledMetadata.segmentIndex, segmentSize)
+	}
+	if int64(len(data)) < segmentSize {
+		return nil, fmt.Errorf("failed to fetch spooled segment at index %d: segment size mismatch: expected %d bytes, got %d bytes",
+			sf.spooledMetadata.segmentIndex, segmentSize, len(data))
+	}
 	return data, nil
 }
 
@@ -3503,6 +3517,16 @@ func (s dataSegment) segmentMetadata(segmentIndex int) (segmentMetadata, error) 
 	if s.Metadata.RowsCount != nil {
 		metadata.rowsCount = newOptionalInt64(*s.Metadata.RowsCount)
 	}
+	if metadata.rowOffset < 0 || metadata.segmentSize < 0 || metadata.uncompressedSize < 0 || metadata.rowsCount.value < 0 {
+		return segmentMetadata{}, fmt.Errorf("negative value in segment metadata at index %d: rowOffset %d, segmentSize %d, uncompressedSize %d, rowsCount %d",
+			segmentIndex, metadata.rowOffset, metadata.segmentSize, metadata.uncompressedSize, metadata.rowsCount.value)
+	}
+	// Trino and its Java client declare both sizes as int, so a larger value
+	// never comes from a real server.
+	if metadata.segmentSize > math.MaxInt32 || metadata.uncompressedSize > math.MaxInt32 {
+		return segmentMetadata{}, fmt.Errorf("size above %d in segment metadata at index %d: segmentSize %d, uncompressedSize %d",
+			math.MaxInt32, segmentIndex, metadata.segmentSize, metadata.uncompressedSize)
+	}
 	return metadata, nil
 }
 
@@ -3565,6 +3589,14 @@ func decodeSegment(data []byte, encoding string, metadata segmentMetadata, decod
 	return rows, nil
 }
 
+// maxLZ4Ratio bounds how much an LZ4 block can expand: each compressed byte
+// yields at most 255 output bytes.
+const maxLZ4Ratio = 255
+
+// maxZstdRatio bounds how much zstd data can expand: a block yields at most
+// 128 KiB and takes at least 4 bytes, a 3-byte header and one RLE byte.
+const maxZstdRatio = 128 << 10 / 4
+
 func decompressSegment(data []byte, encoding string, metadata segmentMetadata) ([]byte, error) {
 	if metadata.uncompressedSize == 0 {
 		return data, nil
@@ -3573,7 +3605,12 @@ func decompressSegment(data []byte, encoding string, metadata segmentMetadata) (
 	var decompressedData []byte
 	switch encoding {
 	case "json+zstd":
-		zstdDecoder, err := zstd.NewReader(nil)
+		if metadata.uncompressedSize > maxZstdRatio*int64(len(data)) {
+			return nil, fmt.Errorf("uncompressed size %d is not possible for a %d-byte zstd segment at rowOffset %d", metadata.uncompressedSize, len(data), metadata.rowOffset)
+		}
+		// Without the cap limit, DecodeAll sizes its buffer from the frame
+		// header rather than from the declared uncompressed size.
+		zstdDecoder, err := zstd.NewReader(nil, zstd.WithDecodeAllCapLimit(true))
 		if err != nil {
 			return nil, fmt.Errorf("error creating zstd reader: %w", err)
 		}
@@ -3584,6 +3621,9 @@ func decompressSegment(data []byte, encoding string, metadata segmentMetadata) (
 			return nil, fmt.Errorf("failed to decompress zstd segment at rowOffset %d: %v", metadata.rowOffset, err)
 		}
 	case "json+lz4":
+		if metadata.uncompressedSize > maxLZ4Ratio*int64(len(data)) {
+			return nil, fmt.Errorf("uncompressed size %d is not possible for a %d-byte LZ4 segment at rowOffset %d", metadata.uncompressedSize, len(data), metadata.rowOffset)
+		}
 		decompressedData = make([]byte, metadata.uncompressedSize)
 
 		n, err := lz4.UncompressBlock(data, decompressedData)
