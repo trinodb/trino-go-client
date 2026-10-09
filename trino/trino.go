@@ -2524,6 +2524,9 @@ type driverStmt struct {
 	// cancelQuery ends the context of the running query, which aborts a
 	// nextUri request still in flight.
 	cancelQuery context.CancelFunc
+	// execution counts the executions of the statement; rows read only the
+	// execution they were created for.
+	execution uint64
 	// spoolingProcessorExited is closed when proccessSpollingSegments returns.
 	spoolingProcessorExited chan struct{}
 	waitSegmentAcks         sync.WaitGroup
@@ -2684,6 +2687,8 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 		rowsAffected: sr.UpdateCount,
 		statsCh:      st.statsCh,
 		doneCh:       st.doneCh,
+		execution:    st.execution,
+		user:         st.user,
 	}
 	// consume all results, if there are any
 	for err == nil {
@@ -2870,6 +2875,8 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 		statsCh:       st.statsCh,
 		doneCh:        st.doneCh,
 		authorization: &authorization,
+		execution:     st.execution,
+		user:          st.user,
 	}
 	if err = rows.fetch(); err != nil && err != io.EOF {
 		// As in ExecContext: stop the query before the connection can be
@@ -2887,6 +2894,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	// the previous execution, and start from the connection's settings rather
 	// than the named arguments an earlier execution passed.
 	st.stopQuery()
+	st.execution++
 	st.warnings = nil
 	st.user = ""
 	st.timeZone = nil
@@ -3363,6 +3371,22 @@ type driverRows struct {
 
 	// authorization is restored if the query fails while reading rows.
 	authorization *authorizationSnapshot
+	// execution is the statement execution these rows belong to.
+	execution uint64
+	// user is the user the execution ran as, which a later execution of the
+	// statement may change.
+	user string
+}
+
+// errStatementExecutedAgain is returned by rows whose prepared statement ran
+// again while they were open; the statement's state now belongs to the newer
+// execution.
+var errStatementExecutedAgain = errors.New("trino: the statement was executed again while these rows were open")
+
+// superseded reports whether the statement has started another execution
+// since these rows were created.
+func (qr *driverRows) superseded() bool {
+	return qr.execution != qr.stmt.execution
 }
 
 var _ driver.Rows = &driverRows{}
@@ -3375,6 +3399,16 @@ var _ driver.RowsColumnTypeNullable = &driverRows{}
 
 // Close closes the rows iterator.
 func (qr *driverRows) Close() error {
+	// A newer execution of the statement owns its state; leave it running,
+	// but still tell the server that this query is done.
+	if qr.superseded() {
+		finished := qr.err == sql.ErrNoRows || qr.err == io.EOF || qr.nextURI == ""
+		qr.err = io.EOF
+		if finished {
+			return nil
+		}
+		return qr.cancelQueryOnServer()
+	}
 	// The statement may outlive the rows, as a prepared statement does, and
 	// the connection goes back to the pool once the rows are closed, even
 	// when every row was read.
@@ -3402,9 +3436,14 @@ func (qr *driverRows) Close() error {
 			// no data is ready
 		}
 	}
+	return qr.cancelQueryOnServer()
+}
+
+// cancelQueryOnServer asks the coordinator to cancel the query.
+func (qr *driverRows) cancelQueryOnServer() error {
 	hs := make(http.Header)
-	if qr.stmt.user != "" {
-		hs.Add(trinoUserHeader, qr.stmt.user)
+	if qr.user != "" {
+		hs.Add(trinoUserHeader, qr.user)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(qr.ctx), DefaultCancelQueryTimeout)
 	defer cancel()
@@ -3454,6 +3493,10 @@ func (qr *driverRows) Columns() []string {
 		return []string{}
 	}
 	if qr.columns == nil {
+		if qr.superseded() {
+			qr.err = errStatementExecutedAgain
+			return []string{}
+		}
 		if err := qr.fetch(); err != nil && err != io.EOF {
 			qr.err = err
 			return []string{}
@@ -3497,6 +3540,10 @@ func (qr *driverRows) Next(dest []driver.Value) (err error) {
 		}
 	}()
 	if qr.err != nil {
+		return qr.err
+	}
+	if qr.superseded() {
+		qr.err = errStatementExecutedAgain
 		return qr.err
 	}
 	if !qr.stmt.usingSpooledProtocol && (qr.columns == nil || qr.rowindex >= len(qr.data)) {
