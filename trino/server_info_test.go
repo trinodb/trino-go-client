@@ -31,9 +31,9 @@ func TestPingFetchesServerInfoAndValidatesCredentials(t *testing.T) {
 
 func TestPingSendsCredentialsToStatementResource(t *testing.T) {
 	t.Parallel()
-	fc := newFakeCoordinator(t)
+	fc := newFakeTLSCoordinator(t)
 	serveServerInfoAndCredentialsCheck(fc, http.StatusOK)
-	db := fc.open(t, "?accessToken=token")
+	db := fc.openTLS(t, "?accessToken=token")
 
 	require.NoError(t, db.PingContext(context.Background()))
 
@@ -48,9 +48,9 @@ func TestPingSendsCredentialsToStatementResource(t *testing.T) {
 // credentials.
 func TestPingFailsWhenCredentialsAreRejected(t *testing.T) {
 	t.Parallel()
-	fc := newFakeCoordinator(t)
+	fc := newFakeTLSCoordinator(t)
 	serveServerInfoAndCredentialsCheck(fc, http.StatusUnauthorized)
-	db := fc.open(t, "?accessToken=expired")
+	db := fc.openTLS(t, "?accessToken=expired")
 
 	err := db.PingContext(context.Background())
 
