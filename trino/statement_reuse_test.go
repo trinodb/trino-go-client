@@ -246,6 +246,33 @@ func TestPreparedStatementReexecutedWhileSpooledDownloadRuns(t *testing.T) {
 	require.NoError(t, rows.Err())
 }
 
+func TestPreparedStatementNamedArgumentsApplyToOneExecution(t *testing.T) {
+	t.Parallel()
+	page := func(string) *queryResponse {
+		return &queryResponse{Columns: []queryColumn{timestampColumn("ts")}, Data: jsonData([][]string{{"2024-01-01 12:00:00.000"}})}
+	}
+	sc := newScriptedCoordinator(t,
+		scriptedQuery{id: "q1", pages: []scriptedPage{{body: statusOnly}, {body: page}}},
+		scriptedQuery{id: "q2", pages: []scriptedPage{{body: statusOnly}, {body: page}}},
+	)
+	db := sc.open(t, "?timezone=UTC")
+	ctx := context.Background()
+	stmt, err := db.PrepareContext(ctx, "SELECT ts")
+	require.NoError(t, err)
+	t.Cleanup(func() { stmt.Close() })
+
+	var ts time.Time
+	require.NoError(t, stmt.QueryRowContext(ctx, sql.Named(trinoUserHeader, "alice"), sql.Named(trinoTimeZoneHeader, "Asia/Tokyo")).Scan(&ts))
+	require.NoError(t, stmt.QueryRowContext(ctx).Scan(&ts))
+
+	assert.Equal(t, "UTC", ts.Location().String(), "the second execution decodes in the connection's zone")
+	for _, r := range sc.capturedRequests() {
+		if strings.HasPrefix(r.path, "/q2/") {
+			assert.Equal(t, "bob", r.header.Get(trinoUserHeader), "request %s %s", r.method, r.path)
+		}
+	}
+}
+
 func TestClosedQueryDoesNotChangeTheNextCallersSession(t *testing.T) {
 	t.Parallel()
 	lateAuthorization := make(chan struct{})
