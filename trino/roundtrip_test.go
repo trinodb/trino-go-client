@@ -1029,3 +1029,26 @@ func TestQueryFailedTruncatesLongResponseBody(t *testing.T) {
 	require.ErrorAs(t, err, &queryFailed)
 	assert.Equal(t, body[:limit]+"...", queryFailed.Reason.Error())
 }
+
+func TestForwardedTokenTakesPrecedenceOverPassword(t *testing.T) {
+	t.Parallel()
+	fc := newFakeTLSCoordinator(t)
+	fc.respond(resultPage([][]any{{1}}))
+	conf := &Config{
+		ServerURI:                  strings.Replace(fc.url(), "https://", "https://svc:svcpass@", 1),
+		HTTPClient:                 fc.server.Client(),
+		ForwardAuthorizationHeader: true,
+	}
+	connector, err := NewConnector(conf)
+	require.NoError(t, err)
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { db.Close() })
+
+	rows, err := db.Query("SELECT 1", sql.Named("accessToken", "enduser-token"))
+	require.NoError(t, err)
+	require.NoError(t, rows.Close())
+
+	requests := fc.capturedRequests()
+	require.NotEmpty(t, requests)
+	assert.Equal(t, "Bearer enduser-token", requests[0].header.Get("Authorization"))
+}

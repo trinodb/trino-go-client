@@ -1935,7 +1935,9 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 		req.Header[k] = v
 	}
 
-	if c.auth != nil {
+	// A per-statement Authorization header, such as a forwarded access
+	// token, takes precedence over the connection's credentials.
+	if c.auth != nil && hs.Get(authorizationHeader) == "" {
 		pass, _ := c.auth.Password()
 		req.SetBasicAuth(c.auth.Username(), pass)
 	}
