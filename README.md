@@ -929,8 +929,8 @@ connector, err := trino.NewConnector(&trino.Config{
 A program that holds a different token for each of its users can send it with
 each query: set `forwardAuthorizationHeader=true`, or
 `Config.ForwardAuthorizationHeader`, and pass the token as the `accessToken`
-[named argument](#per-query-settings). It overrides the `AccessToken` of the
-connection for that query.
+[named argument](#per-query-settings). It overrides the `AccessToken` or the
+password of the connection for that query.
 
 ```go
 rows, err := db.Query("SELECT * FROM foobar", sql.Named("accessToken", userToken))
