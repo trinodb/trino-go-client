@@ -3055,7 +3055,9 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 					return
 				}
 				hs := make(http.Header)
-				hs.Add(trinoUserHeader, st.user)
+				if st.user != "" {
+					hs.Add(trinoUserHeader, st.user)
+				}
 				req, err := st.conn.newRequest(ctx, "GET", nextURI, nil, hs)
 				if err != nil {
 					if ctx.Err() == context.Canceled {
@@ -4088,7 +4090,9 @@ func (st *driverStmt) startHeartbeat(ctx context.Context) {
 
 				reqCtx, cancel := context.WithTimeout(heartbeatCtx, heartbeatRequestTimeout)
 				hs := make(http.Header)
-				hs.Add(trinoUserHeader, st.user)
+				if st.user != "" {
+					hs.Add(trinoUserHeader, st.user)
+				}
 				req, err := st.conn.newRequest(reqCtx, "HEAD", currentNextURI, nil, hs)
 				if err != nil {
 					cancel()
