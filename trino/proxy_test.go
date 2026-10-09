@@ -99,6 +99,10 @@ func TestProxyRejected(t *testing.T) {
 			config:  &Config{ServerURI: "http://localhost", HTTPProxy: ":8080"},
 			wantErr: `httpProxy must be host:port, got ":8080"`,
 		},
+		"user info": {
+			config:  &Config{ServerURI: "http://localhost", HTTPProxy: "alice:secret@proxy:3128"},
+			wantErr: "httpProxy must be host:port, without a user name or password",
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -739,6 +740,10 @@ func TestInvalidHeaderKeys(t *testing.T) {
 		for _, tc := range invalidKeys {
 			t.Run(parameter.name+"/"+tc.name, func(t *testing.T) {
 				wantErr := "trino: " + parameter.name + " " + tc.wantErr
+				if parameter.name == "extra_credentials" {
+					// The key may hold credential text, so it is not quoted.
+					wantErr = strings.Replace(wantErr, "key "+strconv.Quote(tc.key)+" ", "key ", 1)
+				}
 				newConfig := func() *Config {
 					c := &Config{ServerURI: "http://foobar@localhost:8080"}
 					parameter.set(c, map[string]string{"valid": "v", tc.key: "v"})
@@ -1269,4 +1274,68 @@ func TestConfigRequiresSchemeAndHost(t *testing.T) {
 		_, err = NewConnector(config)
 		assert.ErrorContains(t, err, "ServerURI must have a scheme and a host", "ServerURI %q", serverURI)
 	}
+}
+
+func TestConfigurationErrorsDoNotContainCredentials(t *testing.T) {
+	t.Parallel()
+	for _, dsn := range []string{
+		"https://alice:S3cretPassw0rd@coordinator.example:80a?accessToken=eyJDUMMYTOKEN",
+		"https://alice@coordinator.example?extra_credentials=S3cretExtraCredWithoutKey",
+		"https://coordinator.example?accessToken=eyJDUMMYTOKEN\x7f",
+		"https://coordinator.example?httpProxy=alice%3AS3cretPassw0rd%40proxy%3A3128",
+	} {
+		_, err := ParseDSN(dsn)
+		require.Error(t, err)
+		for _, secret := range []string{"S3cretPassw0rd", "eyJDUMMYTOKEN", "S3cretExtraCredWithoutKey"} {
+			assert.NotContains(t, err.Error(), secret)
+		}
+	}
+	_, err := NewConnector(&Config{ServerURI: "https://alice:S3cretPassw0rd@coordinator.example:80a"})
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "S3cretPassw0rd")
+}
+
+func TestConfigurationErrorsKeepURLDetailWithoutCredentials(t *testing.T) {
+	t.Parallel()
+	for _, dsn := range []string{
+		"https://coordinator.example:80a",
+		"https://coordinator.example:80a?accessToken=eyJDUMMYTOKEN",
+	} {
+		_, err := ParseDSN(dsn)
+		require.Error(t, err, dsn)
+		assert.Contains(t, err.Error(), `invalid port ":80a" after host`, dsn)
+		assert.NotContains(t, err.Error(), "eyJDUMMYTOKEN", dsn)
+	}
+	_, err := NewConnector(&Config{ServerURI: "https://coordinator.example:80a"})
+	assert.ErrorContains(t, err, `invalid port ":80a" after host`)
+}
+
+// Errors for a malformed DSN or extra credential must not quote the password,
+// the access token or the credential text.
+func TestConfigurationErrorsDoNotQuoteCredentialFragments(t *testing.T) {
+	t.Parallel()
+	for _, dsn := range []string{
+		"https://alice:S3cr#tPassw0rd@trino.example:443?catalog=c",
+		"https://alice:S3cr/tPassw0rd@trino.example:443",
+		"https://alice:S3cr?tPassw0rd@trino.example:443",
+		"https://alice:Pa%zzss@trino.example:443",
+		"https://trino.example?extra_credentials=token=S3cr:rest",
+		"https://trino.example?extra_credentials=token%20S3cr:rest",
+	} {
+		_, err := ParseDSN(dsn)
+		require.Error(t, err, dsn)
+		assert.NotContains(t, err.Error(), "S3cr", dsn)
+		assert.NotContains(t, err.Error(), "%zz", dsn)
+	}
+	for _, conf := range []*Config{
+		{ServerURI: "https://alice:S3cr/tPassw0rd@trino.example:443"},
+		{ServerURI: "https://trino.example", ExtraCredentials: map[string]string{"token=S3cr": "x"}},
+	} {
+		_, err := NewConnector(conf)
+		require.Error(t, err)
+		assert.NotContains(t, err.Error(), "S3cr")
+	}
+	_, err := (&Config{ServerURI: "https://trino.example", ExtraCredentials: map[string]string{"token:S3cr": "x"}}).FormatDSN()
+	require.Error(t, err)
+	assert.NotContains(t, err.Error(), "S3cr")
 }
