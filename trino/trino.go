@@ -1912,6 +1912,15 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 	if err != nil {
 		return nil, fmt.Errorf("trino: %w", err)
 	}
+	// The URLs of the requests that follow a statement come from the server.
+	// Another host or port is followed, since gateways and proxies that
+	// rewrite the Host header rely on it, but a coordinator behind a proxy
+	// that terminates TLS can return http URLs, and the credentials must not
+	// be sent over them in cleartext.
+	if strings.HasPrefix(c.baseURL, "https://") && req.URL.Scheme != "https" {
+		return nil, fmt.Errorf("trino: refusing to send a request to %s, which does not use https like the server %s; "+
+			"a coordinator behind a proxy that terminates TLS needs http-server.process-forwarded=true", req.URL.Redacted(), c.baseURL)
+	}
 	req.Header.Set(userAgentHeader, userAgent)
 
 	if c.kerberosEnabled {

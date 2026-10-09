@@ -1711,6 +1711,15 @@ must be configured there, for example with
 [`http.ProxyURL`](https://pkg.go.dev/net/http#ProxyURL); the driver rejects
 `httpProxy` and `socksProxy` combined with either.
 
+The coordinator returns the URL of the next page of results as `nextUri`, and
+the driver follows it with the connection's credentials, even to another host
+or port, which gateways and proxies that rewrite the host name rely on. When
+the DSN uses `https`, a `nextUri` that uses `http` fails the query instead, so
+the credentials are never sent in cleartext. A coordinator behind a proxy that
+terminates TLS returns such URLs unless `http-server.process-forwarded=true` is
+set on it, so that it builds them from the `X-Forwarded-*` headers of the
+proxy.
+
 ### DNS resolution
 
 There is no DSN parameter for DNS resolution. To resolve the coordinator's

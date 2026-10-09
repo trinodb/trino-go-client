@@ -1052,3 +1052,78 @@ func TestForwardedTokenTakesPrecedenceOverPassword(t *testing.T) {
 	require.NotEmpty(t, requests)
 	assert.Equal(t, "Bearer enduser-token", requests[0].header.Get("Authorization"))
 }
+
+func TestNextURIDowngradeToHTTPIsRefused(t *testing.T) {
+	t.Parallel()
+	var plainHits atomic.Int32
+	plain := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		plainHits.Add(1)
+	}))
+	t.Cleanup(plain.Close)
+	fc := newFakeTLSCoordinator(t)
+	fc.onStatement(func(w http.ResponseWriter, r *http.Request, query string) {
+		_ = json.MarshalWrite(w, &stmtResponse{ID: fakeQueryID, NextURI: plain.URL + "/v1/statement/" + fakeQueryID + "/1"})
+	})
+	connector, err := NewConnector(&Config{
+		ServerURI:  strings.Replace(fc.url(), "https://", "https://alice:secret@", 1),
+		HTTPClient: fc.server.Client(),
+	})
+	require.NoError(t, err)
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { db.Close() })
+
+	rows, err := db.Query("SELECT 1")
+	if err == nil {
+		for rows.Next() {
+		}
+		err = rows.Err()
+		rows.Close()
+	}
+	assert.ErrorContains(t, err, "does not use https")
+	assert.Zero(t, plainHits.Load(), "no request may leave without TLS")
+}
+
+// The heartbeat and the cancellation build their requests the same way as
+// the nextUri GET.
+func TestRequestsWithoutTLSAreRefusedForHTTPSServer(t *testing.T) {
+	t.Parallel()
+	conn, err := newConnFromConfig(&Config{ServerURI: "https://alice:secret@localhost:8443"}, nil, nil)
+	require.NoError(t, err)
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodDelete} {
+		_, err := conn.newRequest(t.Context(), method, "http://localhost:8443/v1/statement/executing/q/slug/1", nil, nil)
+		assert.ErrorContains(t, err, "does not use https", method)
+	}
+}
+
+func TestNextURIOnAnotherServerIsFollowed(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		start func(testing.TB) *fakeCoordinator
+	}{
+		{name: "https", start: newFakeTLSCoordinator},
+		{name: "http", start: newFakeCoordinator},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := tc.start(t)
+			other := tc.start(t)
+			other.respond(statementPage(), resultPage([][]any{{1}}))
+			fc.onStatement(func(w http.ResponseWriter, r *http.Request, query string) {
+				_ = json.MarshalWrite(w, &stmtResponse{ID: fakeQueryID, NextURI: other.url() + "/v1/statement/" + fakeQueryID + "/1"})
+			})
+			connector, err := NewConnector(&Config{ServerURI: fc.url(), HTTPClient: fc.server.Client()})
+			require.NoError(t, err)
+			db := sql.OpenDB(connector)
+			t.Cleanup(func() { db.Close() })
+
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			t.Cleanup(func() { rows.Close() })
+			assert.Equal(t, []int{1}, collectInts(t, rows))
+			require.NoError(t, rows.Err())
+			assert.NotEmpty(t, other.capturedRequests())
+		})
+	}
+}
