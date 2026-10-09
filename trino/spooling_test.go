@@ -970,6 +970,16 @@ func (u *recordingProgressUpdater) Update(info QueryProgressInfo) {
 	u.updates = append(u.updates, info)
 }
 
+func (u *recordingProgressUpdater) reportedStates() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	var states []string
+	for _, info := range u.updates {
+		states = append(states, info.QueryStats.State)
+	}
+	return states
+}
+
 func (u *recordingProgressUpdater) failedAcks() []int64 {
 	u.mu.Lock()
 	defer u.mu.Unlock()

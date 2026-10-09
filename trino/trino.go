@@ -1324,8 +1324,6 @@ type Conn struct {
 	kerberosEnabled            bool
 	kerberosClient             *client.Client
 	kerberosServicePrincipal   kerberosServicePrincipal
-	progressUpdater            ProgressUpdater
-	progressUpdaterPeriod      queryProgressCallbackPeriod
 	useExplicitPrepare         bool
 	forwardAuthorizationHeader bool
 	queryTimeout               *time.Duration
@@ -2526,6 +2524,12 @@ type driverStmt struct {
 	waitSegmentAcks               sync.WaitGroup
 	failedSegmentAcks             atomic.Int64
 	lastProgress                  QueryProgressInfo
+	// progressUpdater and progressUpdaterPeriod come from the named arguments
+	// of the current execution only, so a query run without them, on the
+	// same connection or the same prepared statement, does not report to the
+	// callback of an earlier one.
+	progressUpdater       ProgressUpdater
+	progressUpdaterPeriod queryProgressCallbackPeriod
 }
 
 type segmentToDecode struct {
@@ -2612,11 +2616,11 @@ func (st *driverStmt) Close() error {
 
 	// Acknowledgments can finish after the last progress update, so report
 	// failures among them once they are all done.
-	if st.conn.progressUpdater != nil && st.usingSpooledProtocol {
+	if st.progressUpdater != nil && st.usingSpooledProtocol {
 		st.waitSegmentAcks.Wait()
 		if failed := st.failedSegmentAcks.Load(); failed > st.lastProgress.FailedSegmentAcknowledgments {
 			st.lastProgress.FailedSegmentAcknowledgments = failed
-			st.conn.progressUpdater.Update(st.lastProgress)
+			st.progressUpdater.Update(st.lastProgress)
 		}
 	}
 
@@ -2849,6 +2853,8 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	// A prepared statement is executed more than once; the sink belongs to
 	// the execution that passed it, not to the ones after it.
 	st.warnings = nil
+	st.progressUpdater = nil
+	st.progressUpdaterPeriod = queryProgressCallbackPeriod{}
 	hs := make(http.Header)
 	hs.Add(trinoClientCapabilitiesHeader, clientCapabilities)
 	// The server reads extra credentials only when the statement is submitted.
@@ -2869,11 +2875,19 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				continue
 			}
 			if arg.Name == trinoProgressCallbackParam {
-				st.conn.progressUpdater = arg.Value.(ProgressUpdater)
+				updater, ok := arg.Value.(ProgressUpdater)
+				if !ok {
+					return nil, fmt.Errorf("trino: %s must be a ProgressUpdater, got %T", trinoProgressCallbackParam, arg.Value)
+				}
+				st.progressUpdater = updater
 				continue
 			}
 			if arg.Name == trinoProgressCallbackPeriodParam {
-				st.conn.progressUpdaterPeriod.Period = arg.Value.(time.Duration)
+				period, ok := arg.Value.(time.Duration)
+				if !ok {
+					return nil, fmt.Errorf("trino: %s must be a time.Duration, got %T", trinoProgressCallbackPeriodParam, arg.Value)
+				}
+				st.progressUpdaterPeriod.Period = period
 				continue
 			}
 
@@ -2968,7 +2982,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				ss = append(ss, s)
 			}
 		}
-		if (st.conn.progressUpdater != nil && st.conn.progressUpdaterPeriod.Period == 0) || (st.conn.progressUpdater == nil && st.conn.progressUpdaterPeriod.Period > 0) {
+		if (st.progressUpdater != nil && st.progressUpdaterPeriod.Period == 0) || (st.progressUpdater == nil && st.progressUpdaterPeriod.Period > 0) {
 			return nil, ErrInvalidProgressCallbackHeader
 		}
 		if len(ss) > 0 {
@@ -3111,7 +3125,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 		}
 	}()
 	st.nextURIs <- sr.NextURI
-	if st.conn.progressUpdater != nil {
+	if updater := st.progressUpdater; updater != nil {
 		st.statsCh = make(chan QueryProgressInfo)
 
 		// progress updater go func
@@ -3119,7 +3133,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			for {
 				select {
 				case stats := <-st.statsCh:
-					st.conn.progressUpdater.Update(stats)
+					updater.Update(stats)
 				case <-st.doneCh:
 					close(st.statsCh)
 					return
@@ -3138,8 +3152,8 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 		case st.statsCh <- srStats:
 		case <-st.doneCh:
 		}
-		st.conn.progressUpdaterPeriod.LastCallbackTime = time.Now()
-		st.conn.progressUpdaterPeriod.LastQueryState = sr.Stats.State
+		st.progressUpdaterPeriod.LastCallbackTime = time.Now()
+		st.progressUpdaterPeriod.LastQueryState = sr.Stats.State
 	}
 	return &sr, handleResponseError(resp.StatusCode, sr.Error)
 }
@@ -4436,7 +4450,7 @@ func (qr *driverRows) rowsDecoder() *rowsDecoder {
 }
 
 func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
-	if qr.stmt.conn.progressUpdater == nil {
+	if qr.stmt.progressUpdater == nil {
 		return
 	}
 
@@ -4447,11 +4461,11 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 	}
 	qr.stmt.lastProgress = qrStats
 	currentTime := time.Now()
-	diff := currentTime.Sub(qr.stmt.conn.progressUpdaterPeriod.LastCallbackTime)
-	period := qr.stmt.conn.progressUpdaterPeriod.Period
+	diff := currentTime.Sub(qr.stmt.progressUpdaterPeriod.LastCallbackTime)
+	period := qr.stmt.progressUpdaterPeriod.Period
 
 	// Check if period has not passed yet AND if query state did not change
-	if diff < period && qr.stmt.conn.progressUpdaterPeriod.LastQueryState == qrStats.QueryStats.State {
+	if diff < period && qr.stmt.progressUpdaterPeriod.LastQueryState == qrStats.QueryStats.State {
 		return
 	}
 
@@ -4462,8 +4476,8 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 	case qr.statsCh <- qrStats:
 	case <-qr.doneCh:
 	}
-	qr.stmt.conn.progressUpdaterPeriod.LastCallbackTime = currentTime
-	qr.stmt.conn.progressUpdaterPeriod.LastQueryState = qrStats.QueryStats.State
+	qr.stmt.progressUpdaterPeriod.LastCallbackTime = currentTime
+	qr.stmt.progressUpdaterPeriod.LastQueryState = qrStats.QueryStats.State
 }
 
 // columnType describes a column the way the driver.RowsColumnType*
