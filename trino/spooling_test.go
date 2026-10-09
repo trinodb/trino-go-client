@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json/v2"
 	"errors"
@@ -1426,4 +1427,112 @@ func TestSpoolingProtocolSkipsSegmentsWithoutRows(t *testing.T) {
 			assert.Equal(t, tc.want, values)
 		})
 	}
+}
+
+// The segments are queued as the caller reads rows, so the result may list
+// more segments than the queue and the out-of-order slots hold, in one page
+// or across several.
+func TestSpoolingProtocolSegmentBacklog(t *testing.T) {
+	t.Parallel()
+	segments := func(offset, count int) []map[string]any {
+		result := make([]map[string]any, count)
+		for i := range result {
+			data := fmt.Sprintf("[[%d]]", 1000+offset+i)
+			result[i] = inlineSegment(base64.StdEncoding.EncodeToString([]byte(data)), map[string]any{
+				"rowOffset": offset + i, "segmentSize": len(data), "rowsCount": 1,
+			})
+		}
+		return result
+	}
+	within := func(t *testing.T, what string, f func()) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			f()
+		}()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s did not return", what)
+		}
+	}
+
+	t.Run("first page", func(t *testing.T) {
+		t.Parallel()
+		fc := newFakeCoordinator(t)
+		fc.respond(statementPage(), spooledPage("json", segments(0, 1100)...), emptyPage())
+		db := fc.open(t, "")
+		within(t, "reading the result", func() {
+			rows, err := db.Query("SELECT 1")
+			require.NoError(t, err)
+			assert.Len(t, collectInts(t, rows), 1100)
+			assert.NoError(t, rows.Err())
+		})
+	})
+	t.Run("close with a backlog across pages", func(t *testing.T) {
+		t.Parallel()
+		pages := []page{statementPage(), spooledPage("json", segments(0, 1)...)}
+		for offset := 1; offset < 1201; offset += 100 {
+			pages = append(pages, spooledPage("json", segments(offset, 100)...))
+		}
+		pages = append(pages, emptyPage())
+		fc := newFakeCoordinator(t)
+		fc.respond(pages...)
+		// A page is requested once the one before it is parsed, which is
+		// after the page before that was handed to the queueing goroutine,
+		// so the last request means all but the last two pages, more
+		// segments than fit, are being queued.
+		lastPageRequested := make(chan struct{}, 1)
+		fc.onPage(func(index int, r *http.Request) {
+			if index == len(pages)-1 {
+				select {
+				case lastPageRequested <- struct{}{}:
+				default:
+				}
+			}
+		})
+		db := fc.open(t, "")
+		rows, err := db.Query("SELECT 1")
+		require.NoError(t, err)
+		select {
+		case <-lastPageRequested:
+		case <-time.After(10 * time.Second):
+			t.Fatal("the last page was not requested")
+		}
+		within(t, "rows.Close", func() { assert.NoError(t, rows.Close()) })
+	})
+	t.Run("context ends with a backlog", func(t *testing.T) {
+		t.Parallel()
+		fc := newFakeCoordinator(t)
+		fc.respond(statementPage(), spooledPage("json", segments(0, 1100)...), emptyPage())
+		conn, err := fc.open(t, "").Conn(context.Background())
+		require.NoError(t, err)
+		t.Cleanup(func() { assert.NoError(t, conn.Close()) })
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		// The driver's rows are read directly, because database/sql
+		// reports the canceled context itself.
+		within(t, "reading the result", func() {
+			require.NoError(t, conn.Raw(func(driverConn any) error {
+				stmt, err := driverConn.(*Conn).PrepareContext(ctx, "SELECT 1")
+				require.NoError(t, err)
+				defer stmt.Close()
+				rows, err := stmt.(driver.StmtQueryContext).QueryContext(ctx, nil)
+				require.NoError(t, err)
+				defer rows.Close()
+
+				row := make([]driver.Value, 1)
+				require.NoError(t, rows.Next(row))
+				cancel()
+				read := 1
+				for err = rows.Next(row); err == nil; err = rows.Next(row) {
+					read++
+				}
+				assert.ErrorIs(t, err, context.Canceled, "the result ended after %d of 1100 rows", read)
+				return nil
+			}))
+		})
+	})
 }

@@ -3858,8 +3858,10 @@ func (qr *driverRows) fetch() error {
 				qr.stmt.sendHeartbeatURI(qresp.NextURI)
 				qr.startOrderedSegmentStreamer()
 
-				qr.queueSpoolingSegments(spooled)
-				qr.proccessSpollingSegments()
+				// The segments are queued from the processor goroutine:
+				// the queue only drains as the caller reads rows, which it
+				// cannot do before this call returns.
+				qr.proccessSpollingSegments(spooled)
 
 				return nil
 			case 0, 'n':
@@ -4182,8 +4184,12 @@ func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context, decoder 
 	}
 }
 
-func (qr *driverRows) proccessSpollingSegments() {
+func (qr *driverRows) proccessSpollingSegments(first spooledData) {
 	go func() {
+		if !qr.queueSpoolingSegments(first) {
+			qr.waitForAllSpoolingWorkersFinish()
+			return
+		}
 		// A closed channel yields the zero queryResponse, whose empty ID is
 		// also the explicit end marker, so both end up draining the workers.
 		for qresp := range qr.stmt.queryResponses {
@@ -4206,7 +4212,10 @@ func (qr *driverRows) proccessSpollingSegments() {
 					qr.stmt.errors <- err
 					break
 				}
-				qr.queueSpoolingSegments(spooled)
+				if !qr.queueSpoolingSegments(spooled) {
+					qr.waitForAllSpoolingWorkersFinish()
+					return
+				}
 			case 0, 'n':
 				// do nothing: trino response without data (e.g only status information)
 			default:
@@ -4246,14 +4255,30 @@ func decodeSpooledData(data jsontext.Value) (spooledData, error) {
 	return spooled, nil
 }
 
-func (qr *driverRows) queueSpoolingSegments(spooled spooledData) {
+// queueSpoolingSegments hands the segments of a page to the dispatcher. It
+// returns false when the rows are closed or the query's context ends first,
+// as the queue only drains while the caller reads rows.
+func (qr *driverRows) queueSpoolingSegments(spooled spooledData) bool {
 	for segmentIndex, segment := range spooled.Segments {
-		qr.stmt.segmentsToProccess <- segmentToProccess{
+		select {
+		case qr.stmt.segmentsToProccess <- segmentToProccess{
 			segmentIndex: segmentIndex,
 			encoding:     spooled.Encoding,
 			segment:      segment,
+		}:
+		case <-qr.doneCh:
+			return false
+		case <-qr.ctx.Done():
+			// The caller may still be reading the rows queued so far, which
+			// end like a complete result once the workers are shut down.
+			select {
+			case qr.stmt.errors <- qr.ctx.Err():
+			case <-qr.doneCh:
+			}
+			return false
 		}
 	}
+	return true
 }
 
 func unmarshalArguments(signature *typeSignature) error {
