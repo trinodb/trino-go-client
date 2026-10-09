@@ -1,6 +1,7 @@
 package trino
 
 import (
+	"cmp"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"math"
 	"math/big"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -553,14 +555,12 @@ func validateVariantValue(metadata variantMetadata, value []byte, depth int) (in
 	}
 	container := newVariantContainer(value)
 	valuesSize := size - container.valuesStart
+	if basicType == variantBasicObject {
+		return size, validateVariantObjectFields(metadata, value, container, valuesSize, depth)
+	}
 	for i := 0; i < container.count; i++ {
 		start := container.offset(i)
-		end := valuesSize
-		if basicType == variantBasicArray {
-			end = container.offset(i + 1)
-		} else if fieldID := int(readVariantUint(value[container.idsStart+i*container.idSize:], container.idSize)); fieldID >= metadata.size {
-			return 0, fmt.Errorf("variant field ID %d is not in the metadata dictionary of %d keys", fieldID, metadata.size)
-		}
+		end := container.offset(i + 1)
 		if start > end || end > valuesSize {
 			return 0, fmt.Errorf("variant element %d has invalid offsets %d and %d", i, start, end)
 		}
@@ -569,6 +569,63 @@ func validateVariantValue(metadata variantMetadata, value []byte, depth int) (in
 		}
 	}
 	return size, nil
+}
+
+// validateVariantObjectFields checks the fields of an object, which must not
+// share or overlap their values. The specification stores one self-contained
+// value per field, and without this check a chain of objects whose fields all
+// point at one child would cost 2^depth to validate and convert. Trino writes
+// values in field order, so each field is checked only against the one before
+// it, and fields are sorted by offset only when they are stored in another
+// order, which the specification also allows.
+func validateVariantObjectFields(metadata variantMetadata, value []byte, container variantContainer, valuesSize int, depth int) error {
+	previousEnd := 0
+	inOrder := true
+	for i := 0; i < container.count; i++ {
+		if fieldID := int(readVariantUint(value[container.idsStart+i*container.idSize:], container.idSize)); fieldID >= metadata.size {
+			return fmt.Errorf("variant field ID %d is not in the metadata dictionary of %d keys", fieldID, metadata.size)
+		}
+		start := container.offset(i)
+		if start > valuesSize {
+			return fmt.Errorf("variant element %d has invalid offsets %d and %d", i, start, valuesSize)
+		}
+		if inOrder && start < previousEnd {
+			if err := checkVariantObjectFieldsDisjoint(value, container, valuesSize); err != nil {
+				return err
+			}
+			inOrder = false
+		}
+		size, err := validateVariantValue(metadata, value[container.valuesStart+start:container.valuesStart+valuesSize], depth+1)
+		if err != nil {
+			return err
+		}
+		previousEnd = start + size
+	}
+	return nil
+}
+
+// checkVariantObjectFieldsDisjoint checks that no two fields of an object
+// share or overlap their values, whatever order they are stored in.
+func checkVariantObjectFieldsDisjoint(value []byte, container variantContainer, valuesSize int) error {
+	fields := make([][2]int, container.count)
+	for i := range fields {
+		start := container.offset(i)
+		if start > valuesSize {
+			return fmt.Errorf("variant element %d has invalid offsets %d and %d", i, start, valuesSize)
+		}
+		size, err := variantValueSize(value[container.valuesStart+start : container.valuesStart+valuesSize])
+		if err != nil {
+			return err
+		}
+		fields[i] = [2]int{start, start + size}
+	}
+	slices.SortFunc(fields, func(a, b [2]int) int { return cmp.Compare(a[0], b[0]) })
+	for i := 1; i < len(fields); i++ {
+		if fields[i][0] < fields[i-1][1] {
+			return errors.New("variant object fields share their bytes")
+		}
+	}
+	return nil
 }
 
 // variantMetadata is the dictionary of object field names a value refers to

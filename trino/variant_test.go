@@ -3,8 +3,10 @@ package trino
 import (
 	"database/sql"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"fmt"
 	"os"
 	"reflect"
 	"strings"
@@ -427,4 +429,77 @@ func deeplyNestedArray(depth int) []byte {
 		value = append(header, value...)
 	}
 	return value
+}
+
+// Object fields may not share their values: a chain of objects whose fields
+// all point at one child would otherwise cost 2^depth to validate and convert,
+// and many fields pointing at one large child would multiply its size.
+func TestNewVariantRejectsSharedObjectFields(t *testing.T) {
+	t.Parallel()
+	ab := []byte{0x01, 0x02, 0x00, 0x01, 0x02, 'a', 'b'}
+	chain := []byte{0x00} // null
+	for range 40 {
+		// Object with fields "a" and "b", both at offset 0.
+		chain = append([]byte{0x02, 0x02, 0x00, 0x01, 0x00, 0x00, byte(len(chain))}, chain...)
+		if len(chain) > 255 {
+			break
+		}
+	}
+
+	const keys = 250
+	manyKeys := []byte{0x41} // version 1, two-byte offsets
+	manyKeys = binary.LittleEndian.AppendUint16(manyKeys, keys)
+	var names []byte
+	for i := 0; i <= keys; i++ {
+		manyKeys = binary.LittleEndian.AppendUint16(manyKeys, uint16(len(names)))
+		if i < keys {
+			names = fmt.Appendf(names, "k%03d", i)
+		}
+	}
+	manyKeys = append(manyKeys, names...)
+	long := binary.LittleEndian.AppendUint32([]byte{0x40}, 64<<10) // long string
+	long = append(long, strings.Repeat("x", 64<<10)...)
+	manyFields := []byte{0b11<<2 | 2, keys} // one-byte field IDs, four-byte offsets
+	for i := range keys {
+		manyFields = append(manyFields, byte(i))
+	}
+	for range keys {
+		manyFields = binary.LittleEndian.AppendUint32(manyFields, 0)
+	}
+	manyFields = binary.LittleEndian.AppendUint32(manyFields, uint32(len(long)))
+	manyFields = append(manyFields, long...)
+
+	cases := []struct {
+		name            string
+		metadata, value []byte
+	}{
+		{"two fields, one value", ab, []byte{0x02, 0x02, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00}},
+		// Field "a" is the array [true] and field "b" points at its element.
+		{"field inside another field", ab, []byte{0x02, 0x02, 0x00, 0x01, 0x00, 0x04, 0x05, 0x03, 0x01, 0x00, 0x01, 0x04}},
+		// Field "a" points at the second byte of the int8 in field "b".
+		{"fields out of order, overlapping", ab, []byte{0x02, 0x02, 0x00, 0x01, 0x01, 0x00, 0x02, 0x0C, 0x04}},
+		{"array of an object with shared fields", ab, []byte{0x03, 0x01, 0x00, 0x08, 0x02, 0x02, 0x00, 0x01, 0x00, 0x00, 0x01, 0x00}},
+		{"chain of shared fields", ab, chain},
+		{"many fields, one long string", manyKeys, manyFields},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			start := time.Now()
+			_, err := newVariant(tc.metadata, tc.value, nil)
+			assert.ErrorContains(t, err, "share their bytes")
+			assert.Less(t, time.Since(start), time.Second)
+		})
+	}
+}
+
+// Object field values may be stored in any order.
+func TestNewVariantAcceptsObjectValuesOutOfOrder(t *testing.T) {
+	t.Parallel()
+	metadata := []byte{0x01, 0x02, 0x00, 0x01, 0x02, 'a', 'b'}
+	// Fields "a" at offset 1 and "b" at offset 0: true, then null.
+	value := []byte{0x02, 0x02, 0x00, 0x01, 0x01, 0x00, 0x02, 0x04, 0x00}
+	v, err := newVariant(metadata, value, nil)
+	require.NoError(t, err)
+	assert.Equal(t, `{"a":null,"b":true}`, v.String())
 }
