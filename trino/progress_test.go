@@ -1,6 +1,7 @@
 package trino
 
 import (
+	"context"
 	"database/sql"
 	"sync"
 	"testing"
@@ -56,4 +57,78 @@ func TestProgressCallbackSlowerThanPagesReportsEveryStateChange(t *testing.T) {
 	require.NoError(t, rows.Close())
 
 	assert.Equal(t, []string{"QUEUED", "RUNNING", "FINISHING", "FINISHED"}, updater.reportedStates())
+}
+
+// The progress callback belongs to the query it was passed with. A later query
+// run without it must not report to it, whether it gets the same pooled
+// connection or runs on the same pinned connection.
+func TestProgressCallbackReportsOnlyTheQueryItWasPassedWith(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		querier func(t *testing.T, db *sql.DB) func(args ...any) (*sql.Rows, error)
+	}{
+		{"pooled connection", func(t *testing.T, db *sql.DB) func(args ...any) (*sql.Rows, error) {
+			db.SetMaxOpenConns(1)
+			return func(args ...any) (*sql.Rows, error) {
+				return db.QueryContext(ctx, "SELECT 1", args...)
+			}
+		}},
+		{"pinned connection", func(t *testing.T, db *sql.DB) func(args ...any) (*sql.Rows, error) {
+			conn, err := db.Conn(ctx)
+			require.NoError(t, err)
+			t.Cleanup(func() { conn.Close() })
+			return func(args ...any) (*sql.Rows, error) {
+				return conn.QueryContext(ctx, "SELECT 1", args...)
+			}
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			query := tc.querier(t, fc.open(t, ""))
+			updater := &recordingProgressUpdater{}
+
+			fc.respond(statementPage().withState("FIRST"), resultPage([][]any{{1}}).withState("FIRST"))
+			rows, err := query(
+				sql.Named(trinoProgressCallbackParam, updater),
+				sql.Named(trinoProgressCallbackPeriodParam, time.Millisecond))
+			require.NoError(t, err)
+			assert.Equal(t, []int{1}, collectInts(t, rows))
+			require.NoError(t, rows.Close())
+
+			fc.respond(statementPage().withState("SECOND"), resultPage([][]any{{2}}).withState("SECOND"))
+			rows, err = query()
+			require.NoError(t, err)
+			assert.Equal(t, []int{2}, collectInts(t, rows))
+			require.NoError(t, rows.Close())
+
+			assert.Contains(t, updater.reportedStates(), "FIRST")
+			assert.NotContains(t, updater.reportedStates(), "SECOND", "a query without the callback must not report to it")
+		})
+	}
+}
+
+func TestProgressCallbackArgumentsOfWrongTypeReturnError(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name    string
+		args    []any
+		wantErr string
+	}{
+		{"callback", []any{sql.Named(trinoProgressCallbackParam, "not an updater"), sql.Named(trinoProgressCallbackPeriodParam, time.Second)}, "must be a ProgressUpdater, got string"},
+		{"period", []any{sql.Named(trinoProgressCallbackParam, &recordingProgressUpdater{}), sql.Named(trinoProgressCallbackPeriodParam, "1s")}, "must be a time.Duration, got string"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), resultPage([][]any{{1}}))
+
+			_, err := fc.open(t, "").Query("SELECT 1", tc.args...)
+			assert.ErrorContains(t, err, tc.wantErr)
+		})
+	}
 }
