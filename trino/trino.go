@@ -2521,9 +2521,14 @@ type driverStmt struct {
 	heartbeatNextURICh            chan string
 	cancelHeartbeat               context.CancelFunc
 	waitHeartbeat                 sync.WaitGroup
-	waitSegmentAcks               sync.WaitGroup
-	failedSegmentAcks             atomic.Int64
-	lastProgress                  QueryProgressInfo
+	// cancelQuery ends the context of the running query, which aborts a
+	// nextUri request still in flight.
+	cancelQuery context.CancelFunc
+	// spoolingProcessorExited is closed when proccessSpollingSegments returns.
+	spoolingProcessorExited chan struct{}
+	waitSegmentAcks         sync.WaitGroup
+	failedSegmentAcks       atomic.Int64
+	lastProgress            QueryProgressInfo
 	// progressUpdater and progressUpdaterPeriod come from the named arguments
 	// of the current execution only, so a query run without them, on the
 	// same connection or the same prepared statement, does not report to the
@@ -2553,17 +2558,30 @@ var (
 
 // Close closes statement just before releasing connection
 func (st *driverStmt) Close() error {
+	st.stopQuery()
+	return nil
+}
+
+// stopQuery stops the goroutines of the running query and waits for them, so
+// nothing from that query reaches the connection or a later execution of the
+// statement. It is a no-op when no query is running.
+func (st *driverStmt) stopQuery() {
+	if st.cancelQuery != nil {
+		st.cancelQuery()
+		st.cancelQuery = nil
+	}
 	if st.doneCh == nil {
-		return nil
+		return
 	}
 	close(st.doneCh)
 	if st.statsCh != nil {
 		<-st.statsCh
 		st.statsCh = nil
 	}
+	errs := st.errors
 	go func() {
 		// drain errors chan to allow goroutines to write to it
-		for range st.errors {
+		for range errs {
 		}
 	}()
 
@@ -2605,6 +2623,10 @@ func (st *driverStmt) Close() error {
 		}
 	}
 
+	if st.spoolingProcessorExited != nil {
+		<-st.spoolingProcessorExited
+	}
+
 	st.waitDownloadSegmentsWorkers.Wait()
 
 	st.waitSegmentDecodersWorkers.Wait()
@@ -2636,8 +2658,7 @@ func (st *driverStmt) Close() error {
 	st.decodedSegments = nil
 	st.spoolingRowsChannel = nil
 	st.cancelHeartbeat = nil
-
-	return nil
+	st.spoolingProcessorExited = nil
 }
 
 func (st *driverStmt) NumInput() int {
@@ -2670,6 +2691,10 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 	}
 
 	if err != nil && err != io.EOF {
+		// The polling goroutines may already be fetching the next page;
+		// stop them before the connection goes back to the pool, or that
+		// page's headers would change the next caller's session.
+		st.stopQuery()
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
@@ -2842,6 +2867,9 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 		authorization: &authorization,
 	}
 	if err = rows.fetch(); err != nil && err != io.EOF {
+		// As in ExecContext: stop the query before the connection can be
+		// reused.
+		st.stopQuery()
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
@@ -2850,9 +2878,12 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 
 func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
 	query := st.query
-	// A prepared statement is executed more than once; the sink belongs to
-	// the execution that passed it, not to the ones after it.
+	// A prepared statement is executed more than once. Stop what is left of
+	// the previous execution; the warnings sink belongs to the execution that
+	// passed it, not to the ones after it.
+	st.stopQuery()
 	st.warnings = nil
+	st.usingSpooledProtocol = false
 	st.progressUpdater = nil
 	st.progressUpdaterPeriod = queryProgressCallbackPeriod{}
 	hs := make(http.Header)
@@ -3010,11 +3041,16 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 		hs.Add(trinoQueryDataEncodingHeader, defaulttrinoEncoding)
 	}
 
-	var cancel context.CancelFunc = func() {}
+	ctx, cancelQuery := context.WithCancel(ctx)
+	cancel := cancelQuery
 	if st.conn.queryTimeout != nil {
-		ctx, cancel = context.WithTimeout(ctx, *st.conn.queryTimeout)
+		var cancelTimeout context.CancelFunc
+		ctx, cancelTimeout = context.WithTimeout(ctx, *st.conn.queryTimeout)
+		cancel = func() { cancelTimeout(); cancelQuery() }
 	} else if _, ok := ctx.Deadline(); !ok {
-		ctx, cancel = context.WithTimeout(ctx, DefaultQueryTimeout)
+		var cancelTimeout context.CancelFunc
+		ctx, cancelTimeout = context.WithTimeout(ctx, DefaultQueryTimeout)
+		cancel = func() { cancelTimeout(); cancelQuery() }
 	}
 
 	req, err := st.conn.newRequest(ctx, "POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
@@ -3041,6 +3077,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 		st.warnings.add(sr.Warnings)
 	}
 
+	st.cancelQuery = cancel
 	st.doneCh = make(chan struct{})
 	st.nextURIs = make(chan string)
 	st.httpResponses = make(chan *http.Response)
@@ -3329,6 +3366,10 @@ var _ driver.RowsColumnTypeNullable = &driverRows{}
 
 // Close closes the rows iterator.
 func (qr *driverRows) Close() error {
+	// The statement may outlive the rows, as a prepared statement does, and
+	// the connection goes back to the pool once the rows are closed, even
+	// when every row was read.
+	defer qr.stmt.stopQuery()
 	if qr.err == sql.ErrNoRows || qr.err == io.EOF {
 		return nil
 	}
@@ -3462,7 +3503,10 @@ func (qr *driverRows) Next(dest []driver.Value) (err error) {
 				qr.err = io.EOF
 				return qr.err
 			} else if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				// Close stops the workers and the rest of the query.
 				qr.Close()
+				qr.err = err
+				return qr.err
 			}
 			qr.stmt.cancelDecodersWorkers()
 			qr.stmt.cancelDownloadWorkers()
@@ -4044,6 +4088,7 @@ func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context, decoder 
 	st.decodedSegments = make(chan decodedSegment)
 
 	st.heartbeatNextURICh = make(chan string, 1)
+	st.spoolingProcessorExited = make(chan struct{})
 
 	st.startSegmentDispatcher()
 	st.startDownloadSegmentsWorkers(downloadSegmentsCtx)
@@ -4294,14 +4339,17 @@ func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context, decoder 
 }
 
 func (qr *driverRows) proccessSpollingSegments(first spooledData) {
+	queryResponses := qr.stmt.queryResponses
+	exited := qr.stmt.spoolingProcessorExited
 	go func() {
+		defer close(exited)
 		if !qr.queueSpoolingSegments(first) {
 			qr.waitForAllSpoolingWorkersFinish()
 			return
 		}
 		// A closed channel yields the zero queryResponse, whose empty ID is
 		// also the explicit end marker, so both end up draining the workers.
-		for qresp := range qr.stmt.queryResponses {
+		for qresp := range queryResponses {
 			if qresp.ID == "" {
 				break
 			}
