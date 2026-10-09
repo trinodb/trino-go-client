@@ -661,6 +661,10 @@ func ParseDSN(dsn string) (*Config, error) {
 		return nil, err
 	}
 
+	if err := config.requireTLSForCredentials(serverURL); err != nil {
+		return nil, err
+	}
+
 	config.applyDefaults()
 	return config, nil
 }
@@ -671,6 +675,9 @@ func (c *Config) validate(serverURL *url.URL) error {
 		return errors.New("trino: client configuration error, ServerURI must have a scheme and a host")
 	}
 	if err := requireTLSForPassword(serverURL); err != nil {
+		return err
+	}
+	if err := c.requireTLSForCredentials(serverURL); err != nil {
 		return err
 	}
 	// ParseDSN moves the DSN path into Catalog and Schema, so only a ServerURI
@@ -859,6 +866,24 @@ func requireTLSForPassword(serverURL *url.URL) error {
 	if pass, _ := serverURL.User.Password(); pass != "" && serverURL.Scheme != "https" {
 		return fmt.Errorf("trino: TLS/SSL is required for authentication with username and password")
 	}
+	return nil
+}
+
+// requireTLSForCredentials refuses bearer tokens over a server URL that is not
+// https: an access token and forwarded per-statement tokens can be replayed
+// like the password requireTLSForPassword covers.
+func (c *Config) requireTLSForCredentials(serverURL *url.URL) error {
+	if serverURL.Scheme == "https" {
+		return nil
+	}
+	if c.AccessToken != "" {
+		return errors.New("trino: TLS/SSL is required for authentication with an access token")
+	}
+	if c.ForwardAuthorizationHeader {
+		return errors.New("trino: TLS/SSL is required to forward access tokens with " + forwardAuthorizationHeaderConfig)
+	}
+	// Extra credentials are allowed over http, as in the JDBC driver, so a
+	// cluster without authentication can still pass them to connectors.
 	return nil
 }
 
@@ -2779,6 +2804,12 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				token, ok := arg.Value.(string)
 				if !ok {
 					return nil, fmt.Errorf("trino: %s must be a string, got %T", accessTokenConfig, arg.Value)
+				}
+				// An empty token would not authenticate the caller: the
+				// request would go out with the connection's password, or
+				// with no credentials at all.
+				if token == "" {
+					return nil, fmt.Errorf("trino: %s must not be empty", accessTokenConfig)
 				}
 				hs.Add(authorizationHeader, getAuthorization(token))
 				continue

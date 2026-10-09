@@ -726,9 +726,9 @@ func TestRoundTripCancellation(t *testing.T) {
 
 func TestTokenAuth(t *testing.T) {
 	t.Parallel()
-	fc := newFakeCoordinator(t)
+	fc := newFakeTLSCoordinator(t)
 	fc.respond(resultPage([][]any{{1}}))
-	db := fc.open(t, "?accessToken=token")
+	db := fc.openTLS(t, "?accessToken=token")
 
 	rows, err := db.Query("SELECT 1")
 	require.NoError(t, err)
@@ -820,9 +820,9 @@ func TestQueryFailure(t *testing.T) {
 
 func TestForwardAuthorizationHeader(t *testing.T) {
 	t.Parallel()
-	fc := newFakeCoordinator(t)
+	fc := newFakeTLSCoordinator(t)
 	fc.respond(resultPage([][]any{{1}}))
-	db := fc.open(t, "?forwardAuthorizationHeader=true")
+	db := fc.openTLS(t, "?forwardAuthorizationHeader=true")
 
 	rows, err := db.Query("SELECT 1", sql.Named("accessToken", "token"))
 	require.NoError(t, err)
@@ -846,18 +846,28 @@ func TestForwardAuthorizationHeaderDisabled(t *testing.T) {
 
 func TestForwardAuthorizationHeaderNonStringToken(t *testing.T) {
 	t.Parallel()
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
-	t.Cleanup(ts.Close)
+	fc := newFakeTLSCoordinator(t)
+	db := fc.openTLS(t, "?forwardAuthorizationHeader=true")
 
-	db, err := sql.Open("trino", ts.URL+"?forwardAuthorizationHeader=true")
-	require.NoError(t, err)
-
-	t.Cleanup(func() {
-		assert.NoError(t, db.Close())
-	})
-
-	_, err = db.Query("SELECT ?", sql.Named("accessToken", 42))
+	_, err := db.Query("SELECT ?", sql.Named("accessToken", 42))
 	assert.EqualError(t, err, "trino: accessToken must be a string, got int64")
+}
+
+func TestForwardAuthorizationHeaderRejectsEmptyToken(t *testing.T) {
+	t.Parallel()
+	fc := newFakeTLSCoordinator(t)
+	dsn := strings.Replace(fc.url(), "https://", "https://alice:secret@", 1) +
+		"?forwardAuthorizationHeader=true&SSLCert=" + url.QueryEscape(fc.certificatePEM())
+	db, err := sql.Open("trino", dsn)
+	require.NoError(t, err)
+	t.Cleanup(func() { assert.NoError(t, db.Close()) })
+
+	_, err = db.Query("SELECT 1", sql.Named("accessToken", ""))
+
+	assert.ErrorContains(t, err, "must not be empty")
+	for _, request := range fc.capturedRequests() {
+		assert.False(t, request.method == http.MethodPost && request.path == "/v1/statement", "the statement must not be sent")
+	}
 }
 
 func TestQueryTimeoutDeadline(t *testing.T) {
