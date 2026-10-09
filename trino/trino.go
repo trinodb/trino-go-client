@@ -1409,10 +1409,11 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 			httpClient = &http.Client{Transport: transport}
 		}
 	}
+	// Segment downloads follow redirects to the storage holding them and carry
+	// only the headers the server lists; every other request carries the
+	// connection's credentials and must stay on the configured server.
 	segmentHTTPClient := httpClient
-	if conf.CustomClientName == "" {
-		httpClient = withoutRedirects(httpClient)
-	}
+	httpClient = withoutRedirects(httpClient)
 
 	timeZoneName := conf.TimeZone
 	if timeZoneName == "" {

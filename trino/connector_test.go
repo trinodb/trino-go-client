@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -188,4 +189,30 @@ func TestOpenRejectsInvalidDSN(t *testing.T) {
 	t.Parallel()
 	_, err := sql.Open("trino", "://")
 	assert.Error(t, err)
+}
+
+// A registered custom client must not follow a coordinator redirect either:
+// the request carries the connection's extra credentials and user.
+func TestCustomClientDoesNotFollowRedirects(t *testing.T) {
+	t.Parallel()
+	var targetHits atomic.Int32
+	target := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetHits.Add(1)
+	}))
+	t.Cleanup(target.Close)
+	source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/v1/statement", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(source.Close)
+	name := "redirect-test-" + t.Name()
+	require.NoError(t, RegisterCustomClient(name, source.Client()))
+	t.Cleanup(func() { DeregisterCustomClient(name) })
+
+	db, err := sql.Open("trino", source.URL+"?custom_client="+url.QueryEscape(name)+"&extra_credentials=k%3AEXTRA")
+	require.NoError(t, err)
+	t.Cleanup(func() { db.Close() })
+
+	_, err = db.Query("SELECT 1")
+	assert.ErrorContains(t, err, "not followed")
+	assert.Zero(t, targetHits.Load(), "the redirect target must not receive the statement")
 }

@@ -1674,9 +1674,9 @@ The default client does not follow HTTP redirects, because a redirect would
 carry the `X-Trino-*` headers, including extra credentials, to a host other
 than the one in the DSN, and a `301`, `302` or `303` response would turn the
 statement `POST` into a `GET` without the query. A redirect response fails the
-query instead. An `HTTPClient` is treated the same way, while a registered
-`custom_client` follows its own `CheckRedirect` policy, which allows redirects
-unless set. Spooled segment downloads follow redirects with every client, see
+query instead. An `HTTPClient` and a registered `custom_client` are treated
+the same way, whatever their `CheckRedirect` policy. Spooled segment downloads
+follow redirects with every client, see
 [Spooling protocol](#spooling-protocol).
 
 A custom client can also add OpenTelemetry instrumentation. The
