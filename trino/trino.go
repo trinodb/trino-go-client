@@ -1301,9 +1301,13 @@ func (c *Config) TLSConfig() (*tls.Config, error) {
 // and session state are cleared by ResetSession, and external authentication
 // tokens belong to the Connector, so neither makes a connection invalid.
 type Conn struct {
-	baseURL    string
-	auth       *url.Userinfo
-	httpClient http.Client
+	baseURL string
+	// ownedTransport is the transport the driver created for this
+	// connection, which is closed with it, unlike one the application
+	// supplies.
+	ownedTransport *http.Transport
+	auth           *url.Userinfo
+	httpClient     http.Client
 	// segmentHTTPClient follows redirects, which the coordinator issues for
 	// segment downloads in the COORDINATOR_STORAGE_REDIRECT and WORKER_PROXY
 	// retrieval modes. Segment requests carry only the headers the server
@@ -1457,6 +1461,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 	}
 
 	var httpClient = http.DefaultClient
+	var ownedTransport *http.Transport
 	if conf.HTTPClient != nil {
 		httpClient = conf.HTTPClient
 	} else if clientKey := conf.CustomClientName; clientKey != "" {
@@ -1465,12 +1470,12 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 			return nil, fmt.Errorf("trino: custom client not registered: %q", clientKey)
 		}
 	} else {
-		transport, err := conf.transport(serverURL)
+		ownedTransport, err = conf.transport(serverURL)
 		if err != nil {
 			return nil, err
 		}
-		if transport != nil {
-			httpClient = &http.Client{Transport: transport}
+		if ownedTransport != nil {
+			httpClient = &http.Client{Transport: ownedTransport}
 		}
 	}
 	// Segment downloads follow redirects to the storage holding them and carry
@@ -1497,6 +1502,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
+		ownedTransport:             ownedTransport,
 		httpClient:                 *httpClient,
 		segmentHTTPClient:          *segmentHTTPClient,
 		httpHeaders:                make(http.Header),
@@ -1884,6 +1890,9 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 
 // Close implements the driver.Conn interface.
 func (c *Conn) Close() error {
+	if c.ownedTransport != nil {
+		c.ownedTransport.CloseIdleConnections()
+	}
 	return nil
 }
 
