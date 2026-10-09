@@ -246,6 +246,23 @@ func TestPreparedStatementReexecutedWhileSpooledDownloadRuns(t *testing.T) {
 	require.NoError(t, rows.Err())
 }
 
+func TestExecReadsEverySpooledPage(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(
+		statementPage(),
+		spooledPage("json", reuseInlineRows(t, 0, 1000, 10001)),
+		spooledPage("json", reuseInlineRows(t, 2, 1000, 10001)),
+		emptyPage(),
+	)
+	db := fc.open(t, "")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := db.ExecContext(ctx, "INSERT 1")
+	require.NoError(t, err)
+}
+
 func TestPreparedStatementNamedArgumentsApplyToOneExecution(t *testing.T) {
 	t.Parallel()
 	page := func(string) *queryResponse {

@@ -2688,6 +2688,11 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 	// consume all results, if there are any
 	for err == nil {
 		err = rows.fetch()
+		// Once the result switches to the spooling protocol, its pages are
+		// read by the spooling goroutines; read the rows they produce.
+		if err == nil && st.usingSpooledProtocol {
+			err = rows.drainSpooledRows()
+		}
 	}
 
 	if err != nil && err != io.EOF {
@@ -3418,6 +3423,29 @@ func (qr *driverRows) Close() error {
 	}
 	resp.Body.Close()
 	return qr.err
+}
+
+// drainSpooledRows discards the rows of a spooled result until it ends.
+func (qr *driverRows) drainSpooledRows() error {
+	for {
+		select {
+		case _, ok := <-qr.stmt.spoolingRowsChannel:
+			if !ok {
+				return io.EOF
+			}
+		case err := <-qr.stmt.errors:
+			if err == nil {
+				return io.EOF
+			}
+			qr.stmt.cancelDecodersWorkers()
+			qr.stmt.cancelDownloadWorkers()
+			return err
+		case <-qr.ctx.Done():
+			qr.stmt.cancelDecodersWorkers()
+			qr.stmt.cancelDownloadWorkers()
+			return qr.ctx.Err()
+		}
+	}
 }
 
 // Columns returns the names of the columns.
