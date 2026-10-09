@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -572,19 +573,54 @@ func localTimeLayout(value string) string {
 
 // zones caches the locations of zone names, as time.LoadLocation reads the
 // zone database on every call and every TIMESTAMP WITH TIME ZONE value
-// names its zone.
-var zones sync.Map
+// names its zone. The names come from the server, and time.LoadLocation
+// accepts any path spelling of a zone, such as "Europe/./Paris", so names
+// that are not shaped like zone IDs are rejected. Some other names still
+// load, such as "europe/paris" on a case-insensitive filesystem or
+// "posixrules", so the cache stops growing at maxCachedZones rather than
+// keep every name a server sends for the life of the process.
+var (
+	zones       sync.Map
+	cachedZones atomic.Int64
+)
+
+// maxCachedZones is well above the number of zones in the IANA database.
+const maxCachedZones = 1024
 
 func loadZone(name string) (*time.Location, error) {
 	if location, ok := zones.Load(name); ok {
 		return location.(*time.Location), nil
 	}
+	// Go resolves Local to time.Local, which the server cannot mean.
+	if name == "Local" || !isZoneID(name) {
+		return nil, fmt.Errorf("invalid time zone %q", name)
+	}
 	location, err := time.LoadLocation(name)
 	if err != nil {
 		return nil, err
 	}
-	zones.Store(name, location)
+	if cachedZones.Load() < maxCachedZones {
+		if _, loaded := zones.LoadOrStore(name, location); !loaded {
+			cachedZones.Add(1)
+		}
+	}
 	return location, nil
+}
+
+// isZoneID reports whether name has the form of an IANA zone ID: segments of
+// letters, digits, '_', '+' and '-' separated by single slashes.
+func isZoneID(name string) bool {
+	for segment := range strings.SplitSeq(name, "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		for _, c := range []byte(segment) {
+			if !isDigit(c) && !('a' <= c && c <= 'z') && !('A' <= c && c <= 'Z') && c != '_' && c != '+' && c != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func isDigit(c byte) bool {
