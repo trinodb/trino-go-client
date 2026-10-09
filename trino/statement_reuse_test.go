@@ -435,3 +435,68 @@ func reuseInlineRows(t testing.TB, rowOffset int, values ...int) map[string]any 
 		"rowOffset": rowOffset, "segmentSize": len(data), "rowsCount": len(values),
 	})
 }
+
+// A Conn- or Tx-bound prepared statement may run again while rows of an
+// earlier execution are open. Those rows must not read the newer execution's
+// pages, and closing them must not stop it.
+func TestRowsOfAnEarlierExecutionDoNotReadTheNextOne(t *testing.T) {
+	t.Parallel()
+	sc := newScriptedCoordinator(t,
+		scriptedQuery{id: "q1", pages: []scriptedPage{{body: intRows(1)}, {body: intRows(2)}, {body: intRows(3)}}},
+		scriptedQuery{id: "q2", pages: []scriptedPage{{body: intRows(100)}, {body: intRows(200)}, {body: intRows(300)}}},
+	)
+	db := sc.open(t, "")
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+	stmt, err := conn.PrepareContext(ctx, "SELECT v")
+	require.NoError(t, err)
+	defer stmt.Close()
+
+	first, err := stmt.QueryContext(ctx)
+	require.NoError(t, err)
+	require.True(t, first.Next())
+	second, err := stmt.QueryContext(ctx)
+	require.NoError(t, err)
+
+	assert.False(t, first.Next())
+	assert.ErrorIs(t, first.Err(), errStatementExecutedAgain)
+	require.NoError(t, first.Close())
+	assert.Equal(t, []int{100, 200, 300}, collectInts(t, second))
+	require.NoError(t, second.Err())
+}
+
+// Closing rows of an earlier execution still cancels their query, as the
+// user it ran as.
+func TestRowsOfAnEarlierExecutionCancelTheirQuery(t *testing.T) {
+	t.Parallel()
+	sc := newScriptedCoordinator(t,
+		scriptedQuery{id: "q1", pages: []scriptedPage{{body: intRows(1)}, {body: intRows(2)}, {body: intRows(3)}}},
+		scriptedQuery{id: "q2", pages: []scriptedPage{{body: intRows(100)}}},
+	)
+	db := sc.open(t, "")
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+	stmt, err := conn.PrepareContext(ctx, "SELECT v")
+	require.NoError(t, err)
+	defer stmt.Close()
+
+	first, err := stmt.QueryContext(ctx, sql.Named(trinoUserHeader, "alice"))
+	require.NoError(t, err)
+	require.True(t, first.Next())
+	second, err := stmt.QueryContext(ctx)
+	require.NoError(t, err)
+	require.NoError(t, first.Close())
+	assert.Equal(t, []int{100}, collectInts(t, second))
+
+	var deletes []string
+	for _, r := range sc.capturedRequests() {
+		if r.method == http.MethodDelete {
+			deletes = append(deletes, r.path+" as "+r.header.Get(trinoUserHeader))
+		}
+	}
+	assert.Contains(t, deletes, "/v1/query/q1 as alice")
+}
