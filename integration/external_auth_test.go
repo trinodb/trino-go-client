@@ -23,19 +23,7 @@ func TestIntegrationExternalAuthentication(t *testing.T) {
 	if oauth2Addresses == nil {
 		t.Skip("Skipping external authentication test: it needs the Dex container it starts itself, so it runs only with Trino 477 or later and without -trino_server_dsn")
 	}
-	tlsConfig, err := getTLSConfig(secretsDir)
-	require.NoError(t, err)
-	var dialer net.Dialer
-	transport := &http.Transport{
-		TLSClientConfig: tlsConfig,
-		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			if published, ok := oauth2Addresses[address]; ok {
-				address = published
-			}
-			return dialer.DialContext(ctx, network, address)
-		},
-	}
-	t.Cleanup(transport.CloseIdleConnections)
+	transport := newOAuth2Transport(t)
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 	browser := &http.Client{Transport: transport, Jar: jar}
@@ -68,6 +56,26 @@ func TestIntegrationExternalAuthentication(t *testing.T) {
 	require.NoError(t, second.QueryRowContext(ctx, "SELECT current_user").Scan(&user))
 	assert.Equal(t, "test", user)
 	assert.EqualValues(t, 1, redirects.Load(), "the second connection reuses the token")
+}
+
+// newOAuth2Transport trusts the certificate of Trino and Dex, and dials them
+// by the names they know each other by on the container network.
+func newOAuth2Transport(t *testing.T) *http.Transport {
+	t.Helper()
+	tlsConfig, err := getTLSConfig(secretsDir)
+	require.NoError(t, err)
+	var dialer net.Dialer
+	transport := &http.Transport{
+		TLSClientConfig: tlsConfig,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if published, ok := oauth2Addresses[address]; ok {
+				address = published
+			}
+			return dialer.DialContext(ctx, network, address)
+		},
+	}
+	t.Cleanup(transport.CloseIdleConnections)
+	return transport
 }
 
 // logInToDex does what a user does in the browser: follows the redirect to
