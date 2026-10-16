@@ -428,6 +428,12 @@ func TestParseExternalAuthChallenge(t *testing.T) {
 			wantRedirect: "https://t/initiate",
 		},
 		{
+			name:         "client credentials parameters of Trino 484",
+			headers:      []string{`Bearer x_redirect_server="https://t/initiate", x_token_server="https://t/token", x_token_endpoint="https://idp/token", scope="openid profile"`},
+			wantToken:    "https://t/token",
+			wantRedirect: "https://t/initiate",
+		},
+		{
 			name:      "token server only",
 			headers:   []string{`Bearer x_token_server="https://t/token"`},
 			wantToken: "https://t/token",

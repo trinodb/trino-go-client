@@ -172,6 +172,9 @@ field that a DSN cannot carry is set.
 | [`forwardAuthorizationHeader`](#forwardauthorizationheader) | `ForwardAuthorizationHeader` | `false` | Allow a per-query `accessToken` argument |
 | [`externalAuthentication`](#externalauthentication) | `ExternalAuthentication` | `false` | Log in through the browser |
 | [`externalAuthenticationTimeout`](#externalauthenticationtimeout) | `ExternalAuthenticationTimeout` | 2m | How long to wait for the login |
+| [`oauth2ClientId`, `oauth2ClientSecret`](#oauth2clientid--oauth2clientsecret) | `OAuth2ClientID`, `OAuth2ClientSecret` | empty | OAuth2 client credentials |
+| [`oauth2TokenEndpoint`](#oauth2tokenendpoint) | `OAuth2TokenEndpoint` | advertised by the server | The only token endpoint the client secret is sent to |
+| [`oauth2Scope`](#oauth2scope) | `OAuth2Scope` | advertised by the server | Scope requested with the client credentials |
 | [`KerberosEnabled`](#kerberosenabled) | `KerberosEnabled` | `false` | Kerberos authentication |
 | [`KerberosKeytabPath`](#kerberoskeytabpath) | `KerberosKeytabPath` | empty | Keytab to log in with |
 | [`KerberosCredentialCachePath`](#kerberoscredentialcachepath) | `KerberosCredentialCachePath` | `KRB5CCNAME` | Credential cache to reuse a ticket from |
@@ -523,6 +526,41 @@ Default:        unset (2m)
 The `externalAuthenticationTimeout` parameter sets how long the driver waits for
 the user to log in.
 
+#### `oauth2ClientId` / `oauth2ClientSecret`
+
+```
+Type:           string
+Valid values:   the client ID and secret registered with the identity provider
+Default:        empty
+```
+
+The `oauth2ClientId` and `oauth2ClientSecret` parameters enable [OAuth2 client
+credentials](#oauth2-client-credentials) authentication. They must be set
+together and require HTTPS.
+
+#### `oauth2TokenEndpoint`
+
+```
+Type:           string
+Valid values:   an https:// URL
+Default:        empty (the token endpoint the server advertises)
+```
+
+The `oauth2TokenEndpoint` parameter pins the token endpoint the client
+credentials are sent to. A different token endpoint advertised by the server
+is rejected. It requires `oauth2ClientId`.
+
+#### `oauth2Scope`
+
+```
+Type:           string
+Valid values:   space separated scopes
+Default:        empty (the scope the server advertises)
+```
+
+The `oauth2Scope` parameter sets the scope requested from the token endpoint,
+overriding the scope the server advertises. It requires `oauth2ClientId`.
+
 #### `KerberosEnabled`
 
 ```
@@ -819,7 +857,55 @@ until a token is cached.
 
 ### OAuth2 client credentials
 
-A service can obtain tokens with the OAuth2 client credentials grant through an
+A service without a user to log in can authenticate to a coordinator that uses
+[OAuth2 authentication](https://trino.io/docs/current/security/oauth2.html)
+with the OAuth2 client credentials grant, by setting
+[`oauth2ClientId` and `oauth2ClientSecret`](#oauth2clientid--oauth2clientsecret)
+to a client registered with the coordinator's identity provider. A request
+without a valid token is rejected by the coordinator, and Trino 484 and later
+advertise the identity provider's token endpoint and the scope to request in
+the `WWW-Authenticate` challenge of that response. The driver then exchanges
+the client ID and secret for an access token at that endpoint, by posting
+`grant_type=client_credentials` with the client ID and secret as form fields
+(`client_secret_post`), and sends the rejected request again with the access
+token as a bearer token.
+
+```go
+connector, err := trino.NewConnector(&trino.Config{
+	ServerURI:          "https://trino.example.com:8443",
+	OAuth2ClientID:     "trino-client",
+	OAuth2ClientSecret: secret,
+})
+```
+
+The same settings in a DSN:
+
+```
+https://trino.example.com:8443?oauth2ClientId=trino-client&oauth2ClientSecret=...
+```
+
+The token is shared by all connections of a `Connector` and is sent with
+every request until 30 seconds before the `expires_in` the token endpoint
+returned, or 5 minutes when it returned none; the next request then gets a new
+token. A token the coordinator rejects is replaced once per request.
+
+The client secret is never sent to the coordinator, and only to an `https://`
+token endpoint, which does not follow redirects. Set
+[`oauth2TokenEndpoint`](#oauth2tokenendpoint) to send it only to an endpoint
+you trust: the driver then rejects a different endpoint the coordinator
+advertises, so a compromised coordinator cannot collect the secret. It also
+lets the driver use the client credentials grant with coordinators older than
+Trino 484, which do not advertise an endpoint. Set
+[`oauth2Scope`](#oauth2scope) to request another scope than the one the
+coordinator advertises. The token endpoint is reached with the same HTTP
+client, TLS settings and proxy as the coordinator.
+
+Client credentials authentication **requires HTTPS**, and cannot be combined
+with external authentication, a password, an `accessToken`, Kerberos, or
+`forwardAuthorizationHeader`.
+
+An identity provider that needs another way to authenticate the client, like
+HTTP Basic authentication (`client_secret_basic`), can be used through an
 `HTTPClient` from
 [golang.org/x/oauth2](https://pkg.go.dev/golang.org/x/oauth2/clientcredentials),
 which adds the token to every request and renews it when it expires:

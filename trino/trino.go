@@ -266,12 +266,13 @@ var (
 // Connector opens connections from a Config, including the fields a DSN
 // cannot carry. Use it with sql.OpenDB.
 type Connector struct {
-	conf         *Config
-	externalAuth *externalAuthenticator
+	conf              *Config
+	externalAuth      *externalAuthenticator
+	clientCredentials *clientCredentialsAuthenticator
 }
 
 func newConnector(conf *Config) *Connector {
-	return &Connector{conf: conf, externalAuth: newExternalAuthenticator(conf)}
+	return &Connector{conf: conf, externalAuth: newExternalAuthenticator(conf), clientCredentials: newClientCredentialsAuthenticator(conf)}
 }
 
 var _ driver.Connector = &Connector{}
@@ -330,7 +331,7 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return newConnFromConfig(c.conf, c.externalAuth)
+	return newConnFromConfig(c.conf, c.externalAuth, c.clientCredentials)
 }
 
 func (c *Connector) Driver() driver.Driver {
@@ -385,6 +386,11 @@ type Config struct {
 
 	ExternalAuthentication        bool           // Obtain a token through the server's external authentication, e.g. OAuth2, when it rejects a request (optional; DSN: externalAuthentication)
 	ExternalAuthenticationTimeout *time.Duration // Time the user has to authenticate (optional, default is 2m; DSN: externalAuthenticationTimeout)
+
+	OAuth2ClientID      string // Client ID for the OAuth2 client credentials flow, which obtains a token when the server rejects a request (optional, requires OAuth2ClientSecret; DSN: oauth2ClientId)
+	OAuth2ClientSecret  string // Client secret for the OAuth2 client credentials flow (optional; DSN: oauth2ClientSecret)
+	OAuth2TokenEndpoint string // https URL of the only token endpoint the client secret is sent to; a different one advertised by the server is rejected (optional, default is the one the server advertises; DSN: oauth2TokenEndpoint)
+	OAuth2Scope         string // Scope requested from the token endpoint instead of the one the server advertises (optional; DSN: oauth2Scope)
 
 	KerberosCredentialCachePath      string // Credential cache holding a ticket from kinit, used instead of a keytab (optional, default is KRB5CCNAME, then /tmp/krb5cc_<uid>, when no keytab is given)
 	KerberosServicePrincipalPattern  string // Coordinator service principal, with ${SERVICE} and ${HOST} replaced (optional, default is ${SERVICE}@${HOST})
@@ -560,6 +566,11 @@ func ParseDSN(dsn string) (*Config, error) {
 		config.ExternalAuthenticationTimeout = &timeout
 	}
 
+	config.OAuth2ClientID = query.Get(oauth2ClientIDConfig)
+	config.OAuth2ClientSecret = query.Get(oauth2ClientSecretConfig)
+	config.OAuth2TokenEndpoint = query.Get(oauth2TokenEndpointConfig)
+	config.OAuth2Scope = query.Get(oauth2ScopeConfig)
+
 	if kerberosParam := query.Get(kerberosEnabledConfig); kerberosParam != "" {
 		enabled, err := strconv.ParseBool(kerberosParam)
 		if err != nil {
@@ -646,6 +657,9 @@ func ParseDSN(dsn string) (*Config, error) {
 	if err := validateProxyAddress(socksProxyConfig, config.SOCKSProxy); err != nil {
 		return nil, err
 	}
+	if err := config.validateClientCredentialsOptions(serverURL); err != nil {
+		return nil, err
+	}
 
 	config.applyDefaults()
 	return config, nil
@@ -718,6 +732,9 @@ func (c *Config) validate(serverURL *url.URL) error {
 	}
 	if c.ExternalAuthenticationTimeout != nil && *c.ExternalAuthenticationTimeout <= 0 {
 		return fmt.Errorf("trino: %s must be positive, got %s", externalAuthenticationTimeoutConfig, *c.ExternalAuthenticationTimeout)
+	}
+	if err := c.validateClientCredentials(serverURL); err != nil {
+		return err
 	}
 	if c.HeartbeatInterval != nil && *c.HeartbeatInterval <= 0 {
 		return fmt.Errorf("trino: heartbeat_interval must be positive, got %s", *c.HeartbeatInterval)
@@ -962,6 +979,16 @@ func (c *Config) FormatDSN() (string, error) {
 	}
 	if c.ExternalAuthenticationTimeout != nil {
 		query.Add(externalAuthenticationTimeoutConfig, c.ExternalAuthenticationTimeout.String())
+	}
+	if c.OAuth2ClientID != "" {
+		query.Add(oauth2ClientIDConfig, c.OAuth2ClientID)
+		query.Add(oauth2ClientSecretConfig, c.OAuth2ClientSecret)
+	}
+	if c.OAuth2TokenEndpoint != "" {
+		query.Add(oauth2TokenEndpointConfig, c.OAuth2TokenEndpoint)
+	}
+	if c.OAuth2Scope != "" {
+		query.Add(oauth2ScopeConfig, c.OAuth2Scope)
 	}
 
 	if c.DisableExplicitPrepare {
@@ -1241,9 +1268,10 @@ type Conn struct {
 	retryLimit        retryLimit
 	// timeZone is sent as X-Trino-Time-Zone; sessionTimeZone is set when the
 	// server reports a SET TIME ZONE and takes precedence while it lasts
-	timeZone        *time.Location
-	sessionTimeZone *time.Location
-	externalAuth    *externalAuthenticator
+	timeZone          *time.Location
+	sessionTimeZone   *time.Location
+	externalAuth      *externalAuthenticator
+	clientCredentials *clientCredentialsAuthenticator
 }
 
 var (
@@ -1321,15 +1349,18 @@ func newConn(dsn string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newConnFromConfig(conf, newExternalAuthenticator(conf))
+	return newConnFromConfig(conf, newExternalAuthenticator(conf), newClientCredentialsAuthenticator(conf))
 }
 
-func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn, error) {
+func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, clientCredentials *clientCredentialsAuthenticator) (*Conn, error) {
 	serverURL, err := url.Parse(conf.ServerURI)
 	if err != nil {
 		return nil, fmt.Errorf("trino: invalid server URL: %w", err)
 	}
 	if err := conf.validateExternalAuthentication(serverURL); err != nil {
+		return nil, err
+	}
+	if err := conf.validateClientCredentials(serverURL); err != nil {
 		return nil, err
 	}
 	if err := conf.validateCustomClientTLS(); err != nil {
@@ -1396,6 +1427,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator) (*Conn
 		retryLimit:                 retryLimit{timeout: DefaultRequestRetryTimeout, maxAttempts: DefaultRequestRetryMaxAttempts},
 		timeZone:                   timeZone,
 		externalAuth:               externalAuth,
+		clientCredentials:          clientCredentials,
 		resourceEstimates:          maps.Clone(conf.ResourceEstimates),
 	}
 
@@ -1875,6 +1907,11 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 			req.Header.Set(authorizationHeader, getAuthorization(token))
 		}
 	}
+	if c.clientCredentials != nil {
+		if token := c.clientCredentials.cachedToken(); token != "" {
+			req.Header.Set(authorizationHeader, getAuthorization(token))
+		}
+	}
 	for k, v := range hs {
 		req.Header[k] = v
 	}
@@ -1965,6 +2002,13 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 				Reason:     fmt.Errorf("redirect to %s not followed", resp.Header.Get("Location")),
 			}
 		case http.StatusUnauthorized:
+			if c.clientCredentials != nil && !reauthenticated {
+				if err := c.authenticateWithClientCredentials(ctx, req, resp); err != nil {
+					return nil, err
+				}
+				reauthenticated = true
+				continue
+			}
 			if c.externalAuth == nil || reauthenticated {
 				return nil, newErrQueryFailedFromResponse(resp)
 			}
@@ -1997,6 +2041,22 @@ func (c *Conn) roundTrip(ctx context.Context, req *http.Request) (*http.Response
 			return nil, newErrQueryFailedFromResponse(resp)
 		}
 	}
+}
+
+// authenticateWithClientCredentials sets a new token on req, which the
+// coordinator rejected with resp, and rewinds its body to send it again.
+func (c *Conn) authenticateWithClientCredentials(ctx context.Context, req *http.Request, resp *http.Response) error {
+	resp.Body.Close()
+	rejected := strings.TrimPrefix(req.Header.Get(authorizationHeader), "Bearer ")
+	token, err := c.clientCredentials.authenticate(ctx, &c.httpClient, parseClientCredentialsChallenge(resp.Header), rejected)
+	if err != nil {
+		return &ErrQueryFailed{StatusCode: resp.StatusCode, Reason: err}
+	}
+	if err := rewindRequestBody(req); err != nil {
+		return &ErrQueryFailed{Reason: err}
+	}
+	req.Header.Set(authorizationHeader, getAuthorization(token))
+	return nil
 }
 
 // retryLimit ends retrying at whichever limit is reached first.

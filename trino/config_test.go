@@ -546,6 +546,10 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"heartbeat_interval=45s&" +
 		"externalAuthentication=true&" +
 		"externalAuthenticationTimeout=5m&" +
+		"oauth2ClientId=client-id&" +
+		"oauth2ClientSecret=client-secret&" +
+		"oauth2TokenEndpoint=https%3A%2F%2Fidp.example.com%2Ftoken&" +
+		"oauth2Scope=openid%20profile&" +
 		"roles=catalog1%3Arole1%3Bcatalog2%3Arole2"
 
 	config, err := ParseDSN(complexDSN)
@@ -623,6 +627,10 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.True(t, config.ExternalAuthentication)
 	require.NotNil(t, config.ExternalAuthenticationTimeout)
 	assert.Equal(t, 5*time.Minute, *config.ExternalAuthenticationTimeout)
+	assert.Equal(t, "client-id", config.OAuth2ClientID)
+	assert.Equal(t, "client-secret", config.OAuth2ClientSecret)
+	assert.Equal(t, "https://idp.example.com/token", config.OAuth2TokenEndpoint)
+	assert.Equal(t, "openid profile", config.OAuth2Scope)
 }
 
 func TestParseDSNPasswordRequiresTLS(t *testing.T) {
@@ -1183,7 +1191,7 @@ func TestSSLVerificationModes(t *testing.T) {
 // loopback hosts, so a request through an environment proxy cannot be tested.
 func TestTLSTransportKeepsDefaultTransportSettings(t *testing.T) {
 	t.Parallel()
-	conn, err := newConnFromConfig(&Config{ServerURI: "https://localhost:8443", SSLVerification: SSLVerificationNone}, nil)
+	conn, err := newConnFromConfig(&Config{ServerURI: "https://localhost:8443", SSLVerification: SSLVerificationNone}, nil, nil)
 	require.NoError(t, err)
 
 	transport, ok := conn.httpClient.Transport.(*http.Transport)

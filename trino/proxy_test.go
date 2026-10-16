@@ -125,11 +125,11 @@ func TestProxyDSNRejected(t *testing.T) {
 // Without a proxy, http.DefaultTransport keeps taking it from the environment.
 func TestProxyTransport(t *testing.T) {
 	t.Parallel()
-	conn, err := newConnFromConfig(&Config{ServerURI: "http://localhost:8080"}, nil)
+	conn, err := newConnFromConfig(&Config{ServerURI: "http://localhost:8080"}, nil, nil)
 	require.NoError(t, err)
 	assert.Nil(t, conn.httpClient.Transport, "http.DefaultTransport applies")
 
-	conn, err = newConnFromConfig(&Config{ServerURI: "http://localhost:8080", HTTPProxy: "proxy:3128"}, nil)
+	conn, err = newConnFromConfig(&Config{ServerURI: "http://localhost:8080", HTTPProxy: "proxy:3128"}, nil, nil)
 	require.NoError(t, err)
 	transport, ok := conn.httpClient.Transport.(*http.Transport)
 	require.True(t, ok)
