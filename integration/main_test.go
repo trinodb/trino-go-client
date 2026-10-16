@@ -209,9 +209,9 @@ func startContainers(ctx context.Context) {
 			wd+"/etc/catalog/iceberg.properties:/etc/trino/catalog/iceberg.properties",
 		)
 	}
-	var dexAddress string
+	var dexAddress, dexTLSAddress string
 	if imageVersion >= 477 {
-		dexAddress = setupDex(ctx, wd+"/etc/dex.yaml")
+		dexAddress, dexTLSAddress = setupDex(ctx, wd+"/etc/dex.yaml")
 	}
 	switch {
 	case imageVersion < 466:
@@ -274,6 +274,7 @@ func startContainers(ctx context.Context) {
 	if dexAddress != "" {
 		oauth2Addresses = map[string]string{
 			DockerDexName + ":5556": dexAddress,
+			DockerDexName + ":5554": dexTLSAddress,
 			"trino:8443":            "localhost:" + trinoContainer.GetPort("8443/tcp"),
 		}
 	}
@@ -416,15 +417,20 @@ func envOrDefault(name, fallback string) string {
 }
 
 // setupDex starts the OAuth2 provider Trino is configured with, which must be
-// up before Trino reads its discovery document.
-func setupDex(ctx context.Context, configPath string) string {
+// up before Trino reads its discovery document, and returns the addresses of
+// its http and https listeners. Version 2.46.0 added the client credentials
+// grant.
+func setupDex(ctx context.Context, configPath string) (string, string) {
 	dex := runContainer(ctx, "ghcr.io/dexidp/dex",
 		dt.WithName(DockerDexName),
-		dt.WithTag("v2.45.1"),
-		dt.WithMounts([]string{configPath + ":/etc/dex/config.yaml"}),
+		dt.WithTag("v2.46.0"),
+		dt.WithMounts([]string{configPath + ":/etc/dex/config.yaml", secretsDir + ":/etc/dex/secrets"}),
 		dt.WithCmd([]string{"dex", "serve", "/etc/dex/config.yaml"}),
 		dt.WithContainerConfig(func(c *container.Config) {
-			c.ExposedPorts = network.PortSet{network.MustParsePort("5556/tcp"): {}}
+			c.ExposedPorts = network.PortSet{
+				network.MustParsePort("5556/tcp"): {},
+				network.MustParsePort("5554/tcp"): {},
+			}
 		}),
 		dt.WithHostConfig(func(hc *container.HostConfig) {
 			hc.NetworkMode = container.NetworkMode(trinoNetwork.ID())
@@ -444,7 +450,7 @@ func setupDex(ctx context.Context, configPath string) string {
 	}); err != nil {
 		setupFatal(ctx, "Timed out waiting for Dex: %s\nContainer logs:\n%s", err, getLogs(ctx, dex))
 	}
-	return address
+	return address, "localhost:" + dex.GetPort("5554/tcp")
 }
 
 // imageVersion is the Trino version the -trino_image_tag names, used for the
@@ -751,7 +757,7 @@ func generateCerts(dir string) error {
 		Subject: pkix.Name{
 			Organization: []string{"Trino Software Foundation"},
 		},
-		DNSNames:              []string{"localhost", "trino"},
+		DNSNames:              []string{"localhost", "trino", DockerDexName},
 		NotBefore:             time.Now(),
 		NotAfter:              time.Now().Add(1 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,

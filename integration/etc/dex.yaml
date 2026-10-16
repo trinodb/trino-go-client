@@ -1,12 +1,21 @@
-# OAuth2 provider for the external authentication test. The test reaches the
-# containers as dex:5556 and trino:8443, the names Trino uses on the network.
+# OAuth2 provider for the external authentication and client credentials
+# tests. The test reaches the containers as dex:5556, dex:5554 and trino:8443,
+# the names Trino uses on the network. The client credentials flow sends the
+# secret only to an https token endpoint, so Trino advertises the one on 5554.
 issuer: http://dex:5556/dex
 storage:
   type: memory
 web:
   http: 0.0.0.0:5556
+  https: 0.0.0.0:5554
+  tlsCert: /etc/dex/secrets/certificate.pem
+  tlsKey: /etc/dex/secrets/private_key.pem
 oauth2:
   skipApprovalScreen: true
+  grantTypes:
+    - authorization_code
+    - refresh_token
+    - client_credentials
 enablePasswordDB: true
 staticClients:
   - id: trino
@@ -14,6 +23,11 @@ staticClients:
     secret: trino-secret
     redirectURIs:
       - https://trino:8443/oauth2/callback
+  # Trino trusts tokens for this client through its additional audiences, and
+  # takes the user from the name claim, which is the client name.
+  - id: trino-go-client
+    name: go-client
+    secret: go-client-secret
 staticPasswords:
   - email: test@example.com
     username: test
