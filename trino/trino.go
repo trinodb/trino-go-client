@@ -3189,11 +3189,7 @@ func (qr *driverRows) Columns() []string {
 }
 
 func (qr *driverRows) ColumnTypeDatabaseTypeName(index int) string {
-	typeName := qr.coltype[index].parsedType[0]
-	if typeName == "map" || typeName == "array" || typeName == "row" {
-		typeName = qr.coltype[index].typeName
-	}
-	return strings.ToUpper(typeName)
+	return qr.coltype[index].databaseTypeName
 }
 
 func (qr *driverRows) ColumnTypeScanType(index int) reflect.Type {
@@ -4195,12 +4191,11 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 // columnType describes a column the way the driver.RowsColumnType*
 // methods report it.
 type columnType struct {
-	typeName   string
-	parsedType []string
-	scanType   reflect.Type
-	precision  optionalInt64
-	scale      optionalInt64
-	size       optionalInt64
+	databaseTypeName string
+	scanType         reflect.Type
+	precision        optionalInt64
+	scale            optionalInt64
+	size             optionalInt64
 }
 
 type optionalInt64 struct {
@@ -4213,10 +4208,7 @@ func newOptionalInt64(value int64) optionalInt64 {
 }
 
 func newColumnType(typeName string, signature typeSignature) (*columnType, error) {
-	result := &columnType{
-		typeName:   typeName,
-		parsedType: getNestedTypes([]string{}, signature),
-	}
+	result := &columnType{databaseTypeName: databaseTypeName(typeName, signature.RawType)}
 	var err error
 	result.scanType, err = getScanType(signature)
 	if err != nil {
@@ -4255,17 +4247,14 @@ func newColumnType(typeName string, signature typeSignature) (*columnType, error
 	return result, nil
 }
 
-func getNestedTypes(types []string, signature typeSignature) []string {
-	types = append(types, signature.RawType)
-	if len(signature.Arguments) == 1 {
-		switch signature.Arguments[0].Kind {
-		case KIND_TYPE:
-			types = getNestedTypes(types, signature.Arguments[0].typeSignature)
-		case KIND_NAMED_TYPE:
-			types = getNestedTypes(types, signature.Arguments[0].namedTypeSignature.TypeSignature)
-		}
+// databaseTypeName names a container by its full type, since its raw type
+// alone does not say what it holds, and any other type by its raw type,
+// leaving its parameters to ColumnTypeLength and ColumnTypePrecisionScale.
+func databaseTypeName(typeName, rawType string) string {
+	if rawType == "map" || rawType == "array" || rawType == "row" {
+		return strings.ToUpper(typeName)
 	}
-	return types
+	return strings.ToUpper(rawType)
 }
 
 // getScanType returns the type ColumnTypeScanType reports. An ARRAY or MAP
