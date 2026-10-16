@@ -1201,9 +1201,11 @@ types:
   passed to Trino as a time with a time zone
 * the result of `trino.Timestamp(year, month, day, hour, minute, second,
   nanosecond)` - passed to Trino as a timestamp without a time zone
-* `time.Duration` - passed to Trino as an interval day to second. Because Trino
-  does not support nanosecond precision for intervals, if the nanosecond part
-  of the value is not zero, an error will be returned.
+* `time.Duration` - passed to Trino as an interval day to second. A whole
+  number of milliseconds works with every Trino version. A finer duration, like
+  `1500 * time.Microsecond`, is passed with its precision declared, as in
+  `INTERVAL '0.0015' SECOND(1, 4)`, which needs Trino 484 or later; older
+  servers reject the query instead of truncating the value to milliseconds.
 * `trino.Interval` - passed to Trino as an interval year to month when
   `Months` is set, and otherwise as an interval day to second like a
   `time.Duration`. Setting both `Months` and `Duration` is an error, and an

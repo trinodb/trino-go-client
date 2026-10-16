@@ -291,7 +291,7 @@ func serialDuration(dur time.Duration) (string, error) {
 	case dur%time.Millisecond == 0:
 		return serialMillisecondsInterval(dur)
 	default:
-		return "", fmt.Errorf("trino: duration %v is not a multiple of hours, minutes, seconds or milliseconds", dur)
+		return serialFractionalSecondsInterval(dur), nil
 	}
 }
 
@@ -325,4 +325,18 @@ func serialMillisecondsInterval(dur time.Duration) (string, error) {
 		intervalNr = "-" + intervalNr
 	}
 	return "INTERVAL '" + intervalNr + "' SECOND", nil
+}
+
+// serialFractionalSecondsInterval declares the precision the fraction needs,
+// which only Trino 484 and later accept. An older server would truncate the
+// same literal without a precision to milliseconds, so it rejects the query
+// instead of comparing against a different value.
+func serialFractionalSecondsInterval(dur time.Duration) string {
+	sign := ""
+	if dur < 0 {
+		sign = "-"
+	}
+	seconds := strconv.FormatInt(int64((dur / time.Second).Abs()), 10)
+	fraction := strings.TrimRight(fmt.Sprintf("%09d", int64((dur%time.Second).Abs())), "0")
+	return fmt.Sprintf("INTERVAL '%s%s.%s' SECOND(%d, %d)", sign, seconds, fraction, len(seconds), len(fraction))
 }
