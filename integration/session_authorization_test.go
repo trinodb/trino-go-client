@@ -43,3 +43,28 @@ func TestIntegrationSessionAuthorization(t *testing.T) {
 	require.NoError(t, conn.QueryRowContext(ctx, "SELECT current_user").Scan(&current))
 	assert.Equal(t, user, current, "current_user after RESET SESSION AUTHORIZATION")
 }
+
+// Trino 484 stopped lowercasing the user named in SET SESSION AUTHORIZATION.
+// Switching to the connection's own mixed-case user needs no impersonation
+// rule, so the switch only succeeds when the name reaches the server verbatim.
+func TestIntegrationSessionAuthorizationKeepsUserCase(t *testing.T) {
+	requireServerVersion(t, 484)
+	parsed, err := url.Parse(integrationDSN(t))
+	require.NoError(t, err)
+	const user = "MixedCaseUser"
+	parsed.User = url.User(user)
+
+	db := integrationOpen(t, parsed.String())
+	ctx := context.Background()
+
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	_, err = conn.ExecContext(ctx, "SET SESSION AUTHORIZATION "+user)
+	require.NoError(t, err, "a lowercased user name would be denied as impersonation")
+
+	var current string
+	require.NoError(t, conn.QueryRowContext(ctx, "SELECT current_user").Scan(&current))
+	assert.Equal(t, user, current, "current_user after SET SESSION AUTHORIZATION")
+}
