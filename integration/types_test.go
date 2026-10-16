@@ -471,6 +471,32 @@ func TestIntegrationIntervalArgs(t *testing.T) {
 	}
 }
 
+// A duration finer than milliseconds is sent with an explicit precision,
+// which servers before Trino 484 reject rather than truncate.
+func TestIntegrationSubMillisecondIntervalArgs(t *testing.T) {
+	db := integrationOpen(t)
+	if serverVersion < 484 {
+		var equal bool
+		err := db.QueryRow("SELECT ? = INTERVAL '0.001' SECOND", 1500*time.Microsecond).Scan(&equal)
+		require.Error(t, err, "a server before Trino 484 must reject a sub-millisecond interval argument")
+		return
+	}
+	for _, tc := range []struct {
+		arg     time.Duration
+		literal string
+	}{
+		{1500 * time.Microsecond, "INTERVAL '0.0015' SECOND(1, 4)"},
+		{-time.Nanosecond, "INTERVAL '-0.000000001' SECOND(1, 9)"},
+		{3*24*time.Hour + 4*time.Hour + 5*time.Minute + 6*time.Second + 789123456*time.Nanosecond, "INTERVAL '3 04:05:06.789123456' DAY TO SECOND(9)"},
+		{math.MaxInt64, "INTERVAL '106751 23:47:16.854775807' DAY(6) TO SECOND(9)"},
+		{math.MinInt64, "INTERVAL '-106751 23:47:16.854775808' DAY(6) TO SECOND(9)"},
+	} {
+		var equal bool
+		require.NoError(t, db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal), tc.literal)
+		assert.True(t, equal, "%v did not round-trip as %s", tc.arg, tc.literal)
+	}
+}
+
 func TestIntegrationIntervalScan(t *testing.T) {
 	db := integrationOpen(t)
 	for _, tc := range []struct {
