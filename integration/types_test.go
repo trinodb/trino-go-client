@@ -530,6 +530,103 @@ func TestIntegrationIntervalScan(t *testing.T) {
 	assert.ErrorContains(t, err, "overflows time.Duration")
 }
 
+func TestIntegrationParametricIntervalScan(t *testing.T) {
+	requireServerVersion(t, 484)
+	db := integrationOpen(t)
+	for _, tc := range []struct {
+		expression string
+		want       trino.Interval
+	}{
+		{"INTERVAL '1' SECOND(2, 0)", trino.Interval{Duration: time.Second, Valid: true}},
+		{"INTERVAL '1.123' SECOND(2, 3)", trino.Interval{Duration: time.Second + 123*time.Millisecond, Valid: true}},
+		{"INTERVAL '1.123456' SECOND(2, 6)", trino.Interval{Duration: time.Second + 123456*time.Microsecond, Valid: true}},
+		{"INTERVAL '1.123456789' SECOND(2, 9)", trino.Interval{Duration: time.Second + 123456789*time.Nanosecond, Valid: true}},
+		{"INTERVAL '1.123456789012' SECOND(12)", trino.Interval{Duration: time.Second + 123456789*time.Nanosecond, Picoseconds: 12, Valid: true}},
+		{"INTERVAL '-1.000000000001' SECOND(12)", trino.Interval{Duration: -time.Second, Picoseconds: -1, Valid: true}},
+		{"INTERVAL '1.5' SECOND", trino.Interval{Duration: 1500 * time.Millisecond, Valid: true}},
+		{"INTERVAL '3 04:05:06.789' DAY(3) TO SECOND(9)", trino.Interval{Duration: 3*24*time.Hour + 4*time.Hour + 5*time.Minute + 6*time.Second + 789*time.Millisecond, Valid: true}},
+		{"INTERVAL '1 02' DAY TO HOUR", trino.Interval{Duration: 26 * time.Hour, Valid: true}},
+		{"INTERVAL '-106751 23:47:16.854775808' DAY(6) TO SECOND(9)", trino.Interval{Duration: math.MinInt64, Valid: true}},
+		{"INTERVAL '12345' YEAR(5) TO MONTH", trino.Interval{Months: 12345 * 12, Valid: true}},
+	} {
+		var got trino.Interval
+		require.NoError(t, db.QueryRow("SELECT "+tc.expression).Scan(&got), tc.expression)
+		assert.Equal(t, tc.want, got, tc.expression)
+	}
+
+	rows, err := db.Query("SELECT INTERVAL '1.123456789012' SECOND(12), INTERVAL '3 04:05:06.789' DAY(3) TO SECOND(9), INTERVAL '1 02' DAY TO HOUR, INTERVAL '12345' YEAR(5) TO MONTH")
+	require.NoError(t, err)
+	defer rows.Close()
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err)
+	type metadata struct {
+		name             string
+		precision, scale int64
+	}
+	var got []metadata
+	for _, columnType := range columnTypes {
+		precision, scale, ok := columnType.DecimalSize()
+		require.True(t, ok, columnType.DatabaseTypeName())
+		got = append(got, metadata{columnType.DatabaseTypeName(), precision, scale})
+	}
+	assert.Equal(t, []metadata{
+		{"INTERVAL SECOND(12, 12)", 12, 12},
+		{"INTERVAL DAY(3) TO SECOND(9)", 3, 9},
+		{"INTERVAL DAY(1) TO HOUR", 1, 0},
+		{"INTERVAL YEAR(5) TO MONTH", 5, 0},
+	}, got)
+	require.NoError(t, rows.Close())
+
+	var array trino.NullSlice[trino.Interval]
+	var mapValue trino.NullMap[trino.Interval, trino.Interval]
+	var row trino.NullRow[struct {
+		A trino.Interval
+		B trino.Interval
+	}]
+	require.NoError(t, db.QueryRow("SELECT ARRAY[INTERVAL '1.123456789012' SECOND(12), NULL], "+
+		"MAP(ARRAY[INTERVAL '1.5' SECOND(1, 9)], ARRAY[INTERVAL '2' YEAR(3) TO MONTH]), "+
+		"CAST(ROW(INTERVAL '0.000001' SECOND(1, 6), INTERVAL '1' MINUTE) AS ROW(a INTERVAL SECOND(1, 6), b INTERVAL MINUTE(2)))").
+		Scan(&array, &mapValue, &row))
+	assert.Equal(t, []trino.Interval{{Duration: time.Second + 123456789*time.Nanosecond, Picoseconds: 12, Valid: true}, {}}, array.Slice)
+	assert.Equal(t, map[trino.Interval]trino.Interval{{Duration: 1500 * time.Millisecond, Valid: true}: {Months: 24, Valid: true}}, mapValue.Map)
+	assert.Equal(t, trino.Interval{Duration: time.Microsecond, Valid: true}, row.Row.A)
+	assert.Equal(t, trino.Interval{Duration: time.Minute, Valid: true}, row.Row.B)
+
+	for _, arg := range []trino.Interval{
+		{Duration: time.Second + 123456789*time.Nanosecond, Picoseconds: 12, Valid: true},
+		{Picoseconds: -1, Valid: true},
+		{Duration: math.MinInt64, Picoseconds: -999, Valid: true},
+	} {
+		var got trino.Interval
+		require.NoError(t, db.QueryRow("SELECT ?", arg).Scan(&got), "%+v", arg)
+		assert.Equal(t, arg, got)
+	}
+}
+
+// Without PARAMETRIC_INTERVAL, which servers before Trino 484 do not know,
+// intervals keep the type names and millisecond values they always had.
+func TestIntegrationIntervalScanBeforeParametricIntervals(t *testing.T) {
+	db := integrationOpen(t)
+	if serverVersion >= 484 {
+		t.Skipf("Skipping test: needs a server before Trino 484, the server runs %d", serverVersion)
+	}
+	rows, err := db.Query("SELECT INTERVAL '1.5' SECOND, INTERVAL '1' YEAR")
+	require.NoError(t, err)
+	defer rows.Close()
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err)
+	for i, want := range []string{"INTERVAL DAY TO SECOND", "INTERVAL YEAR TO MONTH"} {
+		assert.Equal(t, want, columnTypes[i].DatabaseTypeName())
+		_, _, ok := columnTypes[i].DecimalSize()
+		assert.False(t, ok, want)
+	}
+	require.True(t, rows.Next())
+	var seconds, year string
+	require.NoError(t, rows.Scan(&seconds, &year))
+	assert.Equal(t, "0 00:00:01.500", seconds)
+	assert.Equal(t, "1-0", year)
+}
+
 func TestIntegrationIntervalTypeArgs(t *testing.T) {
 	db := integrationOpen(t)
 	for _, tc := range []struct {
@@ -1174,6 +1271,10 @@ func TestQueryColumns(t *testing.T) {
 			reflect.TypeOf(sql.NullString{}),
 		},
 	}
+	if serverVersion >= 484 {
+		expectedTypes[22] = columnType{"INTERVAL MONTH(1)", true, 1, 0, false, 0, reflect.TypeOf(sql.NullString{})}
+		expectedTypes[23] = columnType{"INTERVAL DAY(1)", true, 1, 0, false, 0, reflect.TypeOf(sql.NullString{})}
+	}
 	actualTypes := make([]columnType, 33)
 	for i, column := range columnTypes {
 		actualTypes[i].typeName = column.DatabaseTypeName()
@@ -1297,6 +1398,12 @@ func TestMaxGoPrecisionDateTime(t *testing.T) {
 func TestIntegrationScanValues(t *testing.T) {
 	db := integrationOpen(t)
 	nanos := time.Date(2017, 7, 10, 1, 2, 3, 123456789, time.Local)
+	// Since Trino 484 a day-time interval has as many fractional digits as its
+	// precision, and INTERVAL '2' DAY has none.
+	twoDays := "2 00:00:00.000"
+	if serverVersion >= 484 {
+		twoDays = "2 00:00:00"
+	}
 	cases := []struct {
 		name  string
 		query string
@@ -1309,7 +1416,7 @@ func TestIntegrationScanValues(t *testing.T) {
 		{name: "uuid", query: "UUID '12151fd2-7586-11e9-8f9e-2a86e4085a59'", want: "12151fd2-7586-11e9-8f9e-2a86e4085a59"},
 		{name: "ipaddress", query: "IPADDRESS '10.0.0.1'", want: "10.0.0.1"},
 		{name: "interval year to month", query: "INTERVAL '3' MONTH", want: "0-3"},
-		{name: "interval day to second", query: "INTERVAL '2' DAY", want: "2 00:00:00.000"},
+		{name: "interval day to second", query: "INTERVAL '2' DAY", want: twoDays},
 		{name: "null", query: "CAST(NULL AS VARCHAR)", want: nil},
 		{name: "real NaN", query: "CAST(nan() AS REAL)", check: func(t *testing.T, got any) {
 			assert.True(t, math.IsNaN(got.(float64)), "got %v", got)

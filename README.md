@@ -1122,8 +1122,10 @@ types:
   servers reject the query instead of truncating the value to milliseconds.
 * `trino.Interval` - passed to Trino as an interval year to month when
   `Months` is set, and otherwise as an interval day to second like a
-  `time.Duration`. Setting both `Months` and `Duration` is an error, and an
-  `Interval` that is not `Valid` is passed as `NULL`.
+  `time.Duration`. Non-zero `Picoseconds` are passed with as many
+  fractional-second digits as they need, up to 12, which also needs Trino 484
+  or later. Setting `Months` together with `Duration` or `Picoseconds` is an
+  error, and an `Interval` that is not `Valid` is passed as `NULL`.
 
 It's not yet possible to pass:
 * `byte`
@@ -1187,6 +1189,22 @@ The details for some of the types:
   holds a year to month interval as `Months` and a day to second interval as a
   `time.Duration`. Scanning a day to second interval longer than about 292
   years, which a `time.Duration` cannot hold, returns an error
+* parametric intervals (Trino 484+) - intervals have a leading-field precision
+  and up to 12 fractional-second digits, like `INTERVAL SECOND(2, 12)` or
+  `INTERVAL DAY(3) TO SECOND(9)`, also inside an `ARRAY`, `MAP` or `ROW`, and
+  a value has exactly as many fractional digits as its type, none for a
+  precision of 0. Older servers send every day to second interval rounded to
+  milliseconds. `trino.Interval` keeps all 12 digits: `Duration` holds the
+  value truncated toward zero to nanoseconds, and `Picoseconds` the remaining
+  picoseconds, from -999 to 999, with the same sign as the value. A value with
+  more than 12 fractional digits is an error.
+  `sql.ColumnType.DatabaseTypeName()` returns the full type, like
+  `INTERVAL SECOND(2, 0)`, `INTERVAL DAY(3) TO SECOND(9)` or
+  `INTERVAL YEAR(5) TO MONTH`, and `sql.ColumnType.DecimalSize()` reports the
+  leading-field precision as the precision and the fractional-seconds
+  precision as the scale. Older servers
+  report `INTERVAL DAY TO SECOND` or `INTERVAL YEAR TO MONTH`, without a
+  precision or scale
 * `UUID` - returned as string
 * `VARIANT` (Trino 481+) - returned as `trino.Variant`, see
   [VARIANT](#variant)
