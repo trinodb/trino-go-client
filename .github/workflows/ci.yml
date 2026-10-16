@@ -14,8 +14,8 @@ jobs:
       matrix:
         go: ['1.27']
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
       - run: go test -v -race -timeout 30s ./...
@@ -27,8 +27,8 @@ jobs:
         # The integration module has its own go.mod, so every tool runs in both.
         module: ['.', 'integration']
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
       # The tools module pins the linters and their dependencies, so neither
@@ -43,8 +43,8 @@ jobs:
   fuzz:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
       # Plain `go test` only replays the seed corpus; this runs each target as a
@@ -82,8 +82,8 @@ jobs:
             trino: 'latest'
             spooling: 'storage'
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ matrix.go }}
       - run: go test -C integration -v -race -timeout 2m ./... -trino_image_tag=${{ matrix.trino }} -trino_spooling_retrieval_mode=${{ matrix.spooling }}
