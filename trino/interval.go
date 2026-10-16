@@ -9,20 +9,32 @@ import (
 )
 
 // Interval holds an INTERVAL YEAR TO MONTH as Months, or an INTERVAL DAY TO
-// SECOND as Duration. Valid is false for SQL NULL. As an argument, an
-// Interval with Months set is passed as an INTERVAL YEAR TO MONTH and any
-// other as an INTERVAL DAY TO SECOND, like a time.Duration; setting both is
-// an error, since Trino has no interval type that holds both.
+// SECOND as Duration and Picoseconds. Valid is false for SQL NULL. As an
+// argument, an Interval with Months set is passed as an INTERVAL YEAR TO
+// MONTH and any other as an INTERVAL DAY TO SECOND, like a time.Duration;
+// setting Months together with Duration or Picoseconds is an error, since
+// Trino has no interval type that holds both.
+//
+// Trino 484 and later send up to twelve fractional-second digits. Duration
+// holds the value truncated toward zero to whole nanoseconds, and
+// Picoseconds the rest, from -999 to 999, with the sign of the value.
 type Interval struct {
-	Months   int64
-	Duration time.Duration
-	Valid    bool
+	Months      int64
+	Duration    time.Duration
+	Picoseconds int
+	Valid       bool
 }
+
+const (
+	maxIntervalFractionDigits = 12
+	picosecondsPerNanosecond  = 1000
+)
 
 // Scan implements the sql.Scanner interface. It accepts the text the server
 // sends for both interval types: years-months, as in 1-2, and days followed
-// by hours, minutes and seconds, as in 3 04:05:06.789. A leading minus sign
-// applies to the whole value.
+// by hours, minutes and seconds, with up to twelve fractional digits or
+// none, as in 3 04:05:06.789. A leading minus sign applies to the whole
+// value.
 func (i *Interval) Scan(value interface{}) error {
 	var text string
 	switch v := value.(type) {
@@ -40,14 +52,11 @@ func (i *Interval) Scan(value interface{}) error {
 	negative := strings.HasPrefix(text, "-")
 	magnitude := strings.TrimPrefix(text, "-")
 	if days, clock, ok := strings.Cut(magnitude, " "); ok {
-		duration, err := parseDayToSecond(text, days, clock)
+		duration, picoseconds, err := parseDayToSecond(text, negative, days, clock)
 		if err != nil {
 			return err
 		}
-		if negative {
-			duration = -duration
-		}
-		*i = Interval{Duration: duration, Valid: true}
+		*i = Interval{Duration: duration, Picoseconds: picoseconds, Valid: true}
 		return nil
 	}
 
@@ -81,45 +90,56 @@ func parseYearToMonth(text, magnitude string) (int64, error) {
 	return years*12 + months, nil
 }
 
-func parseDayToSecond(text, daysText, clock string) (time.Duration, error) {
+// parseDayToSecond accumulates the magnitude unsigned, so the smallest
+// time.Duration, whose magnitude is one more than the largest, still fits.
+func parseDayToSecond(text string, negative bool, daysText, clock string) (time.Duration, int, error) {
 	days, err := parseIntervalField(text, daysText)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	parts := strings.Split(clock, ":")
 	if len(parts) != 3 {
-		return 0, invalidIntervalError(text)
+		return 0, 0, invalidIntervalError(text)
 	}
 	secondsText, fractionText, hasFraction := strings.Cut(parts[2], ".")
 	var fields [3]int64
 	for index, field := range []string{parts[0], parts[1], secondsText} {
 		if fields[index], err = parseIntervalField(text, field); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 	}
 	hours, minutes, seconds := fields[0], fields[1], fields[2]
 	if hours > 23 || minutes > 59 || seconds > 59 {
-		return 0, invalidIntervalError(text)
+		return 0, 0, invalidIntervalError(text)
 	}
-	var nanoseconds int64
+	var nanoseconds, picoseconds int64
 	if hasFraction {
-		if len(fractionText) > 9 {
-			return 0, invalidIntervalError(text)
+		if len(fractionText) > maxIntervalFractionDigits {
+			return 0, 0, invalidIntervalError(text)
 		}
 		fraction, err := parseIntervalField(text, fractionText)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		nanoseconds = fraction * int64(math.Pow10(9-len(fractionText)))
+		fractionPicoseconds := fraction * int64(math.Pow10(maxIntervalFractionDigits-len(fractionText)))
+		nanoseconds, picoseconds = fractionPicoseconds/picosecondsPerNanosecond, fractionPicoseconds%picosecondsPerNanosecond
 	}
 
-	withinDay := time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute +
-		time.Duration(seconds)*time.Second + time.Duration(nanoseconds)
-	const day = 24 * time.Hour
-	if days > int64(math.MaxInt64/day) || time.Duration(days)*day > math.MaxInt64-withinDay {
-		return 0, fmt.Errorf("trino: interval %q overflows time.Duration", text)
+	withinDay := uint64(time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute +
+		time.Duration(seconds)*time.Second + time.Duration(nanoseconds))
+	limit := uint64(math.MaxInt64)
+	if negative {
+		limit++
 	}
-	return time.Duration(days)*day + withinDay, nil
+	const day = uint64(24 * time.Hour)
+	if uint64(days) > limit/day || uint64(days)*day > limit-withinDay {
+		return 0, 0, fmt.Errorf("trino: interval %q overflows time.Duration", text)
+	}
+	magnitude := uint64(days)*day + withinDay
+	if negative {
+		return -time.Duration(magnitude), -int(picoseconds), nil
+	}
+	return time.Duration(magnitude), int(picoseconds), nil
 }
 
 // parseIntervalField reads an unsigned decimal field; the only sign an
@@ -143,10 +163,16 @@ func serialInterval(i Interval) (string, error) {
 	switch {
 	case !i.Valid:
 		return "NULL", nil
-	case i.Months != 0 && i.Duration != 0:
-		return "", fmt.Errorf("trino: interval with both months (%d) and a duration (%v) has no Trino type", i.Months, i.Duration)
+	case i.Months != 0 && (i.Duration != 0 || i.Picoseconds != 0):
+		return "", fmt.Errorf("trino: interval with both months (%d) and a duration (%v and %d picoseconds) has no Trino type", i.Months, i.Duration, i.Picoseconds)
 	case i.Months != 0:
 		return serialYearToMonth(i.Months)
+	case i.Picoseconds <= -picosecondsPerNanosecond || i.Picoseconds >= picosecondsPerNanosecond:
+		return "", fmt.Errorf("trino: interval picoseconds %d are out of range, they must be between -999 and 999", i.Picoseconds)
+	case i.Duration < 0 && i.Picoseconds > 0 || i.Duration > 0 && i.Picoseconds < 0:
+		return "", fmt.Errorf("trino: interval duration %v and picoseconds %d have different signs", i.Duration, i.Picoseconds)
+	case i.Picoseconds != 0:
+		return serialFractionalSecondsInterval(i.Duration, i.Picoseconds), nil
 	default:
 		return serialDuration(i.Duration)
 	}

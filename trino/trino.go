@@ -182,7 +182,7 @@ const (
 	trinoClientCapabilitiesHeader = trinoHeaderPrefix + `Client-Capabilities`
 	// clientCapabilities lists what the driver can decode; the server falls
 	// back to a plainer representation for every capability left out.
-	clientCapabilities = "PARAMETRIC_DATETIME,NUMBER,VARIANT,VARIANT_BINARY,PATH,SESSION_AUTHORIZATION"
+	clientCapabilities = "PARAMETRIC_DATETIME,PARAMETRIC_INTERVAL,NUMBER,VARIANT,VARIANT_BINARY,PATH,SESSION_AUTHORIZATION"
 	trinoEncoding      = "encoding"
 	trinoWarningsParam = "warnings"
 
@@ -4302,9 +4302,77 @@ func newColumnType(typeName string, signature typeSignature) (*columnType, error
 			}
 			result.precision = newOptionalInt64(signature.Arguments[0].long)
 		}
+	case "interval year to month", "interval day to second":
+		if err := describeInterval(result, signature); err != nil {
+			return nil, err
+		}
 	}
 
 	return result, nil
+}
+
+// intervalFields names the interval fields by the codes Trino sends as the
+// first two arguments of an interval type.
+var intervalFields = []string{"YEAR", "MONTH", "DAY", "HOUR", "MINUTE", "SECOND"}
+
+const (
+	intervalMonthField  = 1
+	intervalDayField    = 2
+	intervalSecondField = 5
+)
+
+// describeInterval names an interval by its qualifier, like INTERVAL DAY(3)
+// TO SECOND(9), and reports its leading-field precision as the precision and
+// its fractional-seconds precision as the scale, the way the JDBC driver does.
+// Without the PARAMETRIC_INTERVAL capability, or before Trino 484, the
+// server sends no arguments and the interval keeps its raw type name.
+func describeInterval(column *columnType, signature typeSignature) error {
+	if len(signature.Arguments) == 0 {
+		return nil
+	}
+	dayToSecond := signature.RawType == "interval day to second"
+	if len(signature.Arguments) != 3 && !(dayToSecond && len(signature.Arguments) == 4) {
+		return ErrInvalidResponseType
+	}
+	for _, argument := range signature.Arguments {
+		if argument.Kind != KIND_LONG {
+			return ErrInvalidResponseType
+		}
+	}
+	firstField, lastField := int64(0), int64(intervalMonthField)
+	if dayToSecond {
+		firstField, lastField = intervalDayField, intervalSecondField
+	}
+	start, end := signature.Arguments[0].long, signature.Arguments[1].long
+	if start < firstField || end > lastField || start > end {
+		return ErrInvalidResponseType
+	}
+
+	column.databaseTypeName = intervalTypeName(signature)
+	column.precision = newOptionalInt64(signature.Arguments[2].long)
+	if len(signature.Arguments) == 4 {
+		column.scale = newOptionalInt64(signature.Arguments[3].long)
+	}
+	return nil
+}
+
+// intervalTypeName renders the SQL qualifier the way the server names the
+// column type and the JDBC driver's getColumnTypeName does, like INTERVAL
+// SECOND(2, 0), INTERVAL DAY(3) TO SECOND(9) or INTERVAL YEAR(5) TO MONTH.
+func intervalTypeName(signature typeSignature) string {
+	start, end := signature.Arguments[0].long, signature.Arguments[1].long
+	leading := fmt.Sprintf("INTERVAL %s(%d)", intervalFields[start], signature.Arguments[2].long)
+	if end != intervalSecondField || len(signature.Arguments) != 4 {
+		if start == end {
+			return leading
+		}
+		return leading + " TO " + intervalFields[end]
+	}
+	fractional := signature.Arguments[3].long
+	if start == end {
+		return fmt.Sprintf("INTERVAL SECOND(%d, %d)", signature.Arguments[2].long, fractional)
+	}
+	return fmt.Sprintf("%s TO SECOND(%d)", leading, fractional)
 }
 
 // databaseTypeName names a container by its full type, since its raw type
