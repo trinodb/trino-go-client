@@ -312,7 +312,7 @@ func (fc *fakeCoordinator) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		heartbeat(w, r)
-	case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/v1/query/"):
+	case r.Method == http.MethodDelete && (strings.HasPrefix(r.URL.Path, "/v1/statement/"+fakeQueryID+"/") || r.URL.Path == "/v1/query/"+fakeQueryID):
 		w.WriteHeader(http.StatusNoContent)
 	case r.Method == http.MethodPost && r.URL.Path == "/v1/statement":
 		if statement != nil {

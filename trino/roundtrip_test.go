@@ -541,6 +541,9 @@ func TestRoundTripRefusesRedirectsAfterTheStatement(t *testing.T) {
 		// send makes the driver send the request and returns the error
 		// the caller sees.
 		send func(t *testing.T, db *sql.DB) error
+		// fallback is the request sent instead of the refused one, so the
+		// caller sees no error.
+		fallback string
 	}{
 		{
 			name:   "nextUri GET",
@@ -561,7 +564,7 @@ func TestRoundTripRefusesRedirectsAfterTheStatement(t *testing.T) {
 		{
 			name:   "cancel DELETE",
 			method: http.MethodDelete,
-			path:   "/v1/query/" + fakeQueryID,
+			path:   "/v1/statement/" + fakeQueryID + "/3",
 			pages: func() []page {
 				return []page{statementPage(), resultPage([][]any{{1}}), resultPage([][]any{{2}}), resultPage([][]any{{3}})}
 			},
@@ -571,6 +574,7 @@ func TestRoundTripRefusesRedirectsAfterTheStatement(t *testing.T) {
 				require.True(t, rows.Next())
 				return rows.Close()
 			},
+			fallback: "/v1/query/" + fakeQueryID,
 		},
 	}
 	for _, request := range requests {
@@ -594,28 +598,40 @@ func TestRoundTripRefusesRedirectsAfterTheStatement(t *testing.T) {
 				})
 
 				err := request.send(t, fc.open(t, ""))
+				var fallbacks int
+				for _, r := range fc.capturedRequests() {
+					assert.NotEqual(t, "/moved", r.path, "the redirect target should not receive the request")
+					if r.method == request.method && r.path == request.fallback {
+						fallbacks++
+					}
+				}
+				if request.fallback != "" {
+					require.NoError(t, err)
+					assert.Equal(t, 1, fallbacks, "the request should be sent to %s instead", request.fallback)
+					return
+				}
 				var queryFailed *ErrQueryFailed
 				require.ErrorAs(t, err, &queryFailed)
 				assert.Equal(t, status, queryFailed.StatusCode)
 				assert.ErrorContains(t, err, "redirect to "+fc.url()+"/moved not followed")
-				for _, r := range fc.capturedRequests() {
-					assert.NotEqual(t, "/moved", r.path, "the redirect target should not receive the request")
-				}
 			})
 		}
 	}
 }
 
-// Closing rows that have more than one page left sends a DELETE for the query.
-// The coordinator answers it with 204; any other answer is returned from Close.
+// Closing rows that have more than one page left sends a DELETE to the
+// nextUri. The coordinator answers it with 204, or with 404 when the query is
+// already gone; any other answer is returned from Close.
 func TestRowsCloseCancelsTheQuery(t *testing.T) {
 	t.Parallel()
-	t.Run(http.StatusText(http.StatusNoContent), func(t *testing.T) {
-		t.Parallel()
-		deletes, err := cancelQuery(t, http.StatusNoContent)
-		require.NoError(t, err)
-		assert.Equal(t, 1, deletes)
-	})
+	for _, status := range []int{http.StatusNoContent, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			t.Parallel()
+			deletes, err := cancelQuery(t, status)
+			require.NoError(t, err)
+			assert.Equal(t, 1, deletes)
+		})
+	}
 	for _, status := range []int{
 		http.StatusTooManyRequests,
 		http.StatusBadGateway,
@@ -636,7 +652,6 @@ func TestRowsCloseCancelsTheQuery(t *testing.T) {
 		http.StatusBadRequest,
 		http.StatusUnauthorized,
 		http.StatusForbidden,
-		http.StatusNotFound,
 		http.StatusInternalServerError,
 	} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
@@ -790,7 +805,7 @@ func TestFailedFirstPageCancelsTheQuery(t *testing.T) {
 func cancelRequests(fc *fakeCoordinator) int {
 	count := 0
 	for _, r := range fc.capturedRequests() {
-		if r.method == http.MethodDelete && r.path == "/v1/query/"+fakeQueryID {
+		if r.method == http.MethodDelete && (strings.HasPrefix(r.path, "/v1/statement/"+fakeQueryID+"/") || r.path == "/v1/query/"+fakeQueryID) {
 			count++
 		}
 	}
