@@ -521,7 +521,7 @@ func TestRowsOfAnEarlierExecutionCancelTheirQuery(t *testing.T) {
 			assert.Equal(t, "bob", r.header.Get(trinoUserHeader), "request %s %s", r.method, r.path)
 		}
 	}
-	assert.Equal(t, []string{"/v1/query/q1 as alice"}, deletes)
+	assert.Equal(t, []string{"/q1/2 as alice"}, deletes)
 }
 
 // Closing a statement stops every execution whose rows are still open.
