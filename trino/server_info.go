@@ -28,7 +28,9 @@ type ServerInfo struct {
 // validateConnection=true, so rejected credentials fail it too. Servers
 // older than Trino 469 do not answer that request, and Ping skips the
 // credentials check for them. With external authentication, the request can
-// start the login flow when no valid token is cached.
+// start the login flow when no valid token is cached. With
+// validateConnection=false, Ping skips the credentials check, for servers
+// that reject that request although queries succeed.
 func (c *Conn) Ping(ctx context.Context) error {
 	info, err := c.ServerInfo(ctx)
 	if err != nil {
@@ -36,6 +38,9 @@ func (c *Conn) Ping(ctx context.Context) error {
 	}
 	if info.Starting {
 		return errors.New("trino: server is still starting")
+	}
+	if !c.validateConnection {
+		return nil
 	}
 	return c.validateCredentials(ctx)
 }
