@@ -227,7 +227,7 @@ func TestTransactionQueryRowOverSeveralPagesCancelsQuery(t *testing.T) {
 
 	var cancelled []capturedRequest
 	for _, request := range fc.capturedRequests() {
-		if request.method == http.MethodDelete && request.path == "/v1/query/"+fakeQueryID {
+		if request.method == http.MethodDelete && request.path == "/v1/statement/"+fakeQueryID+"/3" {
 			cancelled = append(cancelled, request)
 		}
 	}

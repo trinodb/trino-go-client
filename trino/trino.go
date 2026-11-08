@@ -3419,9 +3419,6 @@ func (qr *driverRows) Close() error {
 		if err != nil && err != io.EOF {
 			return err
 		}
-		if qr.nextURI == "" {
-			return nil
-		}
 	} else {
 		select {
 		case _, ok := <-qr.exec.spoolingRowsChannel:
@@ -3453,20 +3450,42 @@ func (qr *driverRows) cancelAbandonedQuery(err error) {
 
 // cancelQueryOnServer asks the coordinator to cancel the query.
 func (qr *driverRows) cancelQueryOnServer() error {
+	// The client protocol cancels a query with a DELETE to its nextUri, which
+	// gateways such as Starburst Galaxy route like the other statement
+	// requests. Any nextUri of the query works, also one already fetched by
+	// the spooling workers, and without one the query has finished.
+	if qr.nextURI == "" {
+		return nil
+	}
+	err := qr.deleteQuery(qr.nextURI)
+	// A nextUri the driver cannot reach, because it is refused for
+	// downgrading https to http, redirected, or failing on the network, is
+	// often why the query is being cancelled. The coordinator also cancels a
+	// query by its id.
+	if err != nil && !answeredByServer(err) {
+		err = qr.deleteQuery(qr.stmt.conn.baseURL + "/v1/query/" + url.PathEscape(qr.queryID))
+	}
+	return err
+}
+
+// deleteQuery sends a DELETE that cancels the query to target. The
+// coordinator answers it with 204, and with 404 when the query is already
+// gone.
+func (qr *driverRows) deleteQuery(target string) error {
 	hs := make(http.Header)
 	if qr.exec.user != "" {
 		hs.Add(trinoUserHeader, qr.exec.user)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(qr.ctx), DefaultCancelQueryTimeout)
 	defer cancel()
-	req, err := qr.stmt.conn.newRequest(ctx, "DELETE", qr.stmt.conn.baseURL+"/v1/query/"+url.PathEscape(qr.queryID), nil, hs)
+	req, err := qr.stmt.conn.newRequest(ctx, "DELETE", target, nil, hs)
 	if err != nil {
 		return err
 	}
 	resp, err := qr.stmt.conn.roundTrip(ctx, req)
 	if err != nil {
-		qferr, ok := err.(*ErrQueryFailed)
-		if ok && qferr.StatusCode == http.StatusNoContent {
+		var qferr *ErrQueryFailed
+		if errors.As(err, &qferr) && (qferr.StatusCode == http.StatusNoContent || qferr.StatusCode == http.StatusNotFound) {
 			qr.nextURI = ""
 			return nil
 		}
@@ -3474,6 +3493,13 @@ func (qr *driverRows) cancelQueryOnServer() error {
 	}
 	resp.Body.Close()
 	return qr.err
+}
+
+// answeredByServer reports whether err is the answer of the server a request
+// was sent to, rather than a failure to deliver it there.
+func answeredByServer(err error) bool {
+	var qferr *ErrQueryFailed
+	return errors.As(err, &qferr) && (qferr.StatusCode < 300 || qferr.StatusCode >= 400)
 }
 
 // drainSpooledRows discards the rows of a spooled result until it ends.
