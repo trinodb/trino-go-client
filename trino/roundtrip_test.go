@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -674,6 +675,157 @@ func cancelQuery(t *testing.T, status int) (int, error) {
 	return int(deletes.Load()), err
 }
 
+// A query whose first page cannot be fetched has no rows for the caller to
+// close, so the driver cancels it, unless the query failed on the server.
+func TestFailedFirstPageCancelsTheQuery(t *testing.T) {
+	t.Parallel()
+	failures := []struct {
+		name  string
+		pages func() []page
+		// firstPage answers the first nextUri GET, or returns false to
+		// serve the page. expire ends the query's context with a deadline.
+		firstPage   func(w http.ResponseWriter, r *http.Request, expire func()) bool
+		wantErr     func(t *testing.T, err error)
+		wantDeletes int
+	}{
+		{
+			name:  "refused redirect",
+			pages: func() []page { return []page{statementPage(), resultPage([][]any{{1}})} },
+			firstPage: func(w http.ResponseWriter, r *http.Request, _ func()) bool {
+				http.Redirect(w, r, "/moved", http.StatusTemporaryRedirect)
+				return true
+			},
+			wantErr: func(t *testing.T, err error) {
+				assert.ErrorContains(t, err, "not followed")
+			},
+			wantDeletes: 1,
+		},
+		{
+			name:  "network error",
+			pages: func() []page { return []page{statementPage(), resultPage([][]any{{1}})} },
+			firstPage: func(w http.ResponseWriter, r *http.Request, _ func()) bool {
+				closeConnection(t, w)
+				return true
+			},
+			wantErr: func(t *testing.T, err error) {
+				assert.ErrorContains(t, err, "EOF")
+			},
+			wantDeletes: 1,
+		},
+		{
+			name:  "context deadline",
+			pages: func() []page { return []page{statementPage(), resultPage([][]any{{1}})} },
+			firstPage: func(w http.ResponseWriter, r *http.Request, expire func()) bool {
+				expire()
+				<-r.Context().Done()
+				return true
+			},
+			wantErr: func(t *testing.T, err error) {
+				assert.ErrorIs(t, err, context.DeadlineExceeded)
+			},
+			wantDeletes: 1,
+		},
+		{
+			name: "query failed",
+			pages: func() []page {
+				return []page{statementPage(), pageOf(&queryResponse{
+					ID:    fakeQueryID,
+					Error: ErrTrino{ErrorName: "DIVISION_BY_ZERO", ErrorType: "USER_ERROR", Message: "Division by zero"},
+				})}
+			},
+			wantErr: func(t *testing.T, err error) {
+				var trinoErr *ErrTrino
+				require.ErrorAs(t, err, &trinoErr)
+				assert.Equal(t, "DIVISION_BY_ZERO", trinoErr.ErrorName)
+			},
+		},
+	}
+	methods := []struct {
+		name string
+		send func(ctx context.Context, db *sql.DB) error
+	}{
+		{
+			name: "QueryContext",
+			send: func(ctx context.Context, db *sql.DB) error {
+				rows, err := db.QueryContext(ctx, "SELECT 1")
+				if err == nil {
+					rows.Close()
+				}
+				return err
+			},
+		},
+		{
+			name: "ExecContext",
+			send: func(ctx context.Context, db *sql.DB) error {
+				_, err := db.ExecContext(ctx, "INSERT INTO t VALUES (1)")
+				return err
+			},
+		},
+	}
+	for _, failure := range failures {
+		for _, method := range methods {
+			t.Run(failure.name+"/"+method.name, func(t *testing.T) {
+				t.Parallel()
+				fc := newFakeCoordinator(t)
+				fc.respond(failure.pages()...)
+				ctx := newExpiringContext(t.Context())
+				fc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
+					if failure.firstPage == nil || r.Method != http.MethodGet || r.URL.Path != "/v1/statement/"+fakeQueryID+"/1" {
+						return false
+					}
+					return failure.firstPage(w, r, ctx.expire)
+				})
+				db := fc.open(t, "?request_retry_max_attempts=1")
+
+				err := method.send(ctx, db)
+				require.Error(t, err)
+				failure.wantErr(t, err)
+				assert.Equal(t, failure.wantDeletes, cancelRequests(fc))
+			})
+		}
+	}
+}
+
+// cancelRequests counts the requests that cancelled the fake's query.
+func cancelRequests(fc *fakeCoordinator) int {
+	count := 0
+	for _, r := range fc.capturedRequests() {
+		if r.method == http.MethodDelete && r.path == "/v1/query/"+fakeQueryID {
+			count++
+		}
+	}
+	return count
+}
+
+// expiringContext ends with context.DeadlineExceeded when expire is called,
+// so a test passes the deadline at a known point instead of after a delay.
+type expiringContext struct {
+	context.Context
+	done chan struct{}
+	once sync.Once
+}
+
+func newExpiringContext(parent context.Context) *expiringContext {
+	return &expiringContext{Context: parent, done: make(chan struct{})}
+}
+
+func (c *expiringContext) expire() {
+	c.once.Do(func() { close(c.done) })
+}
+
+func (c *expiringContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *expiringContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 func TestRoundTripBogusData(t *testing.T) {
 	t.Parallel()
 	var requests atomic.Int32
@@ -1091,6 +1243,7 @@ func TestNextURIDowngradeToHTTPIsRefused(t *testing.T) {
 	}
 	assert.ErrorContains(t, err, "does not use https")
 	assert.Zero(t, plainHits.Load(), "no request may leave without TLS")
+	assert.Equal(t, 1, cancelRequests(fc), "the query is cancelled over TLS")
 }
 
 // The heartbeat and the cancellation build their requests the same way as
