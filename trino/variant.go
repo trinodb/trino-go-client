@@ -170,7 +170,8 @@ func newVariant(metadataBytes, value []byte, location *time.Location) (Variant, 
 	if err != nil {
 		return Variant{}, err
 	}
-	size, err := validateVariantValue(metadata, value, 0)
+	validator := variantValidator{metadata: metadata}
+	size, err := validator.validateValue(value, 0)
 	if err != nil {
 		return Variant{}, err
 	}
@@ -535,9 +536,17 @@ func variantValueSize(value []byte) (int, error) {
 	return container.valuesStart + container.offset(container.count), nil
 }
 
-// validateVariantValue checks that value starts with a well-formed variant
-// value, including all nested values, and returns its size.
-func validateVariantValue(metadata variantMetadata, value []byte, depth int) (int, error) {
+// variantValidator checks a variant value against its metadata. It keeps one
+// buffer for the objects whose fields are not stored in order, as Spark writes
+// them, so they cost no allocation each.
+type variantValidator struct {
+	metadata variantMetadata
+	fields   [][2]int
+}
+
+// validateValue checks that value starts with a well-formed variant value,
+// including all nested values, and returns its size.
+func (v *variantValidator) validateValue(value []byte, depth int) (int, error) {
 	size, err := variantValueSize(value)
 	if err != nil {
 		return 0, err
@@ -556,7 +565,7 @@ func validateVariantValue(metadata variantMetadata, value []byte, depth int) (in
 	container := newVariantContainer(value)
 	valuesSize := size - container.valuesStart
 	if basicType == variantBasicObject {
-		return size, validateVariantObjectFields(metadata, value, container, valuesSize, depth)
+		return size, v.validateObjectFields(value, container, valuesSize, depth)
 	}
 	for i := 0; i < container.count; i++ {
 		start := container.offset(i)
@@ -564,38 +573,38 @@ func validateVariantValue(metadata variantMetadata, value []byte, depth int) (in
 		if start > end || end > valuesSize {
 			return 0, fmt.Errorf("variant element %d has invalid offsets %d and %d", i, start, end)
 		}
-		if _, err := validateVariantValue(metadata, value[container.valuesStart+start:container.valuesStart+end], depth+1); err != nil {
+		if _, err := v.validateValue(value[container.valuesStart+start:container.valuesStart+end], depth+1); err != nil {
 			return 0, err
 		}
 	}
 	return size, nil
 }
 
-// validateVariantObjectFields checks the fields of an object, which must not
+// validateObjectFields checks the fields of an object, which must not
 // share or overlap their values. The specification stores one self-contained
 // value per field, and without this check a chain of objects whose fields all
 // point at one child would cost 2^depth to validate and convert. Trino writes
 // values in field order, so each field is checked only against the one before
 // it, and fields are sorted by offset only when they are stored in another
 // order, which the specification also allows.
-func validateVariantObjectFields(metadata variantMetadata, value []byte, container variantContainer, valuesSize int, depth int) error {
+func (v *variantValidator) validateObjectFields(value []byte, container variantContainer, valuesSize int, depth int) error {
 	previousEnd := 0
 	inOrder := true
 	for i := 0; i < container.count; i++ {
-		if fieldID := int(readVariantUint(value[container.idsStart+i*container.idSize:], container.idSize)); fieldID >= metadata.size {
-			return fmt.Errorf("variant field ID %d is not in the metadata dictionary of %d keys", fieldID, metadata.size)
+		if fieldID := int(readVariantUint(value[container.idsStart+i*container.idSize:], container.idSize)); fieldID >= v.metadata.size {
+			return fmt.Errorf("variant field ID %d is not in the metadata dictionary of %d keys", fieldID, v.metadata.size)
 		}
 		start := container.offset(i)
 		if start > valuesSize {
 			return fmt.Errorf("variant element %d has invalid offsets %d and %d", i, start, valuesSize)
 		}
 		if inOrder && start < previousEnd {
-			if err := checkVariantObjectFieldsDisjoint(value, container, valuesSize); err != nil {
+			if err := v.checkObjectFieldsDisjoint(value, container, valuesSize); err != nil {
 				return err
 			}
 			inOrder = false
 		}
-		size, err := validateVariantValue(metadata, value[container.valuesStart+start:container.valuesStart+valuesSize], depth+1)
+		size, err := v.validateValue(value[container.valuesStart+start:container.valuesStart+valuesSize], depth+1)
 		if err != nil {
 			return err
 		}
@@ -604,10 +613,11 @@ func validateVariantObjectFields(metadata variantMetadata, value []byte, contain
 	return nil
 }
 
-// checkVariantObjectFieldsDisjoint checks that no two fields of an object
-// share or overlap their values, whatever order they are stored in.
-func checkVariantObjectFieldsDisjoint(value []byte, container variantContainer, valuesSize int) error {
-	fields := make([][2]int, container.count)
+// checkObjectFieldsDisjoint checks that no two fields of an object share or
+// overlap their values, whatever order they are stored in.
+func (v *variantValidator) checkObjectFieldsDisjoint(value []byte, container variantContainer, valuesSize int) error {
+	fields := slices.Grow(v.fields[:0], container.count)[:container.count]
+	v.fields = fields
 	for i := range fields {
 		start := container.offset(i)
 		if start > valuesSize {
