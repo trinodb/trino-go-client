@@ -2723,6 +2723,7 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 		// stop them before the connection goes back to the pool, or that
 		// page's headers would change the next caller's session.
 		st.stopQuery()
+		rows.cancelAbandonedQuery(err)
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
@@ -2900,6 +2901,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 		// As in ExecContext: stop the query before the connection can be
 		// reused.
 		st.stopQuery()
+		rows.cancelAbandonedQuery(err)
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
@@ -3455,6 +3457,21 @@ func (qr *driverRows) Close() error {
 		}
 	}
 	return qr.cancelQueryOnServer()
+}
+
+// cancelAbandonedQuery cancels a query that ended with err before its rows
+// reached the caller, so nothing else would close them, and the server would
+// keep running the query until it stops waiting for the client. A query that
+// failed on the server needs no cancel, and one without a nextURI has
+// finished or was already cancelled when fetch closed the rows.
+func (qr *driverRows) cancelAbandonedQuery(err error) {
+	var trinoErr *ErrTrino
+	if qr.nextURI == "" || errors.As(err, &trinoErr) || errors.Is(err, ErrQueryCancelled) {
+		return
+	}
+	// The caller gets err, which ended the query, and not an error of the
+	// cancel, which is best effort.
+	_ = qr.cancelQueryOnServer()
 }
 
 // cancelQueryOnServer asks the coordinator to cancel the query.
