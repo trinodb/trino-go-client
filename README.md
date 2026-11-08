@@ -168,6 +168,7 @@ field that a DSN cannot carry is set.
 | [`request_retry_max_attempts`](#request_retry_max_attempts) | `RequestRetryMaxAttempts` | 20 | How many times one HTTP request is sent |
 | [`heartbeat_interval`](#heartbeat_interval) | `HeartbeatInterval` | 30s | Spooling heartbeat interval |
 | [`explicitPrepare`](#explicitprepare) | `DisableExplicitPrepare` | `true` | Prepared statements through headers or `EXECUTE IMMEDIATE` |
+| [`validateConnection`](#validateconnection) | `SkipConnectionValidation` | `true` | Check the credentials when pinging |
 | [`accessToken`](#accesstoken) | `AccessToken` | empty | JWT sent as a bearer token |
 | [`forwardAuthorizationHeader`](#forwardauthorizationheader) | `ForwardAuthorizationHeader` | `false` | Allow a per-query `accessToken` argument |
 | [`externalAuthentication`](#externalauthentication) | `ExternalAuthentication` | `false` | Log in through the browser |
@@ -479,6 +480,22 @@ the server. With `true`, the driver prepares the statement through the
 instead of a header, so statements larger than the server's header size limit
 still work. The `Config` field is `DisableExplicitPrepare`, whose zero value
 keeps explicit prepare on.
+
+#### `validateConnection`
+
+```
+Type:           bool
+Valid values:   true, false
+Default:        true
+```
+
+With `true`, a ping also checks the connection's credentials, as described in
+[Connection validation and server version](#connection-validation-and-server-version).
+With `false`, a ping only checks that the server is reachable and has finished
+starting. Use it for servers that reject that check although queries succeed,
+such as Starburst Galaxy with external authentication, which answers it with
+401 and no login challenge. The `Config` field is `SkipConnectionValidation`,
+whose zero value keeps the check on.
 
 #### `accessToken`
 
@@ -1146,7 +1163,8 @@ credentials and fails when the server rejects them. No query is started.
 Servers older than Trino 469 do not support that request, so for them a
 successful ping does not prove the credentials are accepted. With [external
 authentication](#external-authentication), that request starts the login flow
-when no valid token is cached, so a ping can open the browser.
+when no valid token is cached, so a ping can open the browser. Set
+[`validateConnection=false`](#validateconnection) to skip it.
 
 Before returning a connection to the pool, `database/sql` asks the driver
 whether it can be reused, without contacting the server. A connection whose

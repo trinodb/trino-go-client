@@ -210,6 +210,7 @@ const (
 	socksProxyConfig                 = "socksProxy"
 	accessTokenConfig                = "accessToken"
 	explicitPrepareConfig            = "explicitPrepare"
+	validateConnectionConfig         = "validateConnection"
 	forwardAuthorizationHeaderConfig = "forwardAuthorizationHeader"
 	resourceEstimatesConfig          = "resourceEstimates"
 
@@ -377,6 +378,7 @@ type Config struct {
 	SOCKSProxy                 string            // host:port of a SOCKS5 proxy for every request, instead of the proxy environment variables (optional; DSN: socksProxy)
 	AccessToken                string            // An access token (JWT) for authentication (optional)
 	DisableExplicitPrepare     bool              // Disable the use of explicit prepared statements (optional, default is false)
+	SkipConnectionValidation   bool              // Skip the credentials check in Ping, for servers that cannot answer it (optional, default is false; DSN: validateConnection=false)
 	ForwardAuthorizationHeader bool              // Allow forwarding the `accessToken` named query parameter in the authorization header, overwriting the `AccessToken` option, if set (optional)
 	QueryTimeout               *time.Duration    // Configurable timeout for query (optional)
 	HeartbeatInterval          *time.Duration    // Interval between spooling-protocol HEAD heartbeats (optional; DSN: heartbeat_interval)
@@ -496,6 +498,14 @@ func ParseDSN(dsn string) (*Config, error) {
 			return nil, fmt.Errorf("invalid boolean for %s: %q", explicitPrepareConfig, explicitPrepare)
 		}
 		config.DisableExplicitPrepare = !explicitPrepareValue
+	}
+
+	if validateConnection := query.Get(validateConnectionConfig); validateConnection != "" {
+		validateConnectionValue, err := strconv.ParseBool(validateConnection)
+		if err != nil {
+			return nil, fmt.Errorf("invalid boolean for %s: %q", validateConnectionConfig, validateConnection)
+		}
+		config.SkipConnectionValidation = !validateConnectionValue
 	}
 
 	if forwardAuth := query.Get(forwardAuthorizationHeaderConfig); forwardAuth != "" {
@@ -995,6 +1005,10 @@ func (c *Config) FormatDSN() (string, error) {
 		query.Add(explicitPrepareConfig, "false")
 	}
 
+	if c.SkipConnectionValidation {
+		query.Add(validateConnectionConfig, "false")
+	}
+
 	if err := c.validate(serverURL); err != nil {
 		return "", err
 	}
@@ -1250,6 +1264,7 @@ type Conn struct {
 	progressUpdater            ProgressUpdater
 	progressUpdaterPeriod      queryProgressCallbackPeriod
 	useExplicitPrepare         bool
+	validateConnection         bool
 	forwardAuthorizationHeader bool
 	queryTimeout               *time.Duration
 	heartbeatInterval          *time.Duration
@@ -1421,6 +1436,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 		kerberosEnabled:            conf.KerberosEnabled,
 		kerberosServicePrincipal:   newKerberosServicePrincipal(conf),
 		useExplicitPrepare:         !conf.DisableExplicitPrepare,
+		validateConnection:         !conf.SkipConnectionValidation,
 		forwardAuthorizationHeader: conf.ForwardAuthorizationHeader,
 		queryTimeout:               conf.QueryTimeout,
 		heartbeatInterval:          conf.HeartbeatInterval,
