@@ -843,7 +843,8 @@ func TestIntegrationVariantMatchesJSON(t *testing.T) {
 			rows, err := db.Query(`WITH t(v) AS (VALUES
 				CAST(ARRAY[rpad('', 70000, 'x'), 'y'] AS VARIANT),
 				CAST(sequence(1, 300) AS VARIANT),
-				CAST(map(transform(sequence(1, 300), i -> 'key' || format('%03d', i)), transform(sequence(1, 300), i -> CAST(i AS DOUBLE) / 7)) AS VARIANT))
+				CAST(map(transform(sequence(1, 300), i -> 'key' || format('%03d', i)), transform(sequence(1, 300), i -> CAST(i AS DOUBLE) / 7)) AS VARIANT),
+				CAST(ARRAY[CAST(DATE '+10000-01-01' AS VARIANT), CAST(TIMESTAMP '+10000-01-01 00:00:00.000000' AS VARIANT), CAST(TIMESTAMP '-0001-01-01 00:00:00.000000 UTC' AS VARIANT)] AS VARIANT))
 				SELECT v, CAST(v AS JSON) FROM t`, protocol.args...)
 			require.NoError(t, err)
 			defer rows.Close()
@@ -857,7 +858,7 @@ func TestIntegrationVariantMatchesJSON(t *testing.T) {
 				count++
 			}
 			require.NoError(t, rows.Err())
-			assert.Equal(t, 3, count)
+			assert.Equal(t, 4, count)
 		})
 	}
 }
