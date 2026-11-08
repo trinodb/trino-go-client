@@ -100,6 +100,9 @@ func TestSerial(t *testing.T) {
 		{name: "date before year 0", value: Date(-1, 1, 1), want: "DATE '-001-01-01'"},
 		{name: "timestamp without timezone before year 0", value: Timestamp(-1, 1, 1, 0, 0, 0, 0), want: "TIMESTAMP '-0001-01-01 00:00:00'"},
 		{name: "timestamp after year 9999", value: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), want: "TIMESTAMP '10000-01-01 00:00:00 Z'"},
+		// Paris used Paris Mean Time, +00:09:21, until 1911
+		{name: "timestamp with an offset with seconds", value: time.Date(1900, 1, 1, 0, 0, 0, 0, paris), wantErr: "trino: cannot send 1900-01-01 00:00:00 +0009 PMT: Trino does not support time zone offsets with seconds"},
+		{name: "time with an offset with seconds", value: TimeTz(11, 34, 25, 0, time.FixedZone("", 9*60+21)), wantErr: "Trino does not support time zone offsets with seconds"},
 		{name: "duration", value: 10*time.Second + 5*time.Millisecond, want: "INTERVAL '10.005' SECOND"},
 		{name: "duration with negative value", value: -(10*time.Second + 5*time.Millisecond), want: "INTERVAL '-10.005' SECOND"},
 		{name: "negative duration shorter than a second", value: -500 * time.Millisecond, want: "INTERVAL '-0.5' SECOND"},
