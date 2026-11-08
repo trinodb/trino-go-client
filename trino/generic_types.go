@@ -75,8 +75,9 @@ func (s *NullSlice[T]) scanValue(value interface{}, location *time.Location) err
 // The server sends the keys as strings, which NullMap parses into K. Keys
 // without a time zone, like those of a MAP(DATE, ...), are interpreted in
 // Location, or in time.Local when Location is nil; set it to the zone of the
-// connection, which the server used to produce them. Location is passed
-// down to nested NullSlice and NullMap values.
+// connection, which the server used to produce them, or to the naiveTimeZone
+// parameter when it is set. Location is passed down to nested NullSlice and
+// NullMap values.
 type NullMap[K comparable, V any] struct {
 	Map      map[K]V
 	Valid    bool

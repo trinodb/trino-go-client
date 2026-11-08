@@ -326,6 +326,94 @@ func TestTimestampReadInSessionTimeZone(t *testing.T) {
 	assert.Equal(t, "UTC", requests[1].header.Get(trinoTimeZoneHeader), "connection zone header left alone")
 }
 
+// A value without a zone in a daylight saving time gap of the session zone
+// does not exist there, so it only reads back unchanged in a zone without
+// transitions, chosen with naiveTimeZone.
+func TestNaiveTimeZoneReadsValuesWithoutAZone(t *testing.T) {
+	t.Parallel()
+	timestamp := timestampColumn("_col0")
+	date := column("date", scalarType("date"))
+	timeOfDay := column("time(3)", scalarType("time"))
+	timestampWithTimeZone := column("timestamp(3) with time zone", scalarType("timestamp with time zone"))
+	cases := []struct {
+		name   string
+		params string
+		column queryColumn
+		value  string
+		want   string
+	}{
+		{name: "timestamp in a gap of the session zone", params: "?timezone=America%2FNew_York", column: timestamp, value: "2024-03-10 02:30:00.000", want: "2024-03-10 01:30:00 -0500 EST"},
+		{name: "timestamp in a gap with naiveTimeZone", params: "?timezone=America%2FNew_York&naiveTimeZone=UTC", column: timestamp, value: "2024-03-10 02:30:00.000", want: "2024-03-10 02:30:00 +0000 UTC"},
+		{name: "timestamp with an offset naiveTimeZone", params: "?timezone=America%2FNew_York&naiveTimeZone=%2B05%3A30", column: timestamp, value: "2024-03-10 02:30:00.000", want: "2024-03-10 02:30:00 +0530 +05:30"},
+		{name: "date at a midnight transition of the session zone", params: "?timezone=America%2FHavana", column: date, value: "2024-03-10", want: "2024-03-09 23:00:00 -0500 CST"},
+		{name: "date at a midnight transition with naiveTimeZone", params: "?timezone=America%2FHavana&naiveTimeZone=UTC", column: date, value: "2024-03-10", want: "2024-03-10 00:00:00 +0000 UTC"},
+		{name: "time in the session zone", params: "?timezone=America%2FNew_York", column: timeOfDay, value: "03:00:07.000", want: "0000-01-01 03:00:07 -0456 LMT"},
+		{name: "time with naiveTimeZone", params: "?timezone=America%2FNew_York&naiveTimeZone=UTC", column: timeOfDay, value: "03:00:07.000", want: "0000-01-01 03:00:07 +0000 UTC"},
+		{name: "timestamp with a zone keeps it", params: "?timezone=America%2FNew_York&naiveTimeZone=UTC", column: timestampWithTimeZone, value: "2017-07-10 01:02:03.000 Asia/Tokyo", want: "2017-07-10 01:02:03 +0900 JST"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeCoordinator(t)
+			fc.respond(statementPage(), columnsPage([]queryColumn{tc.column}, [][]any{{tc.value}}))
+			db := fc.open(t, tc.params)
+
+			var got time.Time
+			require.NoError(t, db.QueryRow("SELECT 1").Scan(&got))
+
+			assert.Equal(t, tc.want, got.String())
+		})
+	}
+}
+
+// naiveTimeZone only changes how values are read; the server keeps the
+// session zone, and neither SET TIME ZONE nor the named argument override it.
+func TestNaiveTimeZoneWinsOverTheSessionTimeZone(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "?timezone=Asia%2FTokyo&naiveTimeZone=UTC")
+	db.SetMaxOpenConns(1)
+
+	fc.respond(statementPage(), timestampPage("2017-07-10 01:02:03.000"))
+	var fromConnection time.Time
+	require.NoError(t, db.QueryRow("SELECT 1").Scan(&fromConnection))
+	fc.respond(statementPage(), timestampPage("2017-07-10 01:02:03.000"))
+	var fromNamedArg time.Time
+	require.NoError(t, db.QueryRow("SELECT 1", sql.Named(trinoTimeZoneHeader, "Europe/Paris")).Scan(&fromNamedArg))
+	fc.respond(statementPage().withHeader(trinoSetSessionHeader, "time_zone_id=America%2FNew_York"), timestampPage("2017-07-10 01:02:03.000"))
+	var afterSet time.Time
+	require.NoError(t, db.QueryRow("SET TIME ZONE 'America/New_York'").Scan(&afterSet))
+	fc.respond(statementPage(), columnsPage(
+		[]queryColumn{column("array(timestamp(3))", arrayType(scalarType("timestamp")))},
+		[][]any{{[]any{"2017-07-10 01:02:03.000"}}},
+	))
+	var nested NullSlice[time.Time]
+	require.NoError(t, db.QueryRow("SELECT 1").Scan(&nested))
+
+	assertTimeIn(t, "UTC", fromConnection)
+	assertTimeIn(t, "UTC", fromNamedArg)
+	assertTimeIn(t, "UTC", afterSet)
+	require.Len(t, nested.Slice, 1)
+	assertTimeIn(t, "UTC", nested.Slice[0])
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 8)
+	assert.Equal(t, "Asia/Tokyo", requests[0].header.Get(trinoTimeZoneHeader), "session zone sent to the server")
+	assert.Equal(t, "Europe/Paris", requests[2].header.Get(trinoTimeZoneHeader), "named argument sent to the server")
+}
+
+func TestInvalidNaiveTimeZoneRejected(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	db := fc.open(t, "?naiveTimeZone=Mars%2FOlympus_Mons")
+
+	err := db.Ping()
+
+	require.ErrorContains(t, err, `trino: invalid timezone "Mars/Olympus_Mons"`)
+	require.ErrorContains(t, err, "(set by naiveTimeZone)")
+	assert.Empty(t, fc.capturedRequests(), "no request made with an invalid zone")
+}
+
 func timestampPage(value string) page {
 	return columnsPage([]queryColumn{timestampColumn("_col0")}, [][]any{{value}})
 }
