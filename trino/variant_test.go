@@ -503,3 +503,42 @@ func TestNewVariantAcceptsObjectValuesOutOfOrder(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, `{"a":null,"b":true}`, v.String())
 }
+
+// Spark stores the values of an object in the order the fields were added,
+// so its objects take the sorting path; one buffer serves all of them.
+func TestNewVariantReusesTheFieldBufferForObjectsOutOfOrder(t *testing.T) {
+	const fields = 8
+	metadata := []byte{0x01, fields}
+	for i := 0; i <= fields; i++ {
+		metadata = append(metadata, byte(i))
+	}
+	for i := range fields {
+		metadata = append(metadata, byte('a'+i))
+	}
+	// Each field holds an int8, stored in reverse field order.
+	object := []byte{0x02, fields}
+	for i := range fields {
+		object = append(object, byte(i))
+	}
+	for i := range fields {
+		object = append(object, byte(2*(fields-1-i)))
+	}
+	object = append(object, 2*fields)
+	for i := range fields {
+		object = append(object, 0x0C, byte(fields-1-i))
+	}
+	const objects = 6
+	value := []byte{0x03, objects}
+	for i := 0; i <= objects; i++ {
+		value = append(value, byte(i*len(object)))
+	}
+	for range objects {
+		value = append(value, object...)
+	}
+	allocs := testing.AllocsPerRun(10, func() {
+		if _, err := newVariant(metadata, value, nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	assert.Less(t, allocs, float64(objects), "the objects should not allocate one buffer each")
+}
