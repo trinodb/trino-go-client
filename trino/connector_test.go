@@ -3,6 +3,7 @@ package trino
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -218,33 +219,164 @@ func TestCustomClientDoesNotFollowRedirects(t *testing.T) {
 	assert.Zero(t, targetHits.Load(), "the redirect target must not receive the statement")
 }
 
-func TestClosedConnectionsReleaseTheirIdleSockets(t *testing.T) {
+func TestConnectorConnectionsShareTransport(t *testing.T) {
 	t.Parallel()
-	var open atomic.Int32
-	fc := startFakeCoordinator(t, func(h http.Handler) *httptest.Server {
-		server := httptest.NewUnstartedServer(h)
-		server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
-			switch state {
-			case http.StateNew:
-				open.Add(1)
-			case http.StateClosed, http.StateHijacked:
-				open.Add(-1)
-			}
-		}
-		server.StartTLS()
-		return server
-	})
+	fc, sockets := newSocketCountingTLSCoordinator(t)
+	connector, err := NewConnector(&Config{ServerURI: fc.url(), SSLCert: fc.certificatePEM()})
+	require.NoError(t, err)
+	db := sql.OpenDB(connector)
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	// Every query gets a new connection, which closes when it returns.
+	db.SetMaxIdleConns(0)
+
+	const queries = 10
+	for range queries {
+		querySelectOne(t, fc, db)
+	}
+
+	assert.Less(t, sockets.accepted.Load(), int32(queries),
+		"connections of one Connector must reuse the sockets of connections closed before them")
+}
+
+func TestConnectorConnectionsShareTransportInstance(t *testing.T) {
+	t.Parallel()
+	connector, err := NewConnector(&Config{ServerURI: "https://localhost:8443", SSLVerification: SSLVerificationNone})
+	require.NoError(t, err)
+
+	first, err := connector.Connect(context.Background())
+	require.NoError(t, err)
+	second, err := connector.Connect(context.Background())
+	require.NoError(t, err)
+
+	transport := first.(*Conn).httpClient.Transport
+	require.IsType(t, &http.Transport{}, transport)
+	assert.Same(t, transport, second.(*Conn).httpClient.Transport)
+	assert.Same(t, transport, second.(*Conn).segmentHTTPClient.Transport)
+}
+
+func TestClosingDBReleasesIdleSockets(t *testing.T) {
+	t.Parallel()
+	fc, sockets := newSocketCountingTLSCoordinator(t)
 	connector, err := NewConnector(&Config{ServerURI: fc.url(), SSLCert: fc.certificatePEM()})
 	require.NoError(t, err)
 	db := sql.OpenDB(connector)
 	db.SetMaxIdleConns(0)
 	for range 5 {
-		fc.respond(statementPage(), resultPage([][]any{{1}}))
-		var v int
-		require.NoError(t, db.QueryRow("SELECT 1").Scan(&v))
+		querySelectOne(t, fc, db)
 	}
 	require.NoError(t, db.Close())
 
-	assert.Eventually(t, func() bool { return open.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+	assert.Eventually(t, func() bool { return sockets.open.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
+		"closing the database must not keep the sockets of its connections open")
+}
+
+func TestDriverOpenConnectionsReleaseTheirIdleSockets(t *testing.T) {
+	t.Parallel()
+	fc, sockets := newSocketCountingTLSCoordinator(t)
+	db := sql.OpenDB(driverOpenConnector{dsn: fc.url() + "?SSLCert=" + url.QueryEscape(fc.certificatePEM())})
+	t.Cleanup(func() { require.NoError(t, db.Close()) })
+	db.SetMaxIdleConns(0)
+	for range 5 {
+		querySelectOne(t, fc, db)
+	}
+
+	assert.Eventually(t, func() bool { return sockets.open.Load() == 0 }, 5*time.Second, 10*time.Millisecond,
 		"connections closed by the pool must not keep sockets open")
+}
+
+func TestConnectorLeavesApplicationTransportsOpen(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		open func(t *testing.T, fc *fakeCoordinator, client *http.Client) *sql.DB
+	}{
+		{
+			name: "HTTPClient",
+			open: func(t *testing.T, fc *fakeCoordinator, client *http.Client) *sql.DB {
+				connector, err := NewConnector(&Config{ServerURI: fc.url(), HTTPClient: client})
+				require.NoError(t, err)
+				return sql.OpenDB(connector)
+			},
+		},
+		{
+			name: "custom client",
+			open: func(t *testing.T, fc *fakeCoordinator, client *http.Client) *sql.DB {
+				name := "idle-test-" + t.Name()
+				require.NoError(t, RegisterCustomClient(name, client))
+				t.Cleanup(func() { DeregisterCustomClient(name) })
+				db, err := sql.Open("trino", fc.url()+"?custom_client="+url.QueryEscape(name))
+				require.NoError(t, err)
+				return db
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := newFakeTLSCoordinator(t)
+			transport := &idleClosingTransport{RoundTripper: fc.server.Client().Transport}
+			db := tc.open(t, fc, &http.Client{Transport: transport})
+			db.SetMaxIdleConns(0)
+			querySelectOne(t, fc, db)
+			require.NoError(t, db.Close())
+
+			assert.Zero(t, transport.closes.Load(), "the application owns its transport")
+		})
+	}
+}
+
+// newSocketCountingTLSCoordinator returns a TLS fake coordinator and the
+// counts of the sockets it accepted and still has open.
+func newSocketCountingTLSCoordinator(t testing.TB) (*fakeCoordinator, *socketCounts) {
+	t.Helper()
+	sockets := &socketCounts{}
+	fc := startFakeCoordinator(t, func(h http.Handler) *httptest.Server {
+		server := httptest.NewUnstartedServer(h)
+		server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+			switch state {
+			case http.StateNew:
+				sockets.accepted.Add(1)
+				sockets.open.Add(1)
+			case http.StateClosed, http.StateHijacked:
+				sockets.open.Add(-1)
+			}
+		}
+		server.StartTLS()
+		return server
+	})
+	return fc, sockets
+}
+
+type socketCounts struct {
+	accepted atomic.Int32
+	open     atomic.Int32
+}
+
+func querySelectOne(t testing.TB, fc *fakeCoordinator, db *sql.DB) {
+	t.Helper()
+	fc.respond(statementPage(), resultPage([][]any{{1}}))
+	var v int
+	require.NoError(t, db.QueryRow("SELECT 1").Scan(&v))
+}
+
+// driverOpenConnector opens connections with Driver.Open, as database/sql
+// does for a driver that does not implement driver.DriverContext.
+type driverOpenConnector struct {
+	dsn string
+}
+
+func (c driverOpenConnector) Connect(context.Context) (driver.Conn, error) {
+	return (&Driver{}).Open(c.dsn)
+}
+
+func (c driverOpenConnector) Driver() driver.Driver {
+	return &Driver{}
+}
+
+type idleClosingTransport struct {
+	http.RoundTripper
+	closes atomic.Int32
+}
+
+func (t *idleClosingTransport) CloseIdleConnections() {
+	t.closes.Add(1)
 }
