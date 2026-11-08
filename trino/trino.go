@@ -428,7 +428,12 @@ func ParseDSN(dsn string) (*Config, error) {
 		return nil, err
 	}
 
-	query := serverURL.Query()
+	// Since Go 1.17, a pair with an unencoded ';' is dropped from the query, so
+	// session properties and other lists would silently end up empty.
+	query, err := url.ParseQuery(serverURL.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("trino: invalid DSN query, URL-encode the values, for example ';' as %%3B: %w", err)
+	}
 	config := &Config{}
 
 	serverURI := serverURL.Scheme + "://"

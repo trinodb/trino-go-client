@@ -108,8 +108,8 @@ Examples:
 
 ```
 http://user@localhost:8080?source=hello&catalog=default&schema=foobar
-https://user:secret@localhost:8443?session_properties=query_max_run_time:10m;query_priority:2
-http://user@localhost:8080/tpch/sf1?roles=catalog1:role1;catalog2:role2
+https://user:secret@localhost:8443?session_properties=query_max_run_time:10m%3Bquery_priority:2
+http://user@localhost:8080/tpch/sf1?roles=catalog1:role1%3Bcatalog2:role2
 ```
 
 ### Config and Connector

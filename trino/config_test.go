@@ -1224,6 +1224,56 @@ func TestParseDSNRequiresSchemeAndHost(t *testing.T) {
 	}
 }
 
+// Go drops a query pair with an unencoded ';', so ParseDSN used to return an
+// empty map for these parameters and no error.
+func TestParseDSNRejectsUnencodedSemicolon(t *testing.T) {
+	t.Parallel()
+	for _, query := range []string{
+		"session_properties=query_priority:3;query_max_run_time:7m",
+		"extra_credentials=a:1;b:2",
+		"roles=system:ALL;memory:ALL",
+		"resourceEstimates=EXECUTION_TIME:1m;CPU_TIME:2m",
+		"catalog=tpch&roles=system:ALL;memory:ALL&schema=sf1",
+	} {
+		_, err := ParseDSN("http://user@localhost:8080?" + query)
+		assert.ErrorContains(t, err, "';' as %3B", "query %q", query)
+	}
+}
+
+func TestParseDSNAcceptsEncodedSemicolon(t *testing.T) {
+	t.Parallel()
+	config, err := ParseDSN("http://user@localhost:8080?" +
+		"session_properties=query_priority:3%3Bquery_max_run_time:7m" +
+		"&extra_credentials=a:1%3Bb:2" +
+		"&roles=system:ALL%3Bmemory:ALL" +
+		"&resourceEstimates=EXECUTION_TIME:1m%3BCPU_TIME:2m")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{"query_priority": "3", "query_max_run_time": "7m"}, config.SessionProperties)
+	assert.Equal(t, map[string]string{"a": "1", "b": "2"}, config.ExtraCredentials)
+	assert.Equal(t, map[string]string{"system": "ALL", "memory": "ALL"}, config.Roles)
+	assert.Equal(t, map[string]string{"EXECUTION_TIME": "1m", "CPU_TIME": "2m"}, config.ResourceEstimates)
+}
+
+func TestFormatDSNEncodesSemicolons(t *testing.T) {
+	t.Parallel()
+	config := &Config{
+		ServerURI:         "http://user@localhost:8080",
+		SessionProperties: map[string]string{"query_priority": "3", "query_max_run_time": "7m"},
+		ExtraCredentials:  map[string]string{"a": "1", "b": "2"},
+		Roles:             map[string]string{"system": "ALL", "memory": "ALL"},
+		ResourceEstimates: map[string]string{"EXECUTION_TIME": "1m", "CPU_TIME": "2m"},
+	}
+	dsn, err := config.FormatDSN()
+	require.NoError(t, err)
+	assert.NotContains(t, dsn, ";")
+	parsed, err := ParseDSN(dsn)
+	require.NoError(t, err)
+	assert.Equal(t, config.SessionProperties, parsed.SessionProperties)
+	assert.Equal(t, config.ExtraCredentials, parsed.ExtraCredentials)
+	assert.Equal(t, config.Roles, parsed.Roles)
+	assert.Equal(t, config.ResourceEstimates, parsed.ResourceEstimates)
+}
+
 // The DSN separates entries with ';' and a key from its value with the first
 // ':', so FormatDSN used to write entries that ParseDSN read back as others,
 // or refused.
