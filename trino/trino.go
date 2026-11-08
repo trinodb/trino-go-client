@@ -754,6 +754,12 @@ func (c *Config) validate(serverURL *url.URL) error {
 	if c.HeartbeatInterval != nil && *c.HeartbeatInterval <= 0 {
 		return fmt.Errorf("trino: heartbeat_interval must be positive, got %s", *c.HeartbeatInterval)
 	}
+	if c.RequestRetryTimeout != nil && *c.RequestRetryTimeout <= 0 {
+		return fmt.Errorf("trino: request_retry_timeout must be positive, got %s", *c.RequestRetryTimeout)
+	}
+	if c.RequestRetryMaxAttempts != nil && *c.RequestRetryMaxAttempts <= 0 {
+		return fmt.Errorf("trino: request_retry_max_attempts must be a positive integer, got %d", *c.RequestRetryMaxAttempts)
+	}
 	if _, err := encodeResourceEstimates(c.ResourceEstimates); err != nil {
 		return err
 	}
