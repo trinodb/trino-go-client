@@ -445,9 +445,6 @@ func ParseDSN(dsn string) (*Config, error) {
 	if serverURL.Scheme == "" || serverURL.Host == "" {
 		return nil, errors.New("trino: invalid DSN, expected scheme://host[:port]")
 	}
-	if err := requireTLSForPassword(serverURL); err != nil {
-		return nil, err
-	}
 
 	// Since Go 1.17, a pair with an unencoded ';' is dropped from the query, so
 	// session properties and other lists would silently end up empty.
@@ -506,9 +503,6 @@ func ParseDSN(dsn string) (*Config, error) {
 		if err != nil {
 			return nil, err
 		}
-		if _, err := encodeResourceEstimates(config.ResourceEstimates); err != nil {
-			return nil, err
-		}
 	}
 
 	config.TraceToken = query.Get("trace_token")
@@ -548,15 +542,12 @@ func ParseDSN(dsn string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("trino: invalid timeout for request_retry_timeout: %q", requestRetryTimeoutStr)
 		}
-		if requestRetryTimeout <= 0 {
-			return nil, fmt.Errorf("trino: request_retry_timeout must be positive, got %s", requestRetryTimeoutStr)
-		}
 		config.RequestRetryTimeout = &requestRetryTimeout
 	}
 
 	if maxAttemptsStr := query.Get("request_retry_max_attempts"); maxAttemptsStr != "" {
 		maxAttempts, err := strconv.Atoi(maxAttemptsStr)
-		if err != nil || maxAttempts <= 0 {
+		if err != nil {
 			return nil, fmt.Errorf("trino: request_retry_max_attempts must be a positive integer, got %q", maxAttemptsStr)
 		}
 		config.RequestRetryMaxAttempts = &maxAttempts
@@ -567,9 +558,6 @@ func ParseDSN(dsn string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("trino: invalid duration for heartbeat_interval: %q", heartbeatStr)
 		}
-		if heartbeat <= 0 {
-			return nil, fmt.Errorf("trino: heartbeat_interval must be positive, got %s", heartbeatStr)
-		}
 		config.HeartbeatInterval = &heartbeat
 	}
 
@@ -578,9 +566,6 @@ func ParseDSN(dsn string) (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("trino: invalid boolean for %s: %q", externalAuthenticationConfig, externalAuth)
 		}
-		if enabled && serverURL.Scheme != "https" {
-			return nil, errExternalAuthenticationNeedsTLS
-		}
 		config.ExternalAuthentication = enabled
 	}
 
@@ -588,9 +573,6 @@ func ParseDSN(dsn string) (*Config, error) {
 		timeout, err := time.ParseDuration(timeoutStr)
 		if err != nil {
 			return nil, fmt.Errorf("trino: invalid duration for %s: %w", externalAuthenticationTimeoutConfig, err)
-		}
-		if timeout <= 0 {
-			return nil, fmt.Errorf("trino: %s must be positive, got %s", externalAuthenticationTimeoutConfig, timeoutStr)
 		}
 		config.ExternalAuthenticationTimeout = &timeout
 	}
@@ -671,30 +653,17 @@ func ParseDSN(dsn string) (*Config, error) {
 	if sslVerification := query.Get(sslVerificationConfig); sslVerification != "" {
 		config.SSLVerification = sslVerification
 	}
-	if _, err := config.sslVerificationMode(); err != nil {
-		return nil, err
-	}
-	if err := config.validateHeaderKeys(); err != nil {
-		return nil, err
-	}
 
 	config.HTTPProxy = query.Get(httpProxyConfig)
-	if err := validateProxyAddress(httpProxyConfig, config.HTTPProxy); err != nil {
-		return nil, err
-	}
 	config.SOCKSProxy = query.Get(socksProxyConfig)
-	if err := validateProxyAddress(socksProxyConfig, config.SOCKSProxy); err != nil {
-		return nil, err
-	}
-	if err := config.validateClientCredentialsOptions(serverURL); err != nil {
-		return nil, err
-	}
-
-	if err := config.requireTLSForCredentials(serverURL); err != nil {
-		return nil, err
-	}
 
 	config.applyDefaults()
+	// The DSN path holds the catalog and schema, which validate would reject
+	// as a path of ServerURI.
+	serverURL.Path, serverURL.RawPath = "", ""
+	if err := config.validate(serverURL); err != nil {
+		return nil, err
+	}
 	return config, nil
 }
 
@@ -1468,22 +1437,6 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 	if err != nil {
 		return nil, fmt.Errorf("trino: invalid server URL: %w", redactURLError(conf.ServerURI, err))
 	}
-	if err := conf.validateExternalAuthentication(serverURL); err != nil {
-		return nil, err
-	}
-	if err := conf.validateClientCredentials(serverURL); err != nil {
-		return nil, err
-	}
-	if err := conf.validateCustomClientTLS(); err != nil {
-		return nil, err
-	}
-	if err := conf.validateProxy(); err != nil {
-		return nil, err
-	}
-	if err := conf.validateKerberos(); err != nil {
-		return nil, err
-	}
-
 	var kerberosClient *client.Client
 	if conf.KerberosEnabled {
 		kerberosClient, err = newKerberosClient(conf)

@@ -67,6 +67,108 @@ func TestNewConnectorValidatesConfig(t *testing.T) {
 	assert.ErrorContains(t, err, "invalid SSL verification mode")
 }
 
+func TestDSNValidatedLikeConfig(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		dsn     string
+		conf    Config
+		wantErr string
+	}{
+		{
+			name:    "Kerberos over http",
+			dsn:     "http://localhost:8080?KerberosEnabled=true",
+			conf:    Config{ServerURI: "http://localhost:8080", KerberosEnabled: true},
+			wantErr: "SSL must be enabled for secure env",
+		},
+		{
+			name:    "Kerberos service principal with a realm",
+			dsn:     "https://localhost:8443?KerberosEnabled=true&KerberosServicePrincipalPattern=HTTP%2Fhost%40REALM",
+			conf:    Config{ServerURI: "https://localhost:8443", KerberosEnabled: true, KerberosServicePrincipalPattern: "HTTP/host@REALM"},
+			wantErr: "names a realm",
+		},
+		{
+			name:    "SSL certificate over http",
+			dsn:     "http://localhost:8080?SSLCert=PEM",
+			conf:    Config{ServerURI: "http://localhost:8080", SSLCert: "PEM"},
+			wantErr: "SSL must be enabled to specify a custom SSL certificate",
+		},
+		{
+			name:    "SSL certificate file over http",
+			dsn:     "http://localhost:8080?SSLCertPath=%2Fcert.pem",
+			conf:    Config{ServerURI: "http://localhost:8080", SSLCertPath: "/cert.pem"},
+			wantErr: "SSL must be enabled to specify a custom SSL certificate file",
+		},
+		{
+			name:    "client certificate over http",
+			dsn:     "http://localhost:8080?SSLClientCertPath=%2Fclient.pem&SSLClientKeyPath=%2Fclient-key.pem",
+			conf:    Config{ServerURI: "http://localhost:8080", SSLClientCertPath: "/client.pem", SSLClientKeyPath: "/client-key.pem"},
+			wantErr: "SSL must be enabled to specify a client certificate",
+		},
+		{
+			name:    "SSL verification over http",
+			dsn:     "http://localhost:8080?SSLVerification=NONE",
+			conf:    Config{ServerURI: "http://localhost:8080", SSLVerification: SSLVerificationNone},
+			wantErr: "SSL must be enabled to specify SSLVerification",
+		},
+		{
+			name:    "zero heartbeat interval",
+			dsn:     "http://localhost:8080?heartbeat_interval=0s",
+			conf:    Config{ServerURI: "http://localhost:8080", HeartbeatInterval: ptr(time.Duration(0))},
+			wantErr: "heartbeat_interval must be positive",
+		},
+		{
+			name:    "negative external authentication timeout",
+			dsn:     "https://localhost:8443?externalAuthentication=true&externalAuthenticationTimeout=-1m",
+			conf:    Config{ServerURI: "https://localhost:8443", ExternalAuthentication: true, ExternalAuthenticationTimeout: ptr(-time.Minute)},
+			wantErr: "externalAuthenticationTimeout must be positive",
+		},
+		{
+			name:    "zero request retry timeout",
+			dsn:     "http://localhost:8080?request_retry_timeout=0s",
+			conf:    Config{ServerURI: "http://localhost:8080", RequestRetryTimeout: ptr(time.Duration(0))},
+			wantErr: "request_retry_timeout must be positive",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := NewConnector(&tc.conf)
+			assert.ErrorContains(t, err, tc.wantErr, "NewConnector")
+			_, err = ParseDSN(tc.dsn)
+			assert.ErrorContains(t, err, tc.wantErr, "ParseDSN")
+			_, err = sql.Open("trino", tc.dsn)
+			assert.ErrorContains(t, err, tc.wantErr, "sql.Open")
+			_, err = (&Driver{}).Open(tc.dsn)
+			assert.ErrorContains(t, err, tc.wantErr, "Driver.Open")
+		})
+	}
+}
+
+func TestValidDSNOpens(t *testing.T) {
+	t.Parallel()
+	for _, dsn := range []string{
+		"http://user@localhost:8080",
+		"http://localhost:8080/tpch/sf1?heartbeat_interval=30s&request_retry_timeout=1m&request_retry_max_attempts=3",
+		"https://user:secret@localhost:8443/tpch?schema=sf1&SSLVerification=CA&SSLCert=PEM",
+		"https://localhost:8443?KerberosEnabled=true&KerberosKeytabPath=%2Fetc%2Ftrino.keytab",
+		"https://localhost:8443?externalAuthentication=true&externalAuthenticationTimeout=1m",
+		"https://localhost:8443?oauth2ClientId=id&oauth2ClientSecret=secret",
+		"http://localhost:8080?httpProxy=proxy%3A3128",
+	} {
+		t.Run(dsn, func(t *testing.T) {
+			t.Parallel()
+			conf, err := ParseDSN(dsn)
+			require.NoError(t, err)
+			_, err = NewConnector(conf)
+			require.NoError(t, err)
+
+			db, err := sql.Open("trino", dsn)
+			require.NoError(t, err)
+			require.NoError(t, db.Close())
+		})
+	}
+}
+
 func TestNewConnectorLeavesConfigUnchanged(t *testing.T) {
 	t.Parallel()
 	conf := &Config{ServerURI: "http://localhost", HTTPClient: &http.Client{}}

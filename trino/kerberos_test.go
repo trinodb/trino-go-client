@@ -265,10 +265,8 @@ func TestKerberosKeytabAndCredentialCacheExclusive(t *testing.T) {
 	_, err := NewConnector(conf)
 	require.ErrorContains(t, err, want)
 
-	db, err := sql.Open("trino", "https://localhost:8443?KerberosEnabled=true&KerberosKeytabPath=/etc/trino.keytab&KerberosCredentialCachePath=/tmp/krb5cc_1000")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	require.ErrorContains(t, db.Ping(), want)
+	_, err = sql.Open("trino", "https://localhost:8443?KerberosEnabled=true&KerberosKeytabPath=/etc/trino.keytab&KerberosCredentialCachePath=/tmp/krb5cc_1000")
+	require.ErrorContains(t, err, want)
 }
 
 func TestKerberosCredentialCacheDSNRoundTrip(t *testing.T) {

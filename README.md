@@ -57,8 +57,9 @@ for rows.Next() {
 return rows.Err()
 ```
 
-`sql.Open` returns an error for a DSN that does not parse, and does not
-contact the server. Settings that a DSN cannot carry, such as an
+`sql.Open` returns an error for a DSN that does not parse or has settings
+that `trino.NewConnector` would reject in a `Config`, such as TLS options or
+Kerberos on an `http://` server. It does not contact the server. Settings that a DSN cannot carry, such as an
 `http.Client`, go in a [`trino.Config`](#config-and-connector) passed to
 `trino.NewConnector` and `sql.OpenDB`.
 

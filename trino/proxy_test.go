@@ -120,10 +120,8 @@ func TestProxyDSNRejected(t *testing.T) {
 	_, err = ParseDSN("http://localhost:8080?socksProxy=proxy%3A99999")
 	assert.ErrorContains(t, err, `socksProxy must be host:port, got "proxy:99999"`)
 
-	db, err := sql.Open("trino", "http://localhost:8080?httpProxy=proxy%3A8080&socksProxy=proxy%3A1080")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	assert.ErrorContains(t, db.Ping(), "socksProxy cannot be used when httpProxy is set")
+	_, err = sql.Open("trino", "http://localhost:8080?httpProxy=proxy%3A8080&socksProxy=proxy%3A1080")
+	assert.ErrorContains(t, err, "socksProxy cannot be used when httpProxy is set")
 }
 
 // Without a proxy, http.DefaultTransport keeps taking it from the environment.

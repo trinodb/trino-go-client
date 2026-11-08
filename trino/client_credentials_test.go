@@ -692,10 +692,8 @@ func TestClientCredentialsConflicts(t *testing.T) {
 		assert.ErrorContains(t, err, "oauth2ClientId cannot be combined", name)
 	}
 
-	db, err := sql.Open("trino", "https://localhost?oauth2ClientId=id&oauth2ClientSecret=secret&accessToken=token")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	assert.ErrorContains(t, db.Ping(), "oauth2ClientId cannot be combined")
+	_, err := sql.Open("trino", "https://localhost?oauth2ClientId=id&oauth2ClientSecret=secret&accessToken=token")
+	assert.ErrorContains(t, err, "oauth2ClientId cannot be combined")
 }
 
 func TestClientCredentialsDSNRoundTrip(t *testing.T) {

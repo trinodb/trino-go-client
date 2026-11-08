@@ -379,10 +379,8 @@ func TestExternalAuthenticationConflicts(t *testing.T) {
 		assert.ErrorContains(t, err, "cannot be combined", name)
 	}
 
-	db, err := sql.Open("trino", "https://localhost?externalAuthentication=true&forwardAuthorizationHeader=true")
-	require.NoError(t, err)
-	t.Cleanup(func() { require.NoError(t, db.Close()) })
-	assert.ErrorContains(t, db.Ping(), "cannot be combined")
+	_, err := sql.Open("trino", "https://localhost?externalAuthentication=true&forwardAuthorizationHeader=true")
+	assert.ErrorContains(t, err, "cannot be combined")
 }
 
 func TestExternalAuthenticationDSNRoundTrip(t *testing.T) {
