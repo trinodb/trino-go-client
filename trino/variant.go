@@ -268,13 +268,13 @@ func (v Variant) appendJSON(buf []byte) []byte {
 	case VariantTimeNTZMicros:
 		return appendJSONString(buf, time.UnixMicro(v.int64()).UTC().Format("15:04:05.000000"))
 	case VariantTimestampUTCMicros:
-		return appendJSONString(buf, time.UnixMicro(v.int64()).UTC().Format("2006-01-02 15:04:05.000000 UTC"))
+		return appendJSONString(buf, formatTimestamp(time.UnixMicro(v.int64()), "2006-01-02 15:04:05.000000 UTC"))
 	case VariantTimestampNTZMicros:
-		return appendJSONString(buf, time.UnixMicro(v.int64()).UTC().Format("2006-01-02 15:04:05.000000"))
+		return appendJSONString(buf, formatTimestamp(time.UnixMicro(v.int64()), "2006-01-02 15:04:05.000000"))
 	case VariantTimestampUTCNanos:
-		return appendJSONString(buf, time.Unix(0, v.int64()).UTC().Format("2006-01-02 15:04:05.000000000 UTC"))
+		return appendJSONString(buf, formatTimestamp(time.Unix(0, v.int64()), "2006-01-02 15:04:05.000000000 UTC"))
 	case VariantTimestampNTZNanos:
-		return appendJSONString(buf, time.Unix(0, v.int64()).UTC().Format("2006-01-02 15:04:05.000000000"))
+		return appendJSONString(buf, formatTimestamp(time.Unix(0, v.int64()), "2006-01-02 15:04:05.000000000"))
 	case VariantArray:
 		buf = append(buf, '[')
 		for i := 0; i < v.arrayLength(); i++ {
@@ -694,6 +694,16 @@ func plainDecimal(unscaled *big.Int, scale int) string {
 		digits = strings.Repeat("0", scale-len(digits)+1) + digits
 	}
 	return sign + digits[:len(digits)-scale] + "." + digits[len(digits)-scale:]
+}
+
+// formatTimestamp formats t in UTC the way the server writes timestamps,
+// with a plus sign before years after 9999, which it leaves out for dates.
+func formatTimestamp(t time.Time, layout string) string {
+	t = t.UTC()
+	if t.Year() > 9999 {
+		return "+" + t.Format(layout)
+	}
+	return t.Format(layout)
 }
 
 // appendJSONString quotes s the way Jackson does: only quotes, backslashes

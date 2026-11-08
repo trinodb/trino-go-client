@@ -252,6 +252,36 @@
     "json": "\"1969-12-31 23:59:59.999999999 UTC\""
   },
   {
+    "expression": "CAST(DATE '-0001-01-01' AS VARIANT)",
+    "metadata": "AQAA",
+    "value": "LOsD9f8=",
+    "json": "\"-0001-01-01\""
+  },
+  {
+    "expression": "CAST(DATE '+10000-01-01' AS VARIANT)",
+    "metadata": "AQAA",
+    "value": "LKHALAA=",
+    "json": "\"10000-01-01\""
+  },
+  {
+    "expression": "CAST(TIMESTAMP '+10000-01-01 00:00:00.000000' AS VARIANT)",
+    "metadata": "AQAA",
+    "value": "NABgc8wMRIQD",
+    "json": "\"+10000-01-01 00:00:00.000000\""
+  },
+  {
+    "expression": "CAST(TIMESTAMP '-0001-01-01 00:00:00.000000 UTC' AS VARIANT)",
+    "metadata": "AQAA",
+    "value": "MAAg1cqPBiP/",
+    "json": "\"-0001-01-01 00:00:00.000000 UTC\""
+  },
+  {
+    "expression": "CAST(TIMESTAMP '+10000-01-01 00:00:00.000000 UTC' AS VARIANT)",
+    "metadata": "AQAA",
+    "value": "MABgc8wMRIQD",
+    "json": "\"+10000-01-01 00:00:00.000000 UTC\""
+  },
+  {
     "expression": "CAST(TIME '03:04:05.123456' AS VARIANT)",
     "metadata": "AQAA",
     "value": "RIA1V5ICAAAA",
