@@ -394,6 +394,18 @@ environment variable or from `/etc/localtime`; when neither names a zone, the
 current UTC offset is sent instead. Set the parameter explicitly to make the
 results independent of where the client runs, for example `timezone=UTC`.
 
+A value without a zone is a wall-clock reading, and a zone with daylight
+saving time skips some readings and repeats others, so such values can't
+always be read back exactly in the session zone. A skipped reading comes back
+with a different wall clock: `TIMESTAMP '2024-03-10 02:30:00'` in
+America/New_York becomes `2024-03-10 01:30:00 -0500 EST`, the same as
+`TIMESTAMP '2024-03-10 01:30:00'`. A repeated reading keeps its wall clock,
+but gets one of its two offsets. In zones that change the clock at midnight,
+like America/Havana, a `DATE` on the day of the change comes back as 23:00 on
+the day before. A `TIME` is read on January 1 of year 0, when most zones used
+local mean time, so its offset differs from the current one, like -04:56:02
+in America/New_York.
+
 Running `SET TIME ZONE` changes the zone for the rest of the session, and the
 driver follows it when reading values. The `X-Trino-Time-Zone` [named
 argument](#per-query-settings) overrides the zone for one query.
@@ -1266,7 +1278,9 @@ The details for some of the types:
   in the zone of the connection (see the `timezone` parameter), which is the
   zone the server used to produce them, also inside an `ARRAY`, `MAP` or
   `ROW`. `MAP` keys of these types are parsed by `trino.NullMap`, in the zone
-  of its `Location` field, `time.Local` by default.
+  of its `Location` field, `time.Local` by default. Values that fall into a
+  daylight saving time gap of that zone come back changed, see the
+  `timezone` parameter.
 * `DECIMAL` and `NUMBER` (Trino 480+) - returned as string; use
   `sql.NullString` for nullable columns
 * `IPADDRESS` - returned as string
