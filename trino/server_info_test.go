@@ -69,6 +69,21 @@ func TestPingSucceedsWhenServerCannotValidateCredentials(t *testing.T) {
 	require.NoError(t, db.PingContext(context.Background()))
 }
 
+// Starburst Galaxy answers HEAD /v1/statement with 401 and no challenge,
+// while queries receive the external authentication challenge.
+func TestPingSkipsCredentialsCheckWhenValidationIsDisabled(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	serveServerInfoAndCredentialsCheck(fc, http.StatusUnauthorized)
+	db := fc.open(t, "?validateConnection=false")
+
+	require.NoError(t, db.PingContext(context.Background()))
+
+	requests := fc.capturedRequests()
+	require.Len(t, requests, 1)
+	assert.Equal(t, "/v1/info", requests[0].path)
+}
+
 func TestPingFailsWhenCredentialsCheckFails(t *testing.T) {
 	t.Parallel()
 	fc := newFakeCoordinator(t)

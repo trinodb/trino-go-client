@@ -66,6 +66,14 @@ func TestFormatDSN(t *testing.T) {
 			want: "https://foobar@localhost:8090?explicitPrepare=false&source=trino-go-client",
 		},
 		{
+			name: "credentials check disabled",
+			config: &Config{
+				ServerURI:                "https://foobar@localhost:8090",
+				SkipConnectionValidation: true,
+			},
+			want: "https://foobar@localhost:8090?source=trino-go-client&validateConnection=false",
+		},
+		{
 			name: "multiple client tags",
 			config: &Config{
 				ServerURI:         "http://foobar@localhost:8080",
@@ -539,6 +547,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"socksProxy=proxy.example.com%3A1080&" +
 		"accessToken=jwt-token-here&" +
 		"explicitPrepare=false&" +
+		"validateConnection=false&" +
 		"forwardAuthorizationHeader=true&" +
 		"query_timeout=5m30s&" +
 		"request_retry_timeout=90s&" +
@@ -614,6 +623,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, "proxy.example.com:1080", config.SOCKSProxy)
 	assert.Equal(t, "jwt-token-here", config.AccessToken)
 	assert.Equal(t, true, config.DisableExplicitPrepare)
+	assert.Equal(t, true, config.SkipConnectionValidation)
 	assert.Equal(t, true, config.ForwardAuthorizationHeader)
 	assert.NotNil(t, config.QueryTimeout)
 	assert.Equal(t, 5*time.Minute+30*time.Second, *config.QueryTimeout)
