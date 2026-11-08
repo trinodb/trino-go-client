@@ -2509,8 +2509,18 @@ func newErrQueryFailedFromResponse(resp *http.Response) *ErrQueryFailed {
 }
 
 type driverStmt struct {
+	conn  *Conn
+	query string
+	// current is the latest execution of the statement; rows read only the
+	// execution they were created for.
+	current *execution
+}
+
+// execution is one run of a statement: the goroutines that fetch its pages,
+// download and decode its spooled segments and report its progress, and the
+// settings that its named arguments chose for this run only.
+type execution struct {
 	conn                          *Conn
-	query                         string
 	user                          string
 	timeZone                      *time.Location
 	warnings                      *Warnings
@@ -2542,17 +2552,16 @@ type driverStmt struct {
 	// cancelQuery ends the context of the running query, which aborts a
 	// nextUri request still in flight.
 	cancelQuery context.CancelFunc
-	// execution counts the executions of the statement; rows read only the
-	// execution they were created for.
-	execution uint64
+	// stopped is set once stop has run.
+	stopped bool
 	// spoolingProcessorExited is closed when proccessSpollingSegments returns.
 	spoolingProcessorExited chan struct{}
 	waitSegmentAcks         sync.WaitGroup
 	failedSegmentAcks       atomic.Int64
 	lastProgress            QueryProgressInfo
 	// progressUpdater and progressUpdaterPeriod come from the named arguments
-	// of the current execution only, so a query run without them, on the
-	// same connection or the same prepared statement, does not report to the
+	// of this execution only, so a query run without them, on the same
+	// connection or the same prepared statement, does not report to the
 	// callback of an earlier one.
 	progressUpdater       ProgressUpdater
 	progressUpdaterPeriod queryProgressCallbackPeriod
@@ -2583,103 +2592,102 @@ func (st *driverStmt) Close() error {
 	return nil
 }
 
-// stopQuery stops the goroutines of the running query and waits for them, so
-// nothing from that query reaches the connection or a later execution of the
-// statement. It is a no-op when no query is running.
+// stopQuery stops the latest execution of the statement.
 func (st *driverStmt) stopQuery() {
-	if st.cancelQuery != nil {
-		st.cancelQuery()
-		st.cancelQuery = nil
+	if st.current != nil {
+		st.current.stop()
 	}
-	if st.doneCh == nil {
+}
+
+// stop stops the goroutines of the execution and waits for them, so nothing
+// from its query reaches the connection or a later execution of the
+// statement. It is a no-op once the execution is stopped, or when its query
+// never started.
+func (ex *execution) stop() {
+	if ex.stopped {
 		return
 	}
-	close(st.doneCh)
-	if st.statsCh != nil {
-		<-st.statsCh
-		st.statsCh = nil
+	ex.stopped = true
+	if ex.cancelQuery != nil {
+		ex.cancelQuery()
 	}
-	errs := st.errors
+	if ex.doneCh == nil {
+		return
+	}
+	close(ex.doneCh)
+	if ex.statsCh != nil {
+		<-ex.statsCh
+	}
+	errs := ex.errors
 	go func() {
 		// drain errors chan to allow goroutines to write to it
 		for range errs {
 		}
 	}()
 
-	for range st.queryResponses {
+	for range ex.queryResponses {
 	}
-	for range st.httpResponses {
-	}
-
-	if st.cancelDownloadWorkers != nil {
-		st.cancelDownloadWorkers()
+	for range ex.httpResponses {
 	}
 
-	if st.cancelDecodersWorkers != nil {
-		st.cancelDecodersWorkers()
+	if ex.cancelDownloadWorkers != nil {
+		ex.cancelDownloadWorkers()
 	}
 
-	if st.spoolingRowsChannel != nil {
-		for range st.spoolingRowsChannel {
+	if ex.cancelDecodersWorkers != nil {
+		ex.cancelDecodersWorkers()
+	}
+
+	if ex.spoolingRowsChannel != nil {
+		for range ex.spoolingRowsChannel {
 		}
 	}
 
-	if st.decodedSegments != nil {
-		for range st.decodedSegments {
+	if ex.decodedSegments != nil {
+		for range ex.decodedSegments {
 		}
 	}
 
-	if st.spooledSegmentsToDecode != nil {
-		for range st.spooledSegmentsToDecode {
+	if ex.spooledSegmentsToDecode != nil {
+		for range ex.spooledSegmentsToDecode {
 		}
 	}
 
-	if st.spooledSegmentsMetadata != nil {
-		for range st.spooledSegmentsMetadata {
+	if ex.spooledSegmentsMetadata != nil {
+		for range ex.spooledSegmentsMetadata {
 		}
 	}
 
-	if st.segmentsToProccess != nil {
-		for range st.segmentsToProccess {
+	if ex.segmentsToProccess != nil {
+		for range ex.segmentsToProccess {
 		}
 	}
 
-	if st.spoolingProcessorExited != nil {
-		<-st.spoolingProcessorExited
+	if ex.spoolingProcessorExited != nil {
+		<-ex.spoolingProcessorExited
 	}
 
-	st.waitDownloadSegmentsWorkers.Wait()
+	ex.waitDownloadSegmentsWorkers.Wait()
 
-	st.waitSegmentDecodersWorkers.Wait()
+	ex.waitSegmentDecodersWorkers.Wait()
 
-	if st.cancelHeartbeat != nil {
-		st.cancelHeartbeat()
+	if ex.cancelHeartbeat != nil {
+		ex.cancelHeartbeat()
 	}
-	st.waitHeartbeat.Wait()
+	ex.waitHeartbeat.Wait()
 
 	// Acknowledgments can finish after the last progress update, so report
 	// failures among them once they are all done.
-	if st.progressUpdater != nil && st.usingSpooledProtocol {
-		st.waitSegmentAcks.Wait()
-		if failed := st.failedSegmentAcks.Load(); failed > st.lastProgress.FailedSegmentAcknowledgments {
-			st.lastProgress.FailedSegmentAcknowledgments = failed
-			st.progressUpdater.Update(st.lastProgress)
+	if ex.progressUpdater != nil && ex.usingSpooledProtocol {
+		ex.waitSegmentAcks.Wait()
+		if failed := ex.failedSegmentAcks.Load(); failed > ex.lastProgress.FailedSegmentAcknowledgments {
+			ex.lastProgress.FailedSegmentAcknowledgments = failed
+			ex.progressUpdater.Update(ex.lastProgress)
 		}
 	}
 
-	close(st.nextURIs)
-	close(st.errors)
-
-	st.doneCh = nil
-	st.cancelDownloadWorkers = nil
-	st.spooledSegmentsMetadata = nil
-	st.spooledSegmentsToDecode = nil
-	st.cancelDecodersWorkers = nil
-	st.segmentsToProccess = nil
-	st.decodedSegments = nil
-	st.spoolingRowsChannel = nil
-	st.cancelHeartbeat = nil
-	st.spoolingProcessorExited = nil
+	close(ex.nextURIs)
+	close(ex.errors)
 }
 
 func (st *driverStmt) NumInput() int {
@@ -2692,7 +2700,7 @@ func (st *driverStmt) Exec(args []driver.Value) (driver.Result, error) {
 
 func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue) (driver.Result, error) {
 	authorization := st.conn.snapshotAuthorization()
-	sr, err := st.exec(ctx, args)
+	ex, sr, err := st.exec(ctx, args)
 	if err != nil {
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
@@ -2700,20 +2708,17 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 	rows := &driverRows{
 		ctx:          ctx,
 		stmt:         st,
+		exec:         ex,
 		queryID:      sr.ID,
 		nextURI:      sr.NextURI,
 		rowsAffected: sr.UpdateCount,
-		statsCh:      st.statsCh,
-		doneCh:       st.doneCh,
-		execution:    st.execution,
-		user:         st.user,
 	}
 	// consume all results, if there are any
 	for err == nil {
 		err = rows.fetch()
 		// Once the result switches to the spooling protocol, its pages are
 		// read by the spooling goroutines; read the rows they produce.
-		if err == nil && st.usingSpooledProtocol {
+		if err == nil && ex.usingSpooledProtocol {
 			err = rows.drainSpooledRows()
 		}
 	}
@@ -2722,7 +2727,7 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 		// The polling goroutines may already be fetching the next page;
 		// stop them before the connection goes back to the pool, or that
 		// page's headers would change the next caller's session.
-		st.stopQuery()
+		ex.stop()
 		rows.cancelAbandonedQuery(err)
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
@@ -2881,7 +2886,7 @@ func (st *driverStmt) Query(args []driver.Value) (driver.Rows, error) {
 
 func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driver.Rows, error) {
 	authorization := st.conn.snapshotAuthorization()
-	sr, err := st.exec(ctx, args)
+	ex, sr, err := st.exec(ctx, args)
 	if err != nil {
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
@@ -2889,18 +2894,15 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 	rows := &driverRows{
 		ctx:           ctx,
 		stmt:          st,
+		exec:          ex,
 		queryID:       sr.ID,
 		nextURI:       sr.NextURI,
-		statsCh:       st.statsCh,
-		doneCh:        st.doneCh,
 		authorization: &authorization,
-		execution:     st.execution,
-		user:          st.user,
 	}
 	if err = rows.fetch(); err != nil && err != io.EOF {
 		// As in ExecContext: stop the query before the connection can be
 		// reused.
-		st.stopQuery()
+		ex.stop()
 		rows.cancelAbandonedQuery(err)
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
@@ -2908,21 +2910,14 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 	return rows, nil
 }
 
-func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmtResponse, error) {
+func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*execution, *stmtResponse, error) {
 	query := st.query
 	// A prepared statement is executed more than once. Stop what is left of
-	// the previous execution, and start from the connection's settings rather
-	// than the named arguments an earlier execution passed.
+	// the previous execution; the new one starts from the connection's
+	// settings rather than the named arguments an earlier execution passed.
 	st.stopQuery()
-	st.execution++
-	st.warnings = nil
-	st.user = ""
-	st.timeZone = nil
-	st.usingSpooledProtocol = false
-	st.spoolingWorkerCount = 0
-	st.spoolingMaxOutOfOrderSegments = 0
-	st.progressUpdater = nil
-	st.progressUpdaterPeriod = queryProgressCallbackPeriod{}
+	ex := &execution{conn: st.conn}
+	st.current = ex
 	hs := make(http.Header)
 	hs.Add(trinoClientCapabilitiesHeader, clientCapabilities)
 	// The server reads extra credentials only when the statement is submitted.
@@ -2945,33 +2940,33 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			if arg.Name == trinoProgressCallbackParam {
 				updater, ok := arg.Value.(ProgressUpdater)
 				if !ok {
-					return nil, fmt.Errorf("trino: %s must be a ProgressUpdater, got %T", trinoProgressCallbackParam, arg.Value)
+					return nil, nil, fmt.Errorf("trino: %s must be a ProgressUpdater, got %T", trinoProgressCallbackParam, arg.Value)
 				}
-				st.progressUpdater = updater
+				ex.progressUpdater = updater
 				continue
 			}
 			if arg.Name == trinoProgressCallbackPeriodParam {
 				period, ok := arg.Value.(time.Duration)
 				if !ok {
-					return nil, fmt.Errorf("trino: %s must be a time.Duration, got %T", trinoProgressCallbackPeriodParam, arg.Value)
+					return nil, nil, fmt.Errorf("trino: %s must be a time.Duration, got %T", trinoProgressCallbackPeriodParam, arg.Value)
 				}
-				st.progressUpdaterPeriod.Period = period
+				ex.progressUpdaterPeriod.Period = period
 				continue
 			}
 
 			if arg.Name == accessTokenConfig {
 				if !st.conn.forwardAuthorizationHeader {
-					return nil, ErrForwardAuthorizationHeaderNotEnabled
+					return nil, nil, ErrForwardAuthorizationHeaderNotEnabled
 				}
 				token, ok := arg.Value.(string)
 				if !ok {
-					return nil, fmt.Errorf("trino: %s must be a string, got %T", accessTokenConfig, arg.Value)
+					return nil, nil, fmt.Errorf("trino: %s must be a string, got %T", accessTokenConfig, arg.Value)
 				}
 				// An empty token would not authenticate the caller: the
 				// request would go out with the connection's password, or
 				// with no credentials at all.
 				if token == "" {
-					return nil, fmt.Errorf("trino: %s must not be empty", accessTokenConfig)
+					return nil, nil, fmt.Errorf("trino: %s must not be empty", accessTokenConfig)
 				}
 				hs.Add(authorizationHeader, getAuthorization(token))
 				continue
@@ -2980,7 +2975,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			if arg.Name == trinoEncoding {
 				encoding, err := namedStringArg(arg)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 				hs.Add(trinoQueryDataEncodingHeader, encoding)
 				continue
@@ -2989,44 +2984,44 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			if arg.Name == trinoSpoolingWorkerCount {
 				numberOfWorkers, err := namedIntArg(arg)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				st.spoolingWorkerCount = numberOfWorkers
+				ex.spoolingWorkerCount = numberOfWorkers
 				continue
 			}
 
 			if arg.Name == trinoMaxOutOfOrdersSegments {
 				maxSegmentsOutOfOrder, err := namedIntArg(arg)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
-				st.spoolingMaxOutOfOrderSegments = maxSegmentsOutOfOrder
+				ex.spoolingMaxOutOfOrderSegments = maxSegmentsOutOfOrder
 				continue
 			}
 
 			if arg.Name == trinoWarningsParam {
 				warnings, ok := arg.Value.(*Warnings)
 				if !ok {
-					return nil, fmt.Errorf("trino: %s must be a *trino.Warnings, got %T", arg.Name, arg.Value)
+					return nil, nil, fmt.Errorf("trino: %s must be a *trino.Warnings, got %T", arg.Name, arg.Value)
 				}
-				st.warnings = warnings
+				ex.warnings = warnings
 				continue
 			}
 
 			if strings.HasPrefix(arg.Name, trinoHeaderPrefix) {
 				headerValue, err := formatHeaderValue(arg.Name, arg.Value)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 
 				if arg.Name == trinoUserHeader {
-					st.user = headerValue
+					ex.user = headerValue
 				}
 
 				if arg.Name == trinoTimeZoneHeader {
-					st.timeZone, err = resolveTimeZone(headerValue)
+					ex.timeZone, err = resolveTimeZone(headerValue)
 					if err != nil {
-						return nil, err
+						return nil, nil, err
 					}
 				}
 
@@ -3038,7 +3033,7 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			} else {
 				s, err := Serial(arg.Value)
 				if err != nil {
-					return nil, err
+					return nil, nil, err
 				}
 
 				if st.conn.useExplicitPrepare && hs.Get(preparedStatementHeader) == "" {
@@ -3050,8 +3045,8 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 				ss = append(ss, s)
 			}
 		}
-		if (st.progressUpdater != nil && st.progressUpdaterPeriod.Period == 0) || (st.progressUpdater == nil && st.progressUpdaterPeriod.Period > 0) {
-			return nil, ErrInvalidProgressCallbackHeader
+		if (ex.progressUpdater != nil && ex.progressUpdaterPeriod.Period == 0) || (ex.progressUpdater == nil && ex.progressUpdaterPeriod.Period > 0) {
+			return nil, nil, ErrInvalidProgressCallbackHeader
 		}
 		if len(ss) > 0 {
 			if st.conn.useExplicitPrepare {
@@ -3065,13 +3060,13 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	if len(resourceEstimates) > 0 {
 		encoded, err := encodeResourceEstimates(resourceEstimates)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		hs[trinoResourceEstimateHeader] = append(encoded, hs.Values(trinoResourceEstimateHeader)...)
 	}
 
-	if st.spoolingWorkerCount > st.spoolingMaxOutOfOrderSegments {
-		return nil, fmt.Errorf("spooling worker cannot be greater than max out of order segments allowed. spooling workers: %d, allowed out of order segments: %d", st.spoolingWorkerCount, st.spoolingMaxOutOfOrderSegments)
+	if ex.spoolingWorkerCount > ex.spoolingMaxOutOfOrderSegments {
+		return nil, nil, fmt.Errorf("spooling worker cannot be greater than max out of order segments allowed. spooling workers: %d, allowed out of order segments: %d", ex.spoolingWorkerCount, ex.spoolingMaxOutOfOrderSegments)
 	}
 
 	if hs.Get(trinoQueryDataEncodingHeader) == "" {
@@ -3093,14 +3088,14 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	req, err := st.conn.newRequest(ctx, "POST", st.conn.baseURL+"/v1/statement", strings.NewReader(query), hs)
 	if err != nil {
 		cancel()
-		return nil, st.conn.unsentRequestError(err)
+		return nil, nil, st.conn.unsentRequestError(err)
 	}
 	req.Header.Set(contentTypeHeader, statementMediaType)
 
 	resp, err := st.conn.roundTrip(ctx, req)
 	if err != nil {
 		cancel()
-		return nil, err
+		return nil, nil, err
 	}
 
 	defer resp.Body.Close()
@@ -3108,110 +3103,110 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 	err = json.UnmarshalRead(resp.Body, &sr)
 	if err != nil {
 		cancel()
-		return nil, fmt.Errorf("trino: %w", err)
+		return nil, nil, fmt.Errorf("trino: %w", err)
 	}
-	if st.warnings != nil {
-		st.warnings.add(sr.Warnings)
+	if ex.warnings != nil {
+		ex.warnings.add(sr.Warnings)
 	}
 
-	st.cancelQuery = cancel
-	st.doneCh = make(chan struct{})
-	st.nextURIs = make(chan string)
-	st.httpResponses = make(chan *http.Response)
-	st.queryResponses = make(chan queryResponse)
-	st.errors = make(chan error)
+	ex.cancelQuery = cancel
+	ex.doneCh = make(chan struct{})
+	ex.nextURIs = make(chan string)
+	ex.httpResponses = make(chan *http.Response)
+	ex.queryResponses = make(chan queryResponse)
+	ex.errors = make(chan error)
 	go func() {
-		defer close(st.httpResponses)
+		defer close(ex.httpResponses)
 		for {
 			select {
-			case nextURI := <-st.nextURIs:
+			case nextURI := <-ex.nextURIs:
 				if nextURI == "" {
 					return
 				}
 				hs := make(http.Header)
-				if st.user != "" {
-					hs.Add(trinoUserHeader, st.user)
+				if ex.user != "" {
+					hs.Add(trinoUserHeader, ex.user)
 				}
 				req, err := st.conn.newRequest(ctx, "GET", nextURI, nil, hs)
 				if err != nil {
 					if ctx.Err() == context.Canceled {
-						st.errors <- context.Canceled
+						ex.errors <- context.Canceled
 						return
 					}
-					st.errors <- err
+					ex.errors <- err
 					return
 				}
 				resp, err := st.conn.roundTrip(ctx, req)
 				if err != nil {
 					if ctx.Err() == context.Canceled {
-						st.errors <- context.Canceled
+						ex.errors <- context.Canceled
 						return
 					}
-					st.errors <- err
+					ex.errors <- err
 					return
 				}
 				select {
-				case st.httpResponses <- resp:
-				case <-st.doneCh:
+				case ex.httpResponses <- resp:
+				case <-ex.doneCh:
 					return
 				}
-			case <-st.doneCh:
+			case <-ex.doneCh:
 				return
 			}
 		}
 	}()
 	go func() {
-		defer close(st.queryResponses)
+		defer close(ex.queryResponses)
 		defer cancel()
 		for {
 			select {
-			case resp := <-st.httpResponses:
+			case resp := <-ex.httpResponses:
 				if resp == nil {
 					return
 				}
 				var qresp queryResponse
 				err = json.UnmarshalRead(resp.Body, &qresp)
 				if err != nil {
-					st.errors <- fmt.Errorf("trino: %w", err)
+					ex.errors <- fmt.Errorf("trino: %w", err)
 					return
 				}
 				err = resp.Body.Close()
 				if err != nil {
-					st.errors <- err
+					ex.errors <- err
 					return
 				}
 				err = handleResponseError(resp.StatusCode, qresp.Error)
 				if err != nil {
-					st.errors <- err
+					ex.errors <- err
 					return
 				}
 				select {
-				case st.nextURIs <- qresp.NextURI:
-				case <-st.doneCh:
+				case ex.nextURIs <- qresp.NextURI:
+				case <-ex.doneCh:
 					return
 				}
 				select {
-				case st.queryResponses <- qresp:
-				case <-st.doneCh:
+				case ex.queryResponses <- qresp:
+				case <-ex.doneCh:
 					return
 				}
-			case <-st.doneCh:
+			case <-ex.doneCh:
 				return
 			}
 		}
 	}()
-	st.nextURIs <- sr.NextURI
-	if updater := st.progressUpdater; updater != nil {
-		st.statsCh = make(chan QueryProgressInfo)
+	ex.nextURIs <- sr.NextURI
+	if updater := ex.progressUpdater; updater != nil {
+		ex.statsCh = make(chan QueryProgressInfo)
 
 		// progress updater go func
 		go func() {
 			for {
 				select {
-				case stats := <-st.statsCh:
+				case stats := <-ex.statsCh:
 					updater.Update(stats)
-				case <-st.doneCh:
-					close(st.statsCh)
+				case <-ex.doneCh:
+					close(ex.statsCh)
 					return
 				}
 			}
@@ -3222,16 +3217,16 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*stmt
 			QueryId:    sr.ID,
 			QueryStats: sr.Stats,
 		}
-		st.failedSegmentAcks.Store(0)
-		st.lastProgress = srStats
+		ex.failedSegmentAcks.Store(0)
+		ex.lastProgress = srStats
 		select {
-		case st.statsCh <- srStats:
-		case <-st.doneCh:
+		case ex.statsCh <- srStats:
+		case <-ex.doneCh:
 		}
-		st.progressUpdaterPeriod.LastCallbackTime = time.Now()
-		st.progressUpdaterPeriod.LastQueryState = sr.Stats.State
+		ex.progressUpdaterPeriod.LastCallbackTime = time.Now()
+		ex.progressUpdaterPeriod.LastQueryState = sr.Stats.State
 	}
-	return &sr, handleResponseError(resp.StatusCode, sr.Error)
+	return ex, &sr, handleResponseError(resp.StatusCode, sr.Error)
 }
 
 // SegmentExpiredError reports a spooled segment download that failed after
@@ -3375,6 +3370,7 @@ func formatStringLiteral(query string) string {
 type driverRows struct {
 	ctx     context.Context
 	stmt    *driverStmt
+	exec    *execution
 	queryID string
 	nextURI string
 
@@ -3386,16 +3382,8 @@ type driverRows struct {
 	data         []queryData
 	rowsAffected int64
 
-	statsCh chan QueryProgressInfo
-	doneCh  chan struct{}
-
 	// authorization is restored if the query fails while reading rows.
 	authorization *authorizationSnapshot
-	// execution is the statement execution these rows belong to.
-	execution uint64
-	// user is the user the execution ran as, which a later execution of the
-	// statement may change.
-	user string
 }
 
 // errStatementExecutedAgain is returned by rows whose prepared statement ran
@@ -3406,7 +3394,7 @@ var errStatementExecutedAgain = errors.New("trino: the statement was executed ag
 // superseded reports whether the statement has started another execution
 // since these rows were created.
 func (qr *driverRows) superseded() bool {
-	return qr.execution != qr.stmt.execution
+	return qr.exec != qr.stmt.current
 }
 
 var _ driver.Rows = &driverRows{}
@@ -3432,12 +3420,12 @@ func (qr *driverRows) Close() error {
 	// The statement may outlive the rows, as a prepared statement does, and
 	// the connection goes back to the pool once the rows are closed, even
 	// when every row was read.
-	defer qr.stmt.stopQuery()
+	defer qr.exec.stop()
 	if qr.err == sql.ErrNoRows || qr.err == io.EOF {
 		return nil
 	}
 	qr.err = io.EOF
-	if !qr.stmt.usingSpooledProtocol {
+	if !qr.exec.usingSpooledProtocol {
 		err := qr.fetch()
 		if err != nil && err != io.EOF {
 			return err
@@ -3447,7 +3435,7 @@ func (qr *driverRows) Close() error {
 		}
 	} else {
 		select {
-		case _, ok := <-qr.stmt.spoolingRowsChannel:
+		case _, ok := <-qr.exec.spoolingRowsChannel:
 			if !ok {
 				// channel is closed, all data has been consumed
 				return nil
@@ -3477,8 +3465,8 @@ func (qr *driverRows) cancelAbandonedQuery(err error) {
 // cancelQueryOnServer asks the coordinator to cancel the query.
 func (qr *driverRows) cancelQueryOnServer() error {
 	hs := make(http.Header)
-	if qr.user != "" {
-		hs.Add(trinoUserHeader, qr.user)
+	if qr.exec.user != "" {
+		hs.Add(trinoUserHeader, qr.exec.user)
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(qr.ctx), DefaultCancelQueryTimeout)
 	defer cancel()
@@ -3503,20 +3491,20 @@ func (qr *driverRows) cancelQueryOnServer() error {
 func (qr *driverRows) drainSpooledRows() error {
 	for {
 		select {
-		case _, ok := <-qr.stmt.spoolingRowsChannel:
+		case _, ok := <-qr.exec.spoolingRowsChannel:
 			if !ok {
 				return io.EOF
 			}
-		case err := <-qr.stmt.errors:
+		case err := <-qr.exec.errors:
 			if err == nil {
 				return io.EOF
 			}
-			qr.stmt.cancelDecodersWorkers()
-			qr.stmt.cancelDownloadWorkers()
+			qr.exec.cancelDecodersWorkers()
+			qr.exec.cancelDownloadWorkers()
 			return err
 		case <-qr.ctx.Done():
-			qr.stmt.cancelDecodersWorkers()
-			qr.stmt.cancelDownloadWorkers()
+			qr.exec.cancelDecodersWorkers()
+			qr.exec.cancelDownloadWorkers()
 			return qr.ctx.Err()
 		}
 	}
@@ -3581,7 +3569,7 @@ func (qr *driverRows) Next(dest []driver.Value) (err error) {
 		qr.err = errStatementExecutedAgain
 		return qr.err
 	}
-	if !qr.stmt.usingSpooledProtocol && (qr.columns == nil || qr.rowindex >= len(qr.data)) {
+	if !qr.exec.usingSpooledProtocol && (qr.columns == nil || qr.rowindex >= len(qr.data)) {
 		if qr.nextURI == "" {
 			qr.err = io.EOF
 			return qr.err
@@ -3590,14 +3578,14 @@ func (qr *driverRows) Next(dest []driver.Value) (err error) {
 			qr.err = err
 			return err
 		}
-	} else if qr.stmt.usingSpooledProtocol && (qr.rowindex >= len(qr.data) || qr.data == nil) {
+	} else if qr.exec.usingSpooledProtocol && (qr.rowindex >= len(qr.data) || qr.data == nil) {
 		var ok bool
 		select {
 		// The spoolingRowsChannel is initialized in startSpoolingProtocolWorkers,
 		// which is called by fetch() when the first query response indicates
 		// the spooling protocol (i.e., the response contains segments).
 		// At that point, usingSpooledProtocol is set to true and the channel is created.
-		case qr.data, ok = <-qr.stmt.spoolingRowsChannel:
+		case qr.data, ok = <-qr.exec.spoolingRowsChannel:
 			if !ok {
 				qr.err = io.EOF
 				return qr.err
@@ -3606,11 +3594,11 @@ func (qr *driverRows) Next(dest []driver.Value) (err error) {
 			qr.rowindex = 0
 
 		case <-qr.ctx.Done():
-			qr.stmt.cancelDecodersWorkers()
-			qr.stmt.cancelDownloadWorkers()
+			qr.exec.cancelDecodersWorkers()
+			qr.exec.cancelDownloadWorkers()
 			qr.err = qr.ctx.Err()
 			return qr.err
-		case err := <-qr.stmt.errors:
+		case err := <-qr.exec.errors:
 			if err == nil {
 				// Channel was closed, which means the statement
 				// or rows were closed.
@@ -3622,8 +3610,8 @@ func (qr *driverRows) Next(dest []driver.Value) (err error) {
 				qr.err = err
 				return qr.err
 			}
-			qr.stmt.cancelDecodersWorkers()
-			qr.stmt.cancelDownloadWorkers()
+			qr.exec.cancelDecodersWorkers()
+			qr.exec.cancelDownloadWorkers()
 			qr.err = err
 			return qr.err
 		}
@@ -3992,16 +3980,16 @@ func handleResponseError(status int, respErr ErrTrino) error {
 
 func (qr *driverRows) startOrderedSegmentStreamer() {
 	go func() {
-		defer close(qr.stmt.spoolingRowsChannel)
-		defer close(qr.stmt.spoolingProcesserDone)
+		defer close(qr.exec.spoolingRowsChannel)
+		defer close(qr.exec.spoolingProcesserDone)
 
 		consumed := 0
-		buffer := make([]decodedSegment, 0, qr.stmt.spoolingMaxOutOfOrderSegments)
+		buffer := make([]decodedSegment, 0, qr.exec.spoolingMaxOutOfOrderSegments)
 		var nextExpectedOffset int64 = 0
 
 		for {
 			select {
-			case segment, ok := <-qr.stmt.decodedSegments:
+			case segment, ok := <-qr.exec.decodedSegments:
 				if !ok {
 					if len(buffer) > 0 {
 						qr.sendStreamerError(fmt.Errorf("spooled segments missing: expected rowOffset %d, %d segments not delivered", nextExpectedOffset, len(buffer)))
@@ -4019,8 +4007,8 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 				// receives; drop it and release its slot.
 				if len(segment.queryData) == 0 {
 					select {
-					case <-qr.stmt.segmentThrottleCh:
-					case <-qr.doneCh:
+					case <-qr.exec.segmentThrottleCh:
+					case <-qr.exec.doneCh:
 						return
 					}
 					continue
@@ -4029,10 +4017,10 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 				buffer = append(buffer, segment)
 
 				if nextExpectedOffset != segment.rowOffset {
-					if len(buffer) >= qr.stmt.spoolingMaxOutOfOrderSegments {
+					if len(buffer) >= qr.exec.spoolingMaxOutOfOrderSegments {
 						qr.sendStreamerError(fmt.Errorf(
 							"all %d out-of-order segments buffered (limit: %d). This indicates a bug or inconsistency in the segments metadata response (e.g., missing, duplicate, or misordered segments, or row offsets not matching the expected sequence)",
-							len(buffer), qr.stmt.spoolingMaxOutOfOrderSegments))
+							len(buffer), qr.exec.spoolingMaxOutOfOrderSegments))
 					}
 
 					continue
@@ -4051,15 +4039,15 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 
 				for consumed < len(buffer) && buffer[consumed].rowOffset == nextExpectedOffset {
 					select {
-					case qr.stmt.spoolingRowsChannel <- buffer[consumed].queryData:
-					case <-qr.doneCh:
+					case qr.exec.spoolingRowsChannel <- buffer[consumed].queryData:
+					case <-qr.exec.doneCh:
 						return
 					}
 
 					// release reserved slot
 					select {
-					case <-qr.stmt.segmentThrottleCh:
-					case <-qr.doneCh:
+					case <-qr.exec.segmentThrottleCh:
+					case <-qr.exec.doneCh:
 						return
 					}
 
@@ -4070,7 +4058,7 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 				copy(buffer[0:], buffer[consumed:])
 				buffer = buffer[:len(buffer)-consumed]
 
-			case <-qr.doneCh:
+			case <-qr.exec.doneCh:
 				return
 			}
 		}
@@ -4081,8 +4069,8 @@ func (qr *driverRows) startOrderedSegmentStreamer() {
 // rows are being closed.
 func (qr *driverRows) sendStreamerError(err error) {
 	select {
-	case qr.stmt.errors <- err:
-	case <-qr.doneCh:
+	case qr.exec.errors <- err:
+	case <-qr.exec.doneCh:
 	}
 }
 
@@ -4091,12 +4079,12 @@ func (qr *driverRows) fetch() error {
 	var err error
 	for {
 		select {
-		case qresp = <-qr.stmt.queryResponses:
+		case qresp = <-qr.exec.queryResponses:
 			if qresp.ID == "" {
 				return io.EOF
 			}
-			if qr.stmt.warnings != nil {
-				qr.stmt.warnings.add(qresp.Warnings)
+			if qr.exec.warnings != nil {
+				qr.exec.warnings.add(qresp.Warnings)
 			}
 
 			err = qr.initColumns(&qresp)
@@ -4119,8 +4107,8 @@ func (qr *driverRows) fetch() error {
 				if err != nil {
 					return err
 				}
-				qr.stmt.startSpoolingProtocolWorkers(qr.ctx, qr.rowsDecoder())
-				qr.stmt.sendHeartbeatURI(qresp.NextURI)
+				qr.exec.startSpoolingProtocolWorkers(qr.ctx, qr.rowsDecoder())
+				qr.exec.sendHeartbeatURI(qresp.NextURI)
 				qr.startOrderedSegmentStreamer()
 
 				// The segments are queued from the processor goroutine:
@@ -4139,7 +4127,7 @@ func (qr *driverRows) fetch() error {
 			if len(qr.data) != 0 {
 				return nil
 			}
-		case err = <-qr.stmt.errors:
+		case err = <-qr.exec.errors:
 			if err == nil {
 				// Channel was closed, which means the statement
 				// or rows were closed.
@@ -4155,91 +4143,91 @@ func (qr *driverRows) fetch() error {
 
 // location returns the zone the server produces values without a time zone
 // in for this statement.
-func (st *driverStmt) location() *time.Location {
-	if st.timeZone != nil {
-		return st.timeZone
+func (ex *execution) location() *time.Location {
+	if ex.timeZone != nil {
+		return ex.timeZone
 	}
-	return st.conn.location()
+	return ex.conn.location()
 }
 
 // naiveLocation returns the zone values without a time zone are read in.
-func (st *driverStmt) naiveLocation() *time.Location {
-	if st.conn.naiveTimeZone != nil {
-		return st.conn.naiveTimeZone
+func (ex *execution) naiveLocation() *time.Location {
+	if ex.conn.naiveTimeZone != nil {
+		return ex.conn.naiveTimeZone
 	}
-	return st.location()
+	return ex.location()
 }
 
-func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context, decoder *rowsDecoder) {
-	st.usingSpooledProtocol = true
+func (ex *execution) startSpoolingProtocolWorkers(ctx context.Context, decoder *rowsDecoder) {
+	ex.usingSpooledProtocol = true
 
-	if st.spoolingWorkerCount == 0 {
-		st.spoolingWorkerCount = defaultSpoolingDownloadWorkers
+	if ex.spoolingWorkerCount == 0 {
+		ex.spoolingWorkerCount = defaultSpoolingDownloadWorkers
 	}
 
-	if st.spoolingMaxOutOfOrderSegments == 0 {
-		st.spoolingMaxOutOfOrderSegments = defaultallowedOutOfOrder
+	if ex.spoolingMaxOutOfOrderSegments == 0 {
+		ex.spoolingMaxOutOfOrderSegments = defaultallowedOutOfOrder
 	}
 
-	if st.conn.heartbeatInterval != nil {
-		st.heartbeatInterval = *st.conn.heartbeatInterval
+	if ex.conn.heartbeatInterval != nil {
+		ex.heartbeatInterval = *ex.conn.heartbeatInterval
 	} else {
-		st.heartbeatInterval = defaultHeartbeatInterval
+		ex.heartbeatInterval = defaultHeartbeatInterval
 	}
 
 	downloadSegmentsCtx, cancelDownloadWorkers := context.WithCancel(ctx)
-	st.cancelDownloadWorkers = cancelDownloadWorkers
+	ex.cancelDownloadWorkers = cancelDownloadWorkers
 	decodeSegmentCtx, cancelDecodersWorkers := context.WithCancel(ctx)
-	st.cancelDecodersWorkers = cancelDecodersWorkers
+	ex.cancelDecodersWorkers = cancelDecodersWorkers
 
-	st.segmentsToProccess = make(chan segmentToProccess, 1000)
-	st.spooledSegmentsMetadata = make(chan spooledMetadata, st.spoolingMaxOutOfOrderSegments)
-	st.spooledSegmentsToDecode = make(chan segmentToDecode, st.spoolingMaxOutOfOrderSegments)
-	st.spoolingRowsChannel = make(chan []queryData)
-	st.spoolingProcesserDone = make(chan struct{})
-	st.segmentDispatcherDoneCh = make(chan struct{})
-	st.segmentThrottleCh = make(chan struct{}, st.spoolingMaxOutOfOrderSegments)
-	st.decodedSegments = make(chan decodedSegment)
+	ex.segmentsToProccess = make(chan segmentToProccess, 1000)
+	ex.spooledSegmentsMetadata = make(chan spooledMetadata, ex.spoolingMaxOutOfOrderSegments)
+	ex.spooledSegmentsToDecode = make(chan segmentToDecode, ex.spoolingMaxOutOfOrderSegments)
+	ex.spoolingRowsChannel = make(chan []queryData)
+	ex.spoolingProcesserDone = make(chan struct{})
+	ex.segmentDispatcherDoneCh = make(chan struct{})
+	ex.segmentThrottleCh = make(chan struct{}, ex.spoolingMaxOutOfOrderSegments)
+	ex.decodedSegments = make(chan decodedSegment)
 
-	st.heartbeatNextURICh = make(chan string, 1)
-	st.spoolingProcessorExited = make(chan struct{})
+	ex.heartbeatNextURICh = make(chan string, 1)
+	ex.spoolingProcessorExited = make(chan struct{})
 
-	st.startSegmentDispatcher()
-	st.startDownloadSegmentsWorkers(downloadSegmentsCtx)
-	st.startSegmentsDecodersWorkers(decodeSegmentCtx, decoder)
-	st.startHeartbeat(ctx)
+	ex.startSegmentDispatcher()
+	ex.startDownloadSegmentsWorkers(downloadSegmentsCtx)
+	ex.startSegmentsDecodersWorkers(decodeSegmentCtx, decoder)
+	ex.startHeartbeat(ctx)
 }
 
-func (st *driverStmt) sendHeartbeatURI(uri string) {
+func (ex *execution) sendHeartbeatURI(uri string) {
 	if uri == "" {
 		return
 	}
 	// Non-blocking: drain any old value, then send the new one.
 	select {
-	case <-st.heartbeatNextURICh:
+	case <-ex.heartbeatNextURICh:
 	default:
 	}
 	select {
-	case st.heartbeatNextURICh <- uri:
+	case ex.heartbeatNextURICh <- uri:
 	default:
 	}
 }
 
-func (st *driverStmt) startHeartbeat(ctx context.Context) {
-	ticker := time.NewTicker(st.heartbeatInterval)
+func (ex *execution) startHeartbeat(ctx context.Context) {
+	ticker := time.NewTicker(ex.heartbeatInterval)
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
-	st.cancelHeartbeat = cancelHeartbeat
-	st.waitHeartbeat.Add(1)
+	ex.cancelHeartbeat = cancelHeartbeat
+	ex.waitHeartbeat.Add(1)
 
 	go func() {
-		defer st.waitHeartbeat.Done()
+		defer ex.waitHeartbeat.Done()
 		defer ticker.Stop()
 		var currentNextURI string
 		var consecutiveFailures int
 
 		for {
 			select {
-			case uri := <-st.heartbeatNextURICh:
+			case uri := <-ex.heartbeatNextURICh:
 				currentNextURI = uri
 
 			case <-ticker.C:
@@ -4249,10 +4237,10 @@ func (st *driverStmt) startHeartbeat(ctx context.Context) {
 
 				reqCtx, cancel := context.WithTimeout(heartbeatCtx, heartbeatRequestTimeout)
 				hs := make(http.Header)
-				if st.user != "" {
-					hs.Add(trinoUserHeader, st.user)
+				if ex.user != "" {
+					hs.Add(trinoUserHeader, ex.user)
 				}
-				req, err := st.conn.newRequest(reqCtx, "HEAD", currentNextURI, nil, hs)
+				req, err := ex.conn.newRequest(reqCtx, "HEAD", currentNextURI, nil, hs)
 				if err != nil {
 					cancel()
 					consecutiveFailures++
@@ -4262,7 +4250,7 @@ func (st *driverStmt) startHeartbeat(ctx context.Context) {
 					continue
 				}
 
-				resp, err := st.conn.httpClient.Do(req)
+				resp, err := ex.conn.httpClient.Do(req)
 				cancel()
 				if err != nil {
 					consecutiveFailures++
@@ -4291,20 +4279,20 @@ func (st *driverStmt) startHeartbeat(ctx context.Context) {
 			case <-heartbeatCtx.Done():
 				return
 
-			case <-st.doneCh:
+			case <-ex.doneCh:
 				return
 			}
 		}
 	}()
 }
 
-func (st *driverStmt) startSegmentDispatcher() {
+func (ex *execution) startSegmentDispatcher() {
 	go func() {
-		defer close(st.segmentDispatcherDoneCh)
-		defer close(st.segmentThrottleCh)
+		defer close(ex.segmentDispatcherDoneCh)
+		defer close(ex.segmentThrottleCh)
 		for {
 			select {
-			case segmentToProccess, ok := <-st.segmentsToProccess:
+			case segmentToProccess, ok := <-ex.segmentsToProccess:
 				if !ok {
 					return
 				}
@@ -4313,8 +4301,8 @@ func (st *driverStmt) startSegmentDispatcher() {
 				// Once all currently downloaded segments are downloaded, decoded,
 				// and can be ordered, this channel will be drained.
 				select {
-				case st.segmentThrottleCh <- struct{}{}:
-				case <-st.doneCh:
+				case ex.segmentThrottleCh <- struct{}{}:
+				case <-ex.doneCh:
 					return
 				}
 
@@ -4325,16 +4313,16 @@ func (st *driverStmt) startSegmentDispatcher() {
 				segmentIndex := segmentToProccess.segmentIndex
 				metadata, err := segment.segmentMetadata(segmentIndex)
 				if err != nil {
-					st.errors <- err
+					ex.errors <- err
 					return
 				}
 				switch segment.Type {
 				case "inline":
 					if segment.Data == nil {
-						st.errors <- fmt.Errorf("missing 'data' field in inline segment at index %d", segmentIndex)
+						ex.errors <- fmt.Errorf("missing 'data' field in inline segment at index %d", segmentIndex)
 						return
 					}
-					st.spooledSegmentsToDecode <- segmentToDecode{
+					ex.spooledSegmentsToDecode <- segmentToDecode{
 						segmentIndex: segmentIndex,
 						encoding:     segmentToProccess.encoding,
 						data:         segment.Data,
@@ -4342,66 +4330,66 @@ func (st *driverStmt) startSegmentDispatcher() {
 					}
 
 				case "spooled":
-					spooledMetadata, err := segment.spooledMetadata(segmentIndex, metadata, segmentToProccess.encoding, st.location())
+					spooledMetadata, err := segment.spooledMetadata(segmentIndex, metadata, segmentToProccess.encoding, ex.location())
 					if err != nil {
-						st.errors <- err
+						ex.errors <- err
 						return
 					}
-					st.spooledSegmentsMetadata <- spooledMetadata
+					ex.spooledSegmentsMetadata <- spooledMetadata
 
 				default:
-					st.errors <- fmt.Errorf("unsupported type %q of segment at index %d", segment.Type, segmentIndex)
+					ex.errors <- fmt.Errorf("unsupported type %q of segment at index %d", segment.Type, segmentIndex)
 					return
 				}
 
-			case <-st.doneCh:
+			case <-ex.doneCh:
 				return
 			}
 		}
 	}()
 }
 
-func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
-	st.waitDownloadSegmentsWorkers.Add(st.spoolingWorkerCount)
-	for i := 0; i < st.spoolingWorkerCount; i++ {
+func (ex *execution) startDownloadSegmentsWorkers(ctx context.Context) {
+	ex.waitDownloadSegmentsWorkers.Add(ex.spoolingWorkerCount)
+	for i := 0; i < ex.spoolingWorkerCount; i++ {
 		go func() {
-			defer st.waitDownloadSegmentsWorkers.Done()
+			defer ex.waitDownloadSegmentsWorkers.Done()
 			for {
 				select {
-				case metadata, ok := <-st.spooledSegmentsMetadata:
+				case metadata, ok := <-ex.spooledSegmentsMetadata:
 					if !ok {
 						return
 					}
 
 					segmentFetcher := &SegmentFetcher{
 						ctx:             ctx,
-						httpClient:      st.conn.segmentHTTPClient,
+						httpClient:      ex.conn.segmentHTTPClient,
 						spooledMetadata: metadata,
-						acks:            &st.waitSegmentAcks,
-						failedAcks:      &st.failedSegmentAcks,
-						retryLimit:      st.conn.retryLimit,
+						acks:            &ex.waitSegmentAcks,
+						failedAcks:      &ex.failedSegmentAcks,
+						retryLimit:      ex.conn.retryLimit,
 					}
 
 					segment, err := segmentFetcher.fetchSegment()
 					if err != nil {
-						st.errors <- err
+						ex.errors <- err
 						return
 					}
 
 					select {
-					case st.spooledSegmentsToDecode <- segmentToDecode{
+					case ex.spooledSegmentsToDecode <- segmentToDecode{
 						segmentIndex: metadata.segmentIndex,
 						encoding:     metadata.encoding,
 						data:         segment,
 						metadata:     metadata.metadata,
 					}:
-					case <-st.doneCh:
+					case <-ex.doneCh:
 						return
 					case <-ctx.Done():
 						return
 					}
 
-				case <-st.doneCh:
+				case <-ex.doneCh:
 					return
 				case <-ctx.Done():
 					return
@@ -4411,14 +4399,14 @@ func (st *driverStmt) startDownloadSegmentsWorkers(ctx context.Context) {
 	}
 }
 
-func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context, decoder *rowsDecoder) {
-	st.waitSegmentDecodersWorkers.Add(st.spoolingWorkerCount)
-	for i := 0; i < st.spoolingWorkerCount; i++ {
+func (ex *execution) startSegmentsDecodersWorkers(ctx context.Context, decoder *rowsDecoder) {
+	ex.waitSegmentDecodersWorkers.Add(ex.spoolingWorkerCount)
+	for i := 0; i < ex.spoolingWorkerCount; i++ {
 		go func() {
-			defer st.waitSegmentDecodersWorkers.Done()
+			defer ex.waitSegmentDecodersWorkers.Done()
 			for {
 				select {
-				case segmentToDecode, ok := <-st.spooledSegmentsToDecode:
+				case segmentToDecode, ok := <-ex.spooledSegmentsToDecode:
 
 					if !ok {
 						return
@@ -4426,23 +4414,23 @@ func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context, decoder 
 
 					segment, err := decodeSegment(segmentToDecode.data, segmentToDecode.encoding, segmentToDecode.metadata, decoder)
 					if err != nil {
-						st.cancelDecodersWorkers()
-						st.errors <- fmt.Errorf("failed to decode spooled segment at index %d: %v", segmentToDecode.segmentIndex, err)
+						ex.cancelDecodersWorkers()
+						ex.errors <- fmt.Errorf("failed to decode spooled segment at index %d: %v", segmentToDecode.segmentIndex, err)
 						return
 					}
 
 					select {
-					case st.decodedSegments <- decodedSegment{
+					case ex.decodedSegments <- decodedSegment{
 						rowOffset: segmentToDecode.metadata.rowOffset,
 						queryData: segment,
 					}:
-					case <-st.doneCh:
+					case <-ex.doneCh:
 						return
 					case <-ctx.Done():
 						return
 					}
 
-				case <-st.doneCh:
+				case <-ex.doneCh:
 					return
 				case <-ctx.Done():
 					return
@@ -4453,8 +4441,8 @@ func (st *driverStmt) startSegmentsDecodersWorkers(ctx context.Context, decoder 
 }
 
 func (qr *driverRows) proccessSpollingSegments(first spooledData) {
-	queryResponses := qr.stmt.queryResponses
-	exited := qr.stmt.spoolingProcessorExited
+	queryResponses := qr.exec.queryResponses
+	exited := qr.exec.spoolingProcessorExited
 	go func() {
 		defer close(exited)
 		if !qr.queueSpoolingSegments(first) {
@@ -4467,20 +4455,20 @@ func (qr *driverRows) proccessSpollingSegments(first spooledData) {
 			if qresp.ID == "" {
 				break
 			}
-			if qr.stmt.warnings != nil {
-				qr.stmt.warnings.add(qresp.Warnings)
+			if qr.exec.warnings != nil {
+				qr.exec.warnings.add(qresp.Warnings)
 			}
 
-			qr.stmt.sendHeartbeatURI(qresp.NextURI)
+			qr.exec.sendHeartbeatURI(qresp.NextURI)
 			if err := qr.initColumns(&qresp); err != nil {
-				qr.stmt.errors <- err
+				qr.exec.errors <- err
 			}
 
 			switch qresp.Data.Kind() {
 			case '{':
 				spooled, err := decodeSpooledData(qresp.Data)
 				if err != nil {
-					qr.stmt.errors <- err
+					qr.exec.errors <- err
 					break
 				}
 				if !qr.queueSpoolingSegments(spooled) {
@@ -4490,7 +4478,7 @@ func (qr *driverRows) proccessSpollingSegments(first spooledData) {
 			case 0, 'n':
 				// do nothing: trino response without data (e.g only status information)
 			default:
-				qr.stmt.errors <- fmt.Errorf("trino: unexpected data in query %s response, expected the spooled segments, got %s", qresp.ID, qresp.Data)
+				qr.exec.errors <- fmt.Errorf("trino: unexpected data in query %s response, expected the spooled segments, got %s", qresp.ID, qresp.Data)
 			}
 			qr.scheduleProgressUpdate(qresp.ID, qresp.Stats)
 		}
@@ -4499,14 +4487,14 @@ func (qr *driverRows) proccessSpollingSegments(first spooledData) {
 }
 
 func (qr *driverRows) waitForAllSpoolingWorkersFinish() {
-	close(qr.stmt.segmentsToProccess)
-	<-qr.stmt.segmentDispatcherDoneCh
-	close(qr.stmt.spooledSegmentsMetadata)
-	qr.stmt.waitDownloadSegmentsWorkers.Wait()
-	close(qr.stmt.spooledSegmentsToDecode)
-	qr.stmt.waitSegmentDecodersWorkers.Wait()
-	close(qr.stmt.decodedSegments)
-	<-qr.stmt.spoolingProcesserDone
+	close(qr.exec.segmentsToProccess)
+	<-qr.exec.segmentDispatcherDoneCh
+	close(qr.exec.spooledSegmentsMetadata)
+	qr.exec.waitDownloadSegmentsWorkers.Wait()
+	close(qr.exec.spooledSegmentsToDecode)
+	qr.exec.waitSegmentDecodersWorkers.Wait()
+	close(qr.exec.decodedSegments)
+	<-qr.exec.spoolingProcesserDone
 }
 
 type segmentToProccess struct {
@@ -4532,19 +4520,19 @@ func decodeSpooledData(data jsontext.Value) (spooledData, error) {
 func (qr *driverRows) queueSpoolingSegments(spooled spooledData) bool {
 	for segmentIndex, segment := range spooled.Segments {
 		select {
-		case qr.stmt.segmentsToProccess <- segmentToProccess{
+		case qr.exec.segmentsToProccess <- segmentToProccess{
 			segmentIndex: segmentIndex,
 			encoding:     spooled.Encoding,
 			segment:      segment,
 		}:
-		case <-qr.doneCh:
+		case <-qr.exec.doneCh:
 			return false
 		case <-qr.ctx.Done():
 			// The caller may still be reading the rows queued so far, which
 			// end like a complete result once the workers are shut down.
 			select {
-			case qr.stmt.errors <- qr.ctx.Err():
-			case <-qr.doneCh:
+			case qr.exec.errors <- qr.ctx.Err():
+			case <-qr.exec.doneCh:
 			}
 			return false
 		}
@@ -4596,7 +4584,7 @@ func (qr *driverRows) initColumns(qresp *queryResponse) error {
 			return err
 		}
 	}
-	decoder, err := newRowsDecoder(qresp.Columns, qr.stmt.naiveLocation())
+	decoder, err := newRowsDecoder(qresp.Columns, qr.exec.naiveLocation())
 	if err != nil {
 		return err
 	}
@@ -4616,22 +4604,22 @@ func (qr *driverRows) rowsDecoder() *rowsDecoder {
 }
 
 func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
-	if qr.stmt.progressUpdater == nil {
+	if qr.exec.progressUpdater == nil {
 		return
 	}
 
 	qrStats := QueryProgressInfo{
 		QueryId:                      id,
 		QueryStats:                   stats,
-		FailedSegmentAcknowledgments: qr.stmt.failedSegmentAcks.Load(),
+		FailedSegmentAcknowledgments: qr.exec.failedSegmentAcks.Load(),
 	}
-	qr.stmt.lastProgress = qrStats
+	qr.exec.lastProgress = qrStats
 	currentTime := time.Now()
-	diff := currentTime.Sub(qr.stmt.progressUpdaterPeriod.LastCallbackTime)
-	period := qr.stmt.progressUpdaterPeriod.Period
+	diff := currentTime.Sub(qr.exec.progressUpdaterPeriod.LastCallbackTime)
+	period := qr.exec.progressUpdaterPeriod.Period
 
 	// Check if period has not passed yet AND if query state did not change
-	if diff < period && qr.stmt.progressUpdaterPeriod.LastQueryState == qrStats.QueryStats.State {
+	if diff < period && qr.exec.progressUpdaterPeriod.LastQueryState == qrStats.QueryStats.State {
 		return
 	}
 
@@ -4639,11 +4627,11 @@ func (qr *driverRows) scheduleProgressUpdate(id string, stats stmtStats) {
 	// the callback is still busy with the previous one, so a state change
 	// reported only once, like the query finishing, is never lost.
 	select {
-	case qr.statsCh <- qrStats:
-	case <-qr.doneCh:
+	case qr.exec.statsCh <- qrStats:
+	case <-qr.exec.doneCh:
 	}
-	qr.stmt.progressUpdaterPeriod.LastCallbackTime = currentTime
-	qr.stmt.progressUpdaterPeriod.LastQueryState = qrStats.QueryStats.State
+	qr.exec.progressUpdaterPeriod.LastCallbackTime = currentTime
+	qr.exec.progressUpdaterPeriod.LastQueryState = qrStats.QueryStats.State
 }
 
 // columnType describes a column the way the driver.RowsColumnType*
