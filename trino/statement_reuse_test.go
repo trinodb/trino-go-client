@@ -500,3 +500,45 @@ func TestRowsOfAnEarlierExecutionCancelTheirQuery(t *testing.T) {
 	}
 	assert.Contains(t, deletes, "/v1/query/q1 as alice")
 }
+
+// Exec has no rows for database/sql to close, so the goroutines of a spooled
+// result, among them the heartbeat, must stop before Exec returns on a
+// prepared statement, which outlives the execution.
+func TestPreparedExecOfSpooledResultStopsHeartbeat(t *testing.T) {
+	t.Parallel()
+	sc := newScriptedCoordinator(t, scriptedQuery{id: "q1", pages: []scriptedPage{
+		{body: spooledRows(reuseInlineRows(t, 0, 1, 2))},
+		{body: statusOnly},
+	}})
+	handler := sc.server.Config.Handler
+	sc.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			sc.mu.Lock()
+			sc.requests = append(sc.requests, capturedRequest{method: r.Method, path: r.URL.Path})
+			sc.mu.Unlock()
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		handler.ServeHTTP(w, r)
+	})
+	db := sc.open(t, "?heartbeat_interval=20ms")
+	stmt, err := db.Prepare("INSERT 1")
+	require.NoError(t, err)
+	t.Cleanup(func() { stmt.Close() })
+
+	_, err = stmt.ExecContext(context.Background())
+	require.NoError(t, err)
+
+	heads := func() int {
+		n := 0
+		for _, r := range sc.capturedRequests() {
+			if r.method == http.MethodHead {
+				n++
+			}
+		}
+		return n
+	}
+	atReturn := heads()
+	time.Sleep(10 * 20 * time.Millisecond)
+	assert.Equal(t, atReturn, heads(), "no heartbeat may follow the return of Exec")
+}

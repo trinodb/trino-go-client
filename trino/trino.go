@@ -2727,6 +2727,11 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
+	// The result has been read to the end, and database/sql has no rows to
+	// close, so stop the query's goroutines here: a spooled result's
+	// heartbeat would otherwise outlive the execution on a prepared or
+	// Conn-bound statement.
+	st.stopQuery()
 	return rows, nil
 }
 
