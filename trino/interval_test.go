@@ -140,7 +140,7 @@ func TestIntervalColumnsScanThroughTheWireFormat(t *testing.T) {
 		{"INTERVAL DAY TO SECOND", 0, 0, false},
 		{"ARRAY(INTERVAL SECOND(12, 12))", 0, 0, false},
 		{"MAP(INTERVAL SECOND(1, 9), INTERVAL YEAR(3) TO MONTH)", 0, 0, false},
-		{"ROW(A INTERVAL SECOND(1, 6), B INTERVAL MINUTE(2))", 0, 0, false},
+		{"ROW(a INTERVAL SECOND(1, 6), b INTERVAL MINUTE(2))", 0, 0, false},
 	}, got)
 	assert.Equal(t, reflect.TypeOf(sql.NullString{}), columnTypes[0].ScanType())
 	assert.Equal(t, reflect.TypeOf(NullSlice[sql.NullString]{}), columnTypes[7].ScanType())

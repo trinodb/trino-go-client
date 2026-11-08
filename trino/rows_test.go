@@ -659,7 +659,7 @@ func TestRowColumnScansThroughTheWireFormat(t *testing.T) {
 
 	columnTypes, err := rows.ColumnTypes()
 	require.NoError(t, err)
-	assert.Equal(t, "ROW(X INTEGER, VARCHAR)", columnTypes[0].DatabaseTypeName())
+	assert.Equal(t, "ROW(x INTEGER, VARCHAR)", columnTypes[0].DatabaseTypeName())
 	assert.Equal(t, reflect.TypeOf(Row{}), columnTypes[0].ScanType())
 
 	require.True(t, rows.Next())

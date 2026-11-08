@@ -268,7 +268,7 @@ func TestIntegrationNamedRowScan(t *testing.T) {
 
 	columnTypes, err := rows.ColumnTypes()
 	require.NoError(t, err)
-	assert.Equal(t, "ROW(X INTEGER, Y VARCHAR)", columnTypes[0].DatabaseTypeName())
+	assert.Equal(t, "ROW(x INTEGER, y VARCHAR)", columnTypes[0].DatabaseTypeName())
 	assert.Equal(t, reflect.TypeOf(trino.Row{}), columnTypes[0].ScanType())
 
 	require.True(t, rows.Next())
@@ -276,6 +276,49 @@ func TestIntegrationNamedRowScan(t *testing.T) {
 	require.NoError(t, rows.Scan(&got))
 	assert.True(t, got.Valid)
 	assert.Equal(t, []rowField{{"x", int64(1)}, {"y", "a"}}, rowFields(got))
+	require.False(t, rows.Next())
+	require.NoError(t, rows.Err())
+}
+
+// TestIntegrationRowFieldNameCase checks that DatabaseTypeName keeps ROW
+// field names the way the coordinator sends them, at any depth, so they match
+// the names a scanned Row has.
+func TestIntegrationRowFieldNameCase(t *testing.T) {
+	db := integrationOpen(t)
+
+	rows, err := db.Query(`
+		SELECT
+			CAST(ROW(1, 2) AS ROW("MixedCase" integer, lower integer)),
+			ARRAY[CAST(ROW(1) AS ROW("MixedCase" integer))],
+			MAP(ARRAY['k'], ARRAY[CAST(ROW(1) AS ROW("MixedCase" integer))]),
+			CAST(ROW('x') AS ROW("Ünïcode Name" varchar)),
+			CAST(ROW(ROW(1)) AS ROW("Outer" ROW("Inner" integer))),
+			ROW(1, 'a')
+	`)
+	require.NoError(t, err)
+	defer rows.Close()
+
+	columnTypes, err := rows.ColumnTypes()
+	require.NoError(t, err)
+	got := make([]string, len(columnTypes))
+	for i, columnType := range columnTypes {
+		got[i] = columnType.DatabaseTypeName()
+	}
+	assert.Equal(t, []string{
+		"ROW(MixedCase INTEGER, lower INTEGER)",
+		"ARRAY(ROW(MixedCase INTEGER))",
+		"MAP(VARCHAR(1), ROW(MixedCase INTEGER))",
+		`ROW("Ünïcode Name" VARCHAR)`,
+		`ROW("Outer" ROW("Inner" INTEGER))`,
+		"ROW(INTEGER, VARCHAR(1))",
+	}, got)
+
+	require.True(t, rows.Next())
+	var mixedCase, unicode trino.Row
+	var array, mapValue, nested, anonymous any
+	require.NoError(t, rows.Scan(&mixedCase, &array, &mapValue, &unicode, &nested, &anonymous))
+	assert.Equal(t, "MixedCase", mixedCase.Name(0))
+	assert.Equal(t, "Ünïcode Name", unicode.Name(0))
 	require.False(t, rows.Next())
 	require.NoError(t, rows.Err())
 }
@@ -1244,7 +1287,7 @@ func TestQueryColumns(t *testing.T) {
 			reflect.TypeOf(trino.Row{}),
 		},
 		{
-			"ROW(X VARCHAR, Y DOUBLE)",
+			"ROW(x VARCHAR, y DOUBLE)",
 			false,
 			0,
 			0,

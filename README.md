@@ -1386,6 +1386,11 @@ a `map[string]interface{}` whose elements are converted the way a plain
 column would be: a `VARBINARY` element is a `[]byte`, a number an `int64` or
 a `float64`, a `DECIMAL` a `string` and a `TIMESTAMP` a `time.Time`.
 
+`sql.ColumnType.DatabaseTypeName()` returns the full type of an `ARRAY`,
+`MAP` or `ROW`, upper-cased except for the names of `ROW` fields, which keep
+their case and quotes the way the server sent them, at any depth, like
+`ARRAY(ROW(MixedCase INTEGER, "Ünïcode Name" VARCHAR))`.
+
 `sql.ColumnType.ScanType()` reports the generic scanners, instantiated with
 the scan types of the elements, keys and values, like
 `trino.NullSlice[sql.NullInt32]` for an `ARRAY(INTEGER)`,
