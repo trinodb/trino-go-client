@@ -46,7 +46,8 @@ func resolveTimeZone(name string) (*time.Location, error) {
 // localTimeZoneName returns the id of the process time zone in a form Trino
 // accepts. time.Local is only named after its zone when TZ is set, so the
 // name is recovered from TZ or from the localtime symlink; when neither
-// names a zone, the current UTC offset is used instead.
+// names a zone, the current UTC offset is used instead. That is the case on
+// Windows without TZ, and the offset does not follow DST.
 func localTimeZoneName() string {
 	if tz, ok := os.LookupEnv("TZ"); ok {
 		name := strings.TrimPrefix(tz, ":")
