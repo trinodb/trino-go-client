@@ -167,13 +167,19 @@ func Serial(v interface{}) (string, error) {
 	case trinoTime:
 		return fmt.Sprintf("TIME '%02d:%02d:%02d.%09d'", x.hour, x.minute, x.second, x.nanosecond), nil
 	case trinoTimeTz:
+		if err := checkWholeMinuteOffset(time.Time(x)); err != nil {
+			return "", err
+		}
 		// Trino only accepts a numeric offset in TIME WITH TIME ZONE literals,
 		// so UTC has to be written as +00:00 and not as Z.
 		return "TIME " + time.Time(x).Format("'15:04:05.999999999 -07:00'"), nil
 	case trinoTimestamp:
 		return "TIMESTAMP " + time.Time(x).Format("'2006-01-02 15:04:05.999999999'"), nil
 	case time.Time:
-		return "TIMESTAMP " + time.Time(x).Format("'2006-01-02 15:04:05.999999999 Z07:00'"), nil
+		if err := checkWholeMinuteOffset(x); err != nil {
+			return "", err
+		}
+		return "TIMESTAMP " + x.Format("'2006-01-02 15:04:05.999999999 Z07:00'"), nil
 
 	case time.Duration:
 		return serialDuration(x)
@@ -208,6 +214,16 @@ func Serial(v interface{}) (string, error) {
 	// TODO - consider the remaining types in https://trino.io/docs/current/language/types.html (Row, IP, ...)
 
 	return "", UnsupportedArgError{fmt.Sprintf("%T", v)}
+}
+
+// checkWholeMinuteOffset rejects offsets with seconds, like the local mean
+// time of zones before they adopted standard time, because Trino does not
+// accept them and dropping the seconds would send a different instant.
+func checkWholeMinuteOffset(t time.Time) error {
+	if _, offset := t.Zone(); offset%60 != 0 {
+		return fmt.Errorf("trino: cannot send %v: Trino does not support time zone offsets with seconds", t)
+	}
+	return nil
 }
 
 // serialFloat formats a typed literal using the shortest representation
