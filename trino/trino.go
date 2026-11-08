@@ -2511,9 +2511,11 @@ func newErrQueryFailedFromResponse(resp *http.Response) *ErrQueryFailed {
 type driverStmt struct {
 	conn  *Conn
 	query string
-	// current is the latest execution of the statement; rows read only the
-	// execution they were created for.
-	current *execution
+	// executions are the runs of the statement that are not stopped yet. A
+	// prepared statement can run again while rows of an earlier run are
+	// open, and those rows keep reading their own run. database/sql
+	// serializes the calls on a connection, so this needs no lock.
+	executions map[*execution]struct{}
 }
 
 // execution is one run of a statement: the goroutines that fetch its pages,
@@ -2588,21 +2590,21 @@ var (
 
 // Close closes statement just before releasing connection
 func (st *driverStmt) Close() error {
-	st.stopQuery()
+	for ex := range st.executions {
+		st.stopExecution(ex)
+	}
 	return nil
 }
 
-// stopQuery stops the latest execution of the statement.
-func (st *driverStmt) stopQuery() {
-	if st.current != nil {
-		st.current.stop()
-	}
+// stopExecution stops one run of the statement and forgets it.
+func (st *driverStmt) stopExecution(ex *execution) {
+	ex.stop()
+	delete(st.executions, ex)
 }
 
 // stop stops the goroutines of the execution and waits for them, so nothing
-// from its query reaches the connection or a later execution of the
-// statement. It is a no-op once the execution is stopped, or when its query
-// never started.
+// from its query reaches the connection. It is a no-op once the execution is
+// stopped, or when its query never started.
 func (ex *execution) stop() {
 	if ex.stopped {
 		return
@@ -2727,11 +2729,13 @@ func (st *driverStmt) ExecContext(ctx context.Context, args []driver.NamedValue)
 		// The polling goroutines may already be fetching the next page;
 		// stop them before the connection goes back to the pool, or that
 		// page's headers would change the next caller's session.
-		ex.stop()
+		st.stopExecution(ex)
 		rows.cancelAbandonedQuery(err)
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
 	}
+	// No rows are left to close the execution.
+	st.stopExecution(ex)
 	return rows, nil
 }
 
@@ -2902,7 +2906,7 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 	if err = rows.fetch(); err != nil && err != io.EOF {
 		// As in ExecContext: stop the query before the connection can be
 		// reused.
-		ex.stop()
+		st.stopExecution(ex)
 		rows.cancelAbandonedQuery(err)
 		st.conn.restoreAuthorization(authorization)
 		return nil, err
@@ -2912,12 +2916,10 @@ func (st *driverStmt) QueryContext(ctx context.Context, args []driver.NamedValue
 
 func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*execution, *stmtResponse, error) {
 	query := st.query
-	// A prepared statement is executed more than once. Stop what is left of
-	// the previous execution; the new one starts from the connection's
-	// settings rather than the named arguments an earlier execution passed.
-	st.stopQuery()
+	// A prepared statement is executed more than once. Each execution starts
+	// from the connection's settings rather than the named arguments an
+	// earlier execution passed.
 	ex := &execution{conn: st.conn}
-	st.current = ex
 	hs := make(http.Header)
 	hs.Add(trinoClientCapabilitiesHeader, clientCapabilities)
 	// The server reads extra credentials only when the statement is submitted.
@@ -3110,6 +3112,10 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*exec
 	}
 
 	ex.cancelQuery = cancel
+	if st.executions == nil {
+		st.executions = make(map[*execution]struct{})
+	}
+	st.executions[ex] = struct{}{}
 	ex.doneCh = make(chan struct{})
 	ex.nextURIs = make(chan string)
 	ex.httpResponses = make(chan *http.Response)
@@ -3226,7 +3232,11 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*exec
 		ex.progressUpdaterPeriod.LastCallbackTime = time.Now()
 		ex.progressUpdaterPeriod.LastQueryState = sr.Stats.State
 	}
-	return ex, &sr, handleResponseError(resp.StatusCode, sr.Error)
+	if err := handleResponseError(resp.StatusCode, sr.Error); err != nil {
+		st.stopExecution(ex)
+		return nil, nil, err
+	}
+	return ex, &sr, nil
 }
 
 // SegmentExpiredError reports a spooled segment download that failed after
@@ -3386,17 +3396,6 @@ type driverRows struct {
 	authorization *authorizationSnapshot
 }
 
-// errStatementExecutedAgain is returned by rows whose prepared statement ran
-// again while they were open; the statement's state now belongs to the newer
-// execution.
-var errStatementExecutedAgain = errors.New("trino: the statement was executed again while these rows were open")
-
-// superseded reports whether the statement has started another execution
-// since these rows were created.
-func (qr *driverRows) superseded() bool {
-	return qr.exec != qr.stmt.current
-}
-
 var _ driver.Rows = &driverRows{}
 var _ driver.Result = &driverRows{}
 var _ driver.RowsColumnTypeScanType = &driverRows{}
@@ -3407,20 +3406,10 @@ var _ driver.RowsColumnTypeNullable = &driverRows{}
 
 // Close closes the rows iterator.
 func (qr *driverRows) Close() error {
-	// A newer execution of the statement owns its state; leave it running,
-	// but still tell the server that this query is done.
-	if qr.superseded() {
-		finished := qr.err == sql.ErrNoRows || qr.err == io.EOF || qr.nextURI == ""
-		qr.err = io.EOF
-		if finished {
-			return nil
-		}
-		return qr.cancelQueryOnServer()
-	}
 	// The statement may outlive the rows, as a prepared statement does, and
 	// the connection goes back to the pool once the rows are closed, even
 	// when every row was read.
-	defer qr.exec.stop()
+	defer qr.stmt.stopExecution(qr.exec)
 	if qr.err == sql.ErrNoRows || qr.err == io.EOF {
 		return nil
 	}
@@ -3516,10 +3505,6 @@ func (qr *driverRows) Columns() []string {
 		return []string{}
 	}
 	if qr.columns == nil {
-		if qr.superseded() {
-			qr.err = errStatementExecutedAgain
-			return []string{}
-		}
 		if err := qr.fetch(); err != nil && err != io.EOF {
 			qr.err = err
 			return []string{}
@@ -3563,10 +3548,6 @@ func (qr *driverRows) Next(dest []driver.Value) (err error) {
 		}
 	}()
 	if qr.err != nil {
-		return qr.err
-	}
-	if qr.superseded() {
-		qr.err = errStatementExecutedAgain
 		return qr.err
 	}
 	if !qr.exec.usingSpooledProtocol && (qr.columns == nil || qr.rowindex >= len(qr.data)) {

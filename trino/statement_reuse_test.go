@@ -3,10 +3,12 @@ package trino
 import (
 	"context"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json/jsontext"
 	"encoding/json/v2"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -437,66 +439,164 @@ func reuseInlineRows(t testing.TB, rowOffset int, values ...int) map[string]any 
 }
 
 // A Conn- or Tx-bound prepared statement may run again while rows of an
-// earlier execution are open. Those rows must not read the newer execution's
-// pages, and closing them must not stop it.
-func TestRowsOfAnEarlierExecutionDoNotReadTheNextOne(t *testing.T) {
+// earlier execution are open. Each rows reads its own query.
+func TestRowsOfAnEarlierExecutionKeepReadingTheirQuery(t *testing.T) {
 	t.Parallel()
 	sc := newScriptedCoordinator(t,
 		scriptedQuery{id: "q1", pages: []scriptedPage{{body: intRows(1)}, {body: intRows(2)}, {body: intRows(3)}}},
 		scriptedQuery{id: "q2", pages: []scriptedPage{{body: intRows(100)}, {body: intRows(200)}, {body: intRows(300)}}},
 	)
-	db := sc.open(t, "")
+	stmt := prepareOnConn(t, sc.open(t, ""), "SELECT v")
 	ctx := context.Background()
-	conn, err := db.Conn(ctx)
-	require.NoError(t, err)
-	defer conn.Close()
-	stmt, err := conn.PrepareContext(ctx, "SELECT v")
-	require.NoError(t, err)
-	defer stmt.Close()
 
 	first, err := stmt.QueryContext(ctx)
 	require.NoError(t, err)
+	defer first.Close()
 	require.True(t, first.Next())
 	second, err := stmt.QueryContext(ctx)
 	require.NoError(t, err)
+	defer second.Close()
 
-	assert.False(t, first.Next())
-	assert.ErrorIs(t, first.Err(), errStatementExecutedAgain)
-	require.NoError(t, first.Close())
-	assert.Equal(t, []int{100, 200, 300}, collectInts(t, second))
+	assert.Equal(t, []int{2, 100, 3, 200, 300}, readAlternately(t, first, second))
+	require.NoError(t, first.Err())
 	require.NoError(t, second.Err())
 }
 
-// Closing rows of an earlier execution still cancels their query, as the
-// user it ran as.
+func TestSpooledRowsOfAnEarlierExecutionKeepReadingTheirQuery(t *testing.T) {
+	t.Parallel()
+	sc := newScriptedCoordinator(t,
+		scriptedQuery{id: "q1", pages: []scriptedPage{
+			{body: spooledRows(reuseInlineRows(t, 0, 1, 2))},
+			{body: spooledRows(reuseInlineRows(t, 2, 3))},
+		}},
+		scriptedQuery{id: "q2", pages: []scriptedPage{
+			{body: spooledRows(reuseInlineRows(t, 0, 100))},
+			{body: spooledRows(reuseInlineRows(t, 1, 200, 300))},
+		}},
+	)
+	stmt := prepareOnConn(t, sc.open(t, ""), "SELECT v")
+	ctx := context.Background()
+
+	first, err := stmt.QueryContext(ctx)
+	require.NoError(t, err)
+	defer first.Close()
+	second, err := stmt.QueryContext(ctx)
+	require.NoError(t, err)
+	defer second.Close()
+
+	assert.Equal(t, []int{1, 100, 2, 200, 3, 300}, readAlternately(t, first, second))
+	require.NoError(t, first.Err())
+	require.NoError(t, second.Err())
+}
+
+// Closing rows of an earlier execution cancels their query, as the user it
+// ran as, and leaves the later execution running.
 func TestRowsOfAnEarlierExecutionCancelTheirQuery(t *testing.T) {
 	t.Parallel()
 	sc := newScriptedCoordinator(t,
 		scriptedQuery{id: "q1", pages: []scriptedPage{{body: intRows(1)}, {body: intRows(2)}, {body: intRows(3)}}},
-		scriptedQuery{id: "q2", pages: []scriptedPage{{body: intRows(100)}}},
+		scriptedQuery{id: "q2", pages: []scriptedPage{{body: intRows(100)}, {body: intRows(200)}}},
 	)
-	db := sc.open(t, "")
+	stmt := prepareOnConn(t, sc.open(t, ""), "SELECT v")
 	ctx := context.Background()
-	conn, err := db.Conn(ctx)
-	require.NoError(t, err)
-	defer conn.Close()
-	stmt, err := conn.PrepareContext(ctx, "SELECT v")
-	require.NoError(t, err)
-	defer stmt.Close()
 
 	first, err := stmt.QueryContext(ctx, sql.Named(trinoUserHeader, "alice"))
 	require.NoError(t, err)
 	require.True(t, first.Next())
 	second, err := stmt.QueryContext(ctx)
 	require.NoError(t, err)
+	require.True(t, second.Next())
 	require.NoError(t, first.Close())
-	assert.Equal(t, []int{100}, collectInts(t, second))
+	assert.Equal(t, []int{200}, collectInts(t, second))
+	require.NoError(t, second.Err())
 
 	var deletes []string
 	for _, r := range sc.capturedRequests() {
-		if r.method == http.MethodDelete {
+		switch {
+		case r.method == http.MethodDelete:
 			deletes = append(deletes, r.path+" as "+r.header.Get(trinoUserHeader))
+		case strings.HasPrefix(r.path, "/q1/"):
+			assert.Equal(t, "alice", r.header.Get(trinoUserHeader), "request %s %s", r.method, r.path)
+		case strings.HasPrefix(r.path, "/q2/"):
+			assert.Equal(t, "bob", r.header.Get(trinoUserHeader), "request %s %s", r.method, r.path)
 		}
 	}
-	assert.Contains(t, deletes, "/v1/query/q1 as alice")
+	assert.Equal(t, []string{"/v1/query/q1 as alice"}, deletes)
+}
+
+// Closing a statement stops every execution whose rows are still open.
+func TestClosingAStatementStopsEveryExecution(t *testing.T) {
+	t.Parallel()
+	release := make(chan struct{})
+	sc := newScriptedCoordinator(t,
+		scriptedQuery{id: "q1", pages: []scriptedPage{{body: intRows(1)}, {body: intRows(2), wait: release}}},
+		scriptedQuery{id: "q2", pages: []scriptedPage{{body: intRows(100)}, {body: intRows(200), wait: release}}},
+	)
+	// Registered after the server, so that it runs before the server waits
+	// for the pages it is still serving.
+	t.Cleanup(func() { close(release) })
+	ctx := context.Background()
+	conn, err := sc.open(t, "").Conn(ctx)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	// The driver's statement is used directly, because database/sql closes
+	// it only once all of its rows are closed.
+	require.NoError(t, conn.Raw(func(driverConn any) error {
+		stmt, err := driverConn.(*Conn).PrepareContext(ctx, "SELECT v")
+		require.NoError(t, err)
+		first, err := stmt.(driver.StmtQueryContext).QueryContext(ctx, nil)
+		require.NoError(t, err)
+		defer first.Close()
+		second, err := stmt.(driver.StmtQueryContext).QueryContext(ctx, nil)
+		require.NoError(t, err)
+		defer second.Close()
+		row := make([]driver.Value, 1)
+		assert.NoError(t, first.Next(row))
+		assert.NoError(t, second.Next(row))
+
+		require.NoError(t, stmt.Close())
+		assert.ErrorIs(t, first.Next(row), io.EOF)
+		assert.ErrorIs(t, second.Next(row), io.EOF)
+		return nil
+	}))
+}
+
+// prepareOnConn prepares query on a connection of its own, so that the
+// statement can run again while rows of an earlier execution are open.
+func prepareOnConn(t *testing.T, db *sql.DB, query string) *sql.Stmt {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	stmt, err := conn.PrepareContext(ctx, query)
+	require.NoError(t, err)
+	t.Cleanup(func() { stmt.Close() })
+	return stmt
+}
+
+// readAlternately reads one row from each rows in turn until all of them
+// end.
+func readAlternately(t *testing.T, rowsList ...*sql.Rows) []int {
+	t.Helper()
+	var values []int
+	open := len(rowsList)
+	done := make([]bool, len(rowsList))
+	for open > 0 {
+		for i, rows := range rowsList {
+			if done[i] {
+				continue
+			}
+			if !rows.Next() {
+				done[i] = true
+				open--
+				continue
+			}
+			var v int
+			require.NoError(t, rows.Scan(&v))
+			values = append(values, v)
+		}
+	}
+	return values
 }
