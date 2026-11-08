@@ -820,21 +820,21 @@ func TestNullTimeScanLeavesOtherTypesInvalid(t *testing.T) {
 	assert.False(t, value.Valid)
 }
 
-func TestParseZonedTimeRejectsBadInput(t *testing.T) {
+func TestParseTimeRejectsBadInput(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name    string
 		input   string
 		wantErr string
 	}{
-		{name: "no zone", input: "2017-07-10T01:02:03", wantErr: "cannot convert 2017-07-10T01:02:03 (string) to time+zone"},
+		{name: "no space before the time", input: "2017-07-10T01:02:03", wantErr: "parsing time"},
 		{name: "unknown zone", input: "2017-07-10 01:02:03.000 Mars/Olympus_Mons", wantErr: `cannot load timezone "Mars/Olympus_Mons"`},
 		{name: "bad offset", input: "2017-07-10 01:02:03.000 +25:00", wantErr: "parsing time"},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseZonedTime(tc.input)
+			_, err := parseTime(tc.input, time.UTC)
 
 			require.ErrorContains(t, err, tc.wantErr)
 		})
