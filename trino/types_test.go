@@ -830,6 +830,7 @@ func TestParseTimeRejectsBadInput(t *testing.T) {
 		{name: "no space before the time", input: "2017-07-10T01:02:03", wantErr: "parsing time"},
 		{name: "unknown zone", input: "2017-07-10 01:02:03.000 Mars/Olympus_Mons", wantErr: `cannot load timezone "Mars/Olympus_Mons"`},
 		{name: "bad offset", input: "2017-07-10 01:02:03.000 +25:00", wantErr: "parsing time"},
+		{name: "bad month with a signed year", input: "+10000-13-01", wantErr: `cannot parse "+10000-13-01"`},
 	}
 
 	for _, tc := range cases {

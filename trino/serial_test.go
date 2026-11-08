@@ -96,6 +96,10 @@ func TestSerial(t *testing.T) {
 		{name: "timestamp with time zone in UTC", value: time.Date(2017, 7, 10, 11, 34, 25, 123456, time.UTC), want: "TIMESTAMP '2017-07-10 11:34:25.000123456 Z'"},
 		{name: "timestamp before the epoch", value: time.Date(1969, 12, 31, 23, 59, 59, 0, time.UTC), want: "TIMESTAMP '1969-12-31 23:59:59 Z'"},
 		{name: "zero timestamp", value: time.Time{}, want: "TIMESTAMP '0001-01-01 00:00:00 Z'"},
+		// Trino also reads years outside 0000-9999 without a sign or with fewer digits
+		{name: "date before year 0", value: Date(-1, 1, 1), want: "DATE '-001-01-01'"},
+		{name: "timestamp without timezone before year 0", value: Timestamp(-1, 1, 1, 0, 0, 0, 0), want: "TIMESTAMP '-0001-01-01 00:00:00'"},
+		{name: "timestamp after year 9999", value: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), want: "TIMESTAMP '10000-01-01 00:00:00 Z'"},
 		{name: "duration", value: 10*time.Second + 5*time.Millisecond, want: "INTERVAL '10.005' SECOND"},
 		{name: "duration with negative value", value: -(10*time.Second + 5*time.Millisecond), want: "INTERVAL '-10.005' SECOND"},
 		{name: "negative duration shorter than a second", value: -500 * time.Millisecond, want: "INTERVAL '-0.5' SECOND"},

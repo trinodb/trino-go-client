@@ -134,6 +134,42 @@ func TestRowsDecoderToleratesAWrongRowCount(t *testing.T) {
 	}
 }
 
+// TestParseTimeReadsSignedYears parses dates and timestamps with years
+// outside 0000-9999, which Trino writes with a sign that must not be taken
+// for an offset.
+func TestParseTimeReadsSignedYears(t *testing.T) {
+	t.Parallel()
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	require.NoError(t, err)
+	paris, err := time.LoadLocation("Europe/Paris")
+	require.NoError(t, err)
+	cases := []struct {
+		value string
+		want  time.Time
+	}{
+		{value: "0000-01-01", want: time.Date(0, 1, 1, 0, 0, 0, 0, tokyo)},
+		{value: "-0001-01-01", want: time.Date(-1, 1, 1, 0, 0, 0, 0, tokyo)},
+		{value: "-0004-02-29", want: time.Date(-4, 2, 29, 0, 0, 0, 0, tokyo)},
+		{value: "+10000-01-01", want: time.Date(10000, 1, 1, 0, 0, 0, 0, tokyo)},
+		{value: "-0001-01-01 00:00:00", want: time.Date(-1, 1, 1, 0, 0, 0, 0, tokyo)},
+		{value: "+10000-01-01 00:00:00.000000", want: time.Date(10000, 1, 1, 0, 0, 0, 0, tokyo)},
+		{value: "-0001-01-01 00:00:00 UTC", want: time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{value: "+10000-01-01 00:00:00.000000 UTC", want: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{value: "-0001-01-01 00:00:00 +05:30", want: time.Date(-1, 1, 1, 0, 0, 0, 0, time.FixedZone("", 5*3600+30*60))},
+		{value: "-0001-01-01 00:00:00-04:00", want: time.Date(-1, 1, 1, 0, 0, 0, 0, time.FixedZone("", -4*3600))},
+		{value: "-12345-06-07 01:02:03.123456789012 Europe/Paris", want: time.Date(-12345, 6, 7, 1, 2, 3, 123456789, paris)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.value, func(t *testing.T) {
+			got, err := parseTime(tc.value, tokyo)
+
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 // decodeTestRows decodes page with the decoders of columns, whose type
 // arguments are the raw JSON the server sends.
 func decodeTestRows(t *testing.T, columns []queryColumn, location *time.Location, page string) ([]queryData, error) {

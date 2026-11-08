@@ -485,7 +485,18 @@ func parseTime(value string, location *time.Location) (time.Time, error) {
 			return time.Time{}, err
 		}
 	}
-	return time.ParseInLocation(localTimeLayout(stamp), stamp, location)
+	year, rest, ok := cutSignedYear(stamp)
+	if !ok {
+		return time.ParseInLocation(localTimeLayout(stamp), stamp, location)
+	}
+	// time.Parse reads only four-digit years, so the rest is parsed with a
+	// leap year in its place, to accept February 29, and in UTC, so a
+	// daylight saving gap in that year cannot move the time of day.
+	t, err := time.Parse(localTimeLayout(stamp), "2000"+rest)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("cannot parse %q: %w", value, err)
+	}
+	return time.Date(year, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), location), nil
 }
 
 // cutZone splits a time or timestamp from its zone: an offset, like +03:00,
@@ -521,6 +532,24 @@ func zoneLocation(zone string) (*time.Location, error) {
 		return nil, fmt.Errorf("cannot load timezone %q: %v", zone, err)
 	}
 	return location, nil
+}
+
+// cutSignedYear splits a date or timestamp with a year outside 0000-9999,
+// which Trino writes with a sign, like -0001-01-01 or +10000-01-01, into the
+// year and the rest, starting with the hyphen before the month.
+func cutSignedYear(stamp string) (year int, rest string, ok bool) {
+	if stamp == "" || (stamp[0] != '+' && stamp[0] != '-') {
+		return 0, "", false
+	}
+	i := strings.IndexByte(stamp[1:], '-') + 1
+	if i == 0 {
+		return 0, "", false
+	}
+	year, err := strconv.Atoi(stamp[:i])
+	if err != nil {
+		return 0, "", false
+	}
+	return year, stamp[i:], true
 }
 
 // localTimeLayout returns the layout of a date, time or timestamp without

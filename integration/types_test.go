@@ -669,6 +669,28 @@ func TestIntegrationTimeTzArgs(t *testing.T) {
 	}
 }
 
+// Trino reads years outside 0000-9999 whether or not they carry a sign, and
+// the driver writes them without one, except for the minus.
+func TestIntegrationSignedYearArgs(t *testing.T) {
+	db := integrationOpen(t)
+	for _, tc := range []struct {
+		arg     any
+		literal string
+	}{
+		{trino.Date(-1, 1, 1), "DATE '-0001-01-01'"},
+		{trino.Date(10000, 1, 1), "DATE '+10000-01-01'"},
+		{trino.Timestamp(-1, 1, 1, 0, 0, 0, 0), "TIMESTAMP '-0001-01-01 00:00:00'"},
+		{trino.Timestamp(10000, 1, 1, 0, 0, 0, 0), "TIMESTAMP '+10000-01-01 00:00:00'"},
+		{time.Date(-1, 1, 1, 0, 0, 0, 0, time.FixedZone("", 5*3600+30*60)), "TIMESTAMP '-0001-01-01 00:00:00 +05:30'"},
+		{time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC), "TIMESTAMP '+10000-01-01 00:00:00 UTC'"},
+	} {
+		var equal bool
+		err := db.QueryRow("SELECT ? = "+tc.literal, tc.arg).Scan(&equal)
+		require.NoError(t, err, tc.literal)
+		require.True(t, equal, "%v did not round-trip as %s", tc.arg, tc.literal)
+	}
+}
+
 func TestIntegrationNumericArgs(t *testing.T) {
 	dsns := []string{integrationDSN(t)}
 	// EXECUTE IMMEDIATE, used when explicit prepare is disabled, needs Trino 418 or later.
@@ -1458,6 +1480,42 @@ func TestIntegrationScanValues(t *testing.T) {
 				return
 			}
 			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// Trino writes years outside 0000-9999 with a sign, and rounding the largest
+// timestamp of a higher precision can carry it into year 10000.
+func TestIntegrationSignedYears(t *testing.T) {
+	db := integrationOpen(t, integrationDSN(t)+"?timezone=Asia%2FTokyo")
+	tokyo, err := time.LoadLocation("Asia/Tokyo")
+	require.NoError(t, err)
+	paris, err := time.LoadLocation("Europe/Paris")
+	require.NoError(t, err)
+	cases := []struct {
+		query string
+		want  time.Time
+	}{
+		{query: "DATE '-0001-01-01'", want: time.Date(-1, 1, 1, 0, 0, 0, 0, tokyo)},
+		{query: "DATE '0000-01-01'", want: time.Date(0, 1, 1, 0, 0, 0, 0, tokyo)},
+		{query: "DATE '+10000-01-01'", want: time.Date(10000, 1, 1, 0, 0, 0, 0, tokyo)},
+		{query: "TIMESTAMP '-0001-01-01 00:00:00'", want: time.Date(-1, 1, 1, 0, 0, 0, 0, tokyo)},
+		{query: "TIMESTAMP '-0001-01-01 00:00:00 UTC'", want: time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC)},
+		{query: "TIMESTAMP '-0001-01-01 00:00:00 +05:30'", want: time.Date(-1, 1, 1, 0, 0, 0, 0, time.FixedZone("", 5*3600+30*60))},
+		{query: "TIMESTAMP '-12345-06-07 01:02:03.123456789012 Europe/Paris'", want: time.Date(-12345, 6, 7, 1, 2, 3, 123456789, paris)},
+		{query: "CAST(TIMESTAMP '9999-12-31 23:59:59.9999999' AS TIMESTAMP(6))", want: time.Date(10000, 1, 1, 0, 0, 0, 0, tokyo)},
+		{query: "CAST(TIMESTAMP '9999-12-31 23:59:59.9999999 UTC' AS TIMESTAMP(6) WITH TIME ZONE)", want: time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.query, func(t *testing.T) {
+			var got time.Time
+			var seconds int64
+			err := db.QueryRow("SELECT v, CAST(floor(to_unixtime(CAST(v AS TIMESTAMP(9) WITH TIME ZONE))) AS BIGINT) FROM (VALUES "+tc.query+") AS t(v)").Scan(&got, &seconds)
+			require.NoError(t, err)
+
+			assert.Equal(t, tc.want.String(), got.String())
+			assert.Equal(t, seconds, got.Unix(), "the instant the server holds")
 		})
 	}
 }
