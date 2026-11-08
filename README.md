@@ -390,9 +390,14 @@ uses it to evaluate `current_timestamp`, `now()`, `date_trunc` and every other
 function that depends on the session time zone, and the driver uses the same
 zone to read `DATE`, `TIME` and `TIMESTAMP` values that do not carry a zone of
 their own. Without the parameter the local zone is used, taken from the `TZ`
-environment variable or from `/etc/localtime`; when neither names a zone, the
-current UTC offset is sent instead. Set the parameter explicitly to make the
-results independent of where the client runs, for example `timezone=UTC`.
+environment variable or from `/etc/localtime`. When neither names a zone, the
+current UTC offset, like `+01:00`, is sent instead. This is the usual case on
+Windows when `TZ` is not set. A fixed offset has no daylight saving time, so
+values on the other side of a DST change are off by one hour, and the zone
+depends on the season in which the connection was opened. To avoid this, set
+the parameter or `TZ` to an IANA zone name, for example
+`timezone=Europe/Berlin`. Set the parameter explicitly to make the results
+independent of where the client runs, for example `timezone=UTC`.
 
 Running `SET TIME ZONE` changes the zone for the rest of the session, and the
 driver follows it when reading values. The `X-Trino-Time-Zone` [named
