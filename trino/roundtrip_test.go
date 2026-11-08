@@ -1097,7 +1097,7 @@ func TestNextURIDowngradeToHTTPIsRefused(t *testing.T) {
 // the nextUri GET.
 func TestRequestsWithoutTLSAreRefusedForHTTPSServer(t *testing.T) {
 	t.Parallel()
-	conn, err := newConnFromConfig(&Config{ServerURI: "https://alice:secret@localhost:8443"}, nil, nil)
+	conn, err := newConnFromConfig(&Config{ServerURI: "https://alice:secret@localhost:8443"}, nil, nil, &driverTransport{})
 	require.NoError(t, err)
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodDelete} {
 		_, err := conn.newRequest(t.Context(), method, "http://localhost:8443/v1/statement/executing/q/slug/1", nil, nil)

@@ -1241,7 +1241,7 @@ func TestSSLVerificationModes(t *testing.T) {
 // loopback hosts, so a request through an environment proxy cannot be tested.
 func TestTLSTransportKeepsDefaultTransportSettings(t *testing.T) {
 	t.Parallel()
-	conn, err := newConnFromConfig(&Config{ServerURI: "https://localhost:8443", SSLVerification: SSLVerificationNone}, nil, nil)
+	conn, err := newConnFromConfig(&Config{ServerURI: "https://localhost:8443", SSLVerification: SSLVerificationNone}, nil, nil, &driverTransport{})
 	require.NoError(t, err)
 
 	transport, ok := conn.httpClient.Transport.(*http.Transport)

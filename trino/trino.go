@@ -266,17 +266,30 @@ var (
 
 // Connector opens connections from a Config, including the fields a DSN
 // cannot carry. Use it with sql.OpenDB.
+//
+// When TLS or proxy settings apply, the connections share one HTTP transport,
+// so they reuse each other's sockets and TLS sessions. The first connection
+// builds it, reading the certificate files once for the Connector.
 type Connector struct {
 	conf              *Config
 	externalAuth      *externalAuthenticator
 	clientCredentials *clientCredentialsAuthenticator
+	transport         *driverTransport
 }
 
 func newConnector(conf *Config) *Connector {
-	return &Connector{conf: conf, externalAuth: newExternalAuthenticator(conf), clientCredentials: newClientCredentialsAuthenticator(conf)}
+	return &Connector{
+		conf:              conf,
+		externalAuth:      newExternalAuthenticator(conf),
+		clientCredentials: newClientCredentialsAuthenticator(conf),
+		transport:         &driverTransport{},
+	}
 }
 
-var _ driver.Connector = &Connector{}
+var (
+	_ driver.Connector = &Connector{}
+	_ io.Closer        = &Connector{}
+)
 
 // NewConnector validates a copy of conf; later changes to conf do not affect
 // the Connector.
@@ -332,11 +345,19 @@ func (c *Connector) Connect(ctx context.Context) (driver.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return newConnFromConfig(c.conf, c.externalAuth, c.clientCredentials)
+	return newConnFromConfig(c.conf, c.externalAuth, c.clientCredentials, c.transport)
 }
 
 func (c *Connector) Driver() driver.Driver {
 	return &Driver{}
+}
+
+// Close closes the idle sockets of the transport the Connector's connections
+// share; sql.DB.Close calls it. A transport of Config.HTTPClient or of a
+// custom client is left open.
+func (c *Connector) Close() error {
+	c.transport.closeIdleConnections()
+	return nil
 }
 
 // Values of Config.SSLVerification, as in the JDBC driver.
@@ -1303,9 +1324,9 @@ func (c *Config) TLSConfig() (*tls.Config, error) {
 type Conn struct {
 	baseURL string
 	// ownedTransport is the transport the driver created for this
-	// connection, which is closed with it, unlike one the application
-	// supplies.
-	ownedTransport *http.Transport
+	// connection alone, which is closed with it, unlike one a Connector
+	// shares or the application supplies.
+	ownedTransport *driverTransport
 	auth           *url.Userinfo
 	httpClient     http.Client
 	// segmentHTTPClient follows redirects, which the coordinator issues for
@@ -1426,10 +1447,17 @@ func newConn(dsn string) (*Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newConnFromConfig(conf, newExternalAuthenticator(conf), newClientCredentialsAuthenticator(conf))
+	// Without a Connector, nothing else shares or closes the transport.
+	transport := &driverTransport{}
+	c, err := newConnFromConfig(conf, newExternalAuthenticator(conf), newClientCredentialsAuthenticator(conf), transport)
+	if err != nil {
+		return nil, err
+	}
+	c.ownedTransport = transport
+	return c, nil
 }
 
-func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, clientCredentials *clientCredentialsAuthenticator) (*Conn, error) {
+func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, clientCredentials *clientCredentialsAuthenticator, transport *driverTransport) (*Conn, error) {
 	serverURL, err := url.Parse(conf.ServerURI)
 	if err != nil {
 		return nil, fmt.Errorf("trino: invalid server URL: %w", redactURLError(conf.ServerURI, err))
@@ -1459,7 +1487,6 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 	}
 
 	var httpClient = http.DefaultClient
-	var ownedTransport *http.Transport
 	if conf.HTTPClient != nil {
 		httpClient = conf.HTTPClient
 	} else if clientKey := conf.CustomClientName; clientKey != "" {
@@ -1468,12 +1495,12 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 			return nil, fmt.Errorf("trino: custom client not registered: %q", clientKey)
 		}
 	} else {
-		ownedTransport, err = conf.transport(serverURL)
+		configured, err := transport.get(conf, serverURL)
 		if err != nil {
 			return nil, err
 		}
-		if ownedTransport != nil {
-			httpClient = &http.Client{Transport: ownedTransport}
+		if configured != nil {
+			httpClient = &http.Client{Transport: configured}
 		}
 	}
 	// Segment downloads follow redirects to the storage holding them and carry
@@ -1500,7 +1527,6 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
-		ownedTransport:             ownedTransport,
 		httpClient:                 *httpClient,
 		segmentHTTPClient:          *segmentHTTPClient,
 		httpHeaders:                make(http.Header),
@@ -1889,7 +1915,7 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 // Close implements the driver.Conn interface.
 func (c *Conn) Close() error {
 	if c.ownedTransport != nil {
-		c.ownedTransport.CloseIdleConnections()
+		c.ownedTransport.closeIdleConnections()
 	}
 	return nil
 }
@@ -2023,6 +2049,39 @@ func (c *Conn) newRequest(ctx context.Context, method, url string, body io.Reade
 		req.SetBasicAuth(c.auth.Username(), pass)
 	}
 	return req, nil
+}
+
+// driverTransport holds the transport the driver builds when TLS or proxy
+// settings apply, so connections can share it. It is built on first use, so
+// errors reading the certificate files surface when a connection opens.
+type driverTransport struct {
+	mu        sync.Mutex
+	transport *http.Transport
+}
+
+// get returns nil when http.DefaultTransport applies.
+func (t *driverTransport) get(conf *Config, serverURL *url.URL) (*http.Transport, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.transport != nil {
+		return t.transport, nil
+	}
+	transport, err := conf.transport(serverURL)
+	if err != nil {
+		return nil, err
+	}
+	t.transport = transport
+	return transport, nil
+}
+
+func (t *driverTransport) closeIdleConnections() {
+	t.mu.Lock()
+	transport := t.transport
+	t.mu.Unlock()
+	if transport == nil {
+		return
+	}
+	transport.CloseIdleConnections()
 }
 
 // transport returns nil when http.DefaultTransport applies, which takes the
