@@ -58,6 +58,15 @@ func TestFormatDSN(t *testing.T) {
 			want: "http://foobar@localhost:8080?source=trino-go-client&timezone=Asia%2FTokyo",
 		},
 		{
+			name: "naive time zone",
+			config: &Config{
+				ServerURI:     "http://foobar@localhost:8080",
+				TimeZone:      "America/New_York",
+				NaiveTimeZone: "UTC",
+			},
+			want: "http://foobar@localhost:8080?naiveTimeZone=UTC&source=trino-go-client&timezone=America%2FNew_York",
+		},
+		{
 			name: "explicit prepare disabled",
 			config: &Config{
 				ServerURI:              "https://foobar@localhost:8090",
@@ -404,6 +413,7 @@ func TestParseDSNToConfig(t *testing.T) {
 				ClientInfo:                 "client info",
 				Language:                   "pl-PL",
 				TimeZone:                   "Asia/Tokyo",
+				NaiveTimeZone:              "UTC",
 				CustomClientName:           "client_name",
 				AccessToken:                "token_test",
 				DisableExplicitPrepare:     true,
@@ -517,6 +527,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"client_info=test%20client%20info&" +
 		"language=en-US&" +
 		"timezone=Asia%2FTokyo&" +
+		"naiveTimeZone=%2B05%3A30&" +
 		"resourceEstimates=EXECUTION_TIME%3A10m%3BPEAK_MEMORY%3A1GB&" +
 		"custom_client=test_client&" +
 		"KerberosEnabled=true&" +
@@ -592,6 +603,7 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, "test client info", config.ClientInfo)
 	assert.Equal(t, "en-US", config.Language)
 	assert.Equal(t, "Asia/Tokyo", config.TimeZone)
+	assert.Equal(t, "+05:30", config.NaiveTimeZone)
 	assert.Equal(t, map[string]string{"EXECUTION_TIME": "10m", "PEAK_MEMORY": "1GB"}, config.ResourceEstimates)
 	assert.Equal(t, "test_client", config.CustomClientName)
 	assert.Equal(t, true, config.KerberosEnabled)

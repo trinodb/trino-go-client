@@ -1623,6 +1623,18 @@ func TestIntegrationTimeZone(t *testing.T) {
 	})
 }
 
+func TestIntegrationNaiveTimeZone(t *testing.T) {
+	db := integrationOpen(t, integrationDSN(t)+"?timezone=America%2FNew_York&naiveTimeZone=UTC")
+
+	var zone string
+	require.NoError(t, db.QueryRow("SELECT current_timezone()").Scan(&zone))
+	var inGap time.Time
+	require.NoError(t, db.QueryRow("SELECT TIMESTAMP '2024-03-10 02:30:00'").Scan(&inGap))
+
+	assert.Equal(t, "America/New_York", zone, "the server keeps the session zone")
+	assert.Equal(t, time.Date(2024, 3, 10, 2, 30, 0, 0, time.UTC), inGap)
+}
+
 // assertTimestampIn checks that a timestamp without a zone is read on the
 // wall clock of location, the zone the server was told to use.
 func assertTimestampIn(t *testing.T, db interface {

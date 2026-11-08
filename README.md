@@ -163,6 +163,7 @@ field that a DSN cannot carry is set.
 | [`client_info`](#client_info) | `ClientInfo` | empty | Free-form description of the client |
 | [`language`](#language) | `Language` | server default | Locale for locale-sensitive functions |
 | [`timezone`](#timezone) | `TimeZone` | local zone | Session time zone |
+| [`naiveTimeZone`](#naivetimezone) | `NaiveTimeZone` | session time zone | Zone to read values without a zone in |
 | [`query_timeout`](#query_timeout) | `QueryTimeout` | 10h | Timeout for queries without a context deadline |
 | [`request_retry_timeout`](#request_retry_timeout) | `RequestRetryTimeout` | 2m | How long one HTTP request is retried |
 | [`request_retry_max_attempts`](#request_retry_max_attempts) | `RequestRetryMaxAttempts` | 20 | How many times one HTTP request is sent |
@@ -404,7 +405,8 @@ but gets one of its two offsets. In zones that change the clock at midnight,
 like America/Havana, a `DATE` on the day of the change comes back as 23:00 on
 the day before. A `TIME` is read on January 1 of year 0, when most zones used
 local mean time, so its offset differs from the current one, like -04:56:02
-in America/New_York.
+in America/New_York. To read every such value unchanged, set
+[`naiveTimeZone`](#naivetimezone) to a zone without transitions.
 
 Running `SET TIME ZONE` changes the zone for the rest of the session, and the
 driver follows it when reading values. The `X-Trino-Time-Zone` [named
@@ -414,6 +416,39 @@ argument](#per-query-settings) overrides the zone for one query.
 config := &trino.Config{
 	ServerURI: "http://foobar@localhost:8080",
 	TimeZone:  "Asia/Tokyo",
+}
+dsn, err := config.FormatDSN()
+```
+
+#### `naiveTimeZone`
+
+```
+Type:           string
+Valid values:   an IANA time zone name (e.g. Europe/Warsaw), UTC, or an offset
+                like +05:30
+Default:        empty (the session time zone)
+```
+
+The `naiveTimeZone` parameter sets the zone the driver reads `DATE`, `TIME`
+and `TIMESTAMP` values without a zone in, also inside an `ARRAY`, `MAP`,
+`ROW` or `VARIANT`. It replaces the session time zone for reading only: the
+server still uses [`timezone`](#timezone), `SET TIME ZONE` and the
+`X-Trino-Time-Zone` named argument to evaluate `current_timestamp` and other
+functions, but values are read in `naiveTimeZone` regardless of them. Values
+with a time zone keep their own. `trino.NullMap` parses `MAP` keys without a
+zone itself, so set its `Location` field to the same zone.
+
+A zone with daylight saving time can't represent every wall-clock reading,
+so values that fall into its transitions come back changed, as described for
+[`timezone`](#timezone). In UTC, or a fixed offset like +05:30, every value
+comes back with the wall clock the server returned, and its `Year`, `Month`,
+`Day` and `Clock` methods return the fields of the value.
+
+```go
+config := &trino.Config{
+	ServerURI:     "http://foobar@localhost:8080",
+	TimeZone:      "America/New_York",
+	NaiveTimeZone: "UTC",
 }
 dsn, err := config.FormatDSN()
 ```
@@ -1006,7 +1041,7 @@ meaning are:
 | `X-Trino-Role` | `map[string]string` | Catalog roles for the query, formatted like [`roles`](#roles) |
 | `X-Trino-Resource-Estimate` | `map[string]string` | Estimates added to or replacing the connection's [`resourceEstimates`](#resourceestimates) |
 | `X-Trino-Client-Tags` | `string` | Comma-separated tags replacing [`clientTags`](#clienttags) |
-| `X-Trino-Time-Zone` | `string` | Time zone replacing [`timezone`](#timezone), also for reading the results |
+| `X-Trino-Time-Zone` | `string` | Time zone replacing [`timezone`](#timezone), also for reading the results unless [`naiveTimeZone`](#naivetimezone) is set |
 | `X-Trino-Progress-Callback` | `trino.ProgressUpdater` | Query id and statistics, see [Query id and progress](#query-id-and-progress) |
 | `X-Trino-Progress-Callback-Period` | `time.Duration` | How often the callback runs |
 | `warnings` | `*trino.Warnings` | Collects the warnings of the query, see [Query warnings](#query-warnings) |
@@ -1276,7 +1311,8 @@ The details for some of the types:
   precision, or convert the value to a string that then can be parsed manually.
 * `DATE`, `TIME` and `TIMESTAMP` without a time zone - returned as `time.Time`
   in the zone of the connection (see the `timezone` parameter), which is the
-  zone the server used to produce them, also inside an `ARRAY`, `MAP` or
+  zone the server used to produce them, or in the zone of the
+  `naiveTimeZone` parameter when it is set, also inside an `ARRAY`, `MAP` or
   `ROW`. `MAP` keys of these types are parsed by `trino.NullMap`, in the zone
   of its `Location` field, `time.Local` by default. Values that fall into a
   daylight saving time gap of that zone come back changed, see the
@@ -1445,7 +1481,7 @@ value into a Go value:
   UUID
 * `[]byte`
 * `time.Time` for dates, times and timestamps. Those without a time zone are
-  in the zone of the connection, like `DATE`, `TIME` and `TIMESTAMP`
+  in the same zone as `DATE`, `TIME` and `TIMESTAMP`
   columns, and timestamps with a time zone are in UTC
 * `[]interface{}` for an array and `map[string]interface{}` for an object,
   holding converted values

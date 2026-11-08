@@ -212,6 +212,7 @@ const (
 	explicitPrepareConfig            = "explicitPrepare"
 	forwardAuthorizationHeaderConfig = "forwardAuthorizationHeader"
 	resourceEstimatesConfig          = "resourceEstimates"
+	naiveTimeZoneConfig              = "naiveTimeZone"
 
 	mapKeySeparator   = ":"
 	mapEntrySeparator = ";"
@@ -358,6 +359,7 @@ type Config struct {
 	ClientInfo                 string            // Free-form description of the client, visible in the web UI and to event listeners (optional)
 	Language                   string            // Language tag, e.g. en-US, used for locale-sensitive processing (optional)
 	TimeZone                   string            // Time zone id, e.g. Europe/Warsaw or +02:00, used by the server and to read values without a zone (optional, default is the local zone)
+	NaiveTimeZone              string            // Time zone id, e.g. UTC, to read values without a zone in instead of the session time zone, which the server keeps using (optional; DSN: naiveTimeZone)
 	ResourceEstimates          map[string]string // Expected resource usage of each query, e.g. EXECUTION_TIME: 10m, used to select a resource group (optional; DSN: resourceEstimates)
 	CustomClientName           string            // Custom client name (optional)
 	KerberosEnabled            bool              // KerberosEnabled (optional, default is false)
@@ -487,6 +489,7 @@ func ParseDSN(dsn string) (*Config, error) {
 	config.ClientInfo = query.Get("client_info")
 	config.Language = query.Get("language")
 	config.TimeZone = query.Get("timezone")
+	config.NaiveTimeZone = query.Get(naiveTimeZoneConfig)
 	config.CustomClientName = query.Get("custom_client")
 	config.AccessToken = query.Get(accessTokenConfig)
 
@@ -1071,6 +1074,7 @@ func (c *Config) FormatDSN() (string, error) {
 		"client_info":        c.ClientInfo,
 		"language":           c.Language,
 		"timezone":           c.TimeZone,
+		naiveTimeZoneConfig:  c.NaiveTimeZone,
 		"schema":             c.Schema,
 		"session_properties": strings.Join(sessionkv, mapEntrySeparator),
 		"extra_credentials":  strings.Join(credkv, mapEntrySeparator),
@@ -1267,9 +1271,11 @@ type Conn struct {
 	configuredSession http.Header
 	retryLimit        retryLimit
 	// timeZone is sent as X-Trino-Time-Zone; sessionTimeZone is set when the
-	// server reports a SET TIME ZONE and takes precedence while it lasts
+	// server reports a SET TIME ZONE and takes precedence while it lasts;
+	// naiveTimeZone, when set, replaces both to read values without a zone
 	timeZone          *time.Location
 	sessionTimeZone   *time.Location
+	naiveTimeZone     *time.Location
 	externalAuth      *externalAuthenticator
 	clientCredentials *clientCredentialsAuthenticator
 }
@@ -1411,6 +1417,13 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 	if err != nil {
 		return nil, err
 	}
+	var naiveTimeZone *time.Location
+	if conf.NaiveTimeZone != "" {
+		naiveTimeZone, err = resolveTimeZone(conf.NaiveTimeZone)
+		if err != nil {
+			return nil, fmt.Errorf("%w (set by %s)", err, naiveTimeZoneConfig)
+		}
+	}
 
 	c := &Conn{
 		baseURL:                    serverURL.Scheme + "://" + serverURL.Host,
@@ -1426,6 +1439,7 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 		heartbeatInterval:          conf.HeartbeatInterval,
 		retryLimit:                 retryLimit{timeout: DefaultRequestRetryTimeout, maxAttempts: DefaultRequestRetryMaxAttempts},
 		timeZone:                   timeZone,
+		naiveTimeZone:              naiveTimeZone,
 		externalAuth:               externalAuth,
 		clientCredentials:          clientCredentials,
 		resourceEstimates:          maps.Clone(conf.ResourceEstimates),
@@ -2276,7 +2290,8 @@ func (c *Conn) applySessionTimeZone(entry string) {
 	}
 }
 
-// location returns the zone values without a time zone are interpreted in.
+// location returns the zone the server produces values without a time zone
+// in.
 func (c *Conn) location() *time.Location {
 	c.httpHeadersMu.RLock()
 	defer c.httpHeadersMu.RUnlock()
@@ -3801,6 +3816,14 @@ func (st *driverStmt) location() *time.Location {
 	return st.conn.location()
 }
 
+// naiveLocation returns the zone values without a time zone are read in.
+func (st *driverStmt) naiveLocation() *time.Location {
+	if st.conn.naiveTimeZone != nil {
+		return st.conn.naiveTimeZone
+	}
+	return st.location()
+}
+
 func (st *driverStmt) startSpoolingProtocolWorkers(ctx context.Context, decoder *rowsDecoder) {
 	st.usingSpooledProtocol = true
 
@@ -4198,7 +4221,7 @@ func (qr *driverRows) initColumns(qresp *queryResponse) error {
 			return err
 		}
 	}
-	decoder, err := newRowsDecoder(qresp.Columns, qr.stmt.location())
+	decoder, err := newRowsDecoder(qresp.Columns, qr.stmt.naiveLocation())
 	if err != nil {
 		return err
 	}
