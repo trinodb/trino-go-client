@@ -52,6 +52,14 @@ func TestNewConnectorValidatesConfig(t *testing.T) {
 	_, err = NewConnector(&Config{ServerURI: "http://localhost", HeartbeatInterval: &negative})
 	assert.ErrorContains(t, err, "heartbeat_interval must be positive")
 
+	zero := time.Duration(0)
+	_, err = NewConnector(&Config{ServerURI: "http://localhost", RequestRetryTimeout: &zero})
+	assert.ErrorContains(t, err, "request_retry_timeout must be positive")
+
+	noAttempts := 0
+	_, err = NewConnector(&Config{ServerURI: "http://localhost", RequestRetryMaxAttempts: &noAttempts})
+	assert.ErrorContains(t, err, "request_retry_max_attempts must be a positive integer")
+
 	_, err = NewConnector(&Config{ServerURI: "https://localhost", SSLClientCert: "PEM"})
 	assert.ErrorContains(t, err, "a client certificate and its key must be specified together")
 
