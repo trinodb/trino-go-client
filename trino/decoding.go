@@ -478,40 +478,49 @@ func unexpectedKind(kind jsontext.Kind, expected string) error {
 // parseTime parses a Trino date, time or timestamp. Values that carry their
 // own zone keep it; the others are interpreted in location.
 func parseTime(value string, location *time.Location) (time.Time, error) {
-	if i := strings.LastIndexByte(value, ' '); i >= 0 && i+1 < len(value) && !isDigit(value[i+1]) {
-		return parseZonedTime(value)
+	stamp, zone := cutZone(value)
+	if zone != "" {
+		var err error
+		if location, err = zoneLocation(zone); err != nil {
+			return time.Time{}, err
+		}
 	}
-	// Time literals may not have spaces before the timezone.
-	if i := strings.IndexByte(value, '+'); i >= 0 {
-		return parseZonedTime(value[:i] + " " + value[i:])
-	}
-	hyphenCount := strings.Count(value, "-")
-	// We need to ensure we don't treat the hyphens in dates as the minus offset sign.
-	// So if there's only one hyphen or more than 2, we have a negative offset.
-	if hyphenCount == 1 || hyphenCount > 2 {
-		// We add a space before the last hyphen to parse properly.
-		i := strings.LastIndexByte(value, '-')
-		return parseZonedTime(value[:i] + " " + value[i:])
-	}
-	return time.ParseInLocation(localTimeLayout(value), value, location)
+	return time.ParseInLocation(localTimeLayout(stamp), stamp, location)
 }
 
-// parseZonedTime parses a time or timestamp followed by a space and either
-// an offset, like +03:00, or a zone name, like Europe/Paris.
-func parseZonedTime(value string) (time.Time, error) {
-	i := strings.LastIndexByte(value, ' ')
-	if i == -1 {
-		return time.Time{}, fmt.Errorf("cannot convert %v (%T) to time+zone", value, value)
+// cutZone splits a time or timestamp from its zone: an offset, like +03:00,
+// or a zone name, like Europe/Paris, after a space, or an offset right after
+// the time of day.
+func cutZone(value string) (stamp, zone string) {
+	if i := strings.LastIndexByte(value, ' '); i >= 0 && i+1 < len(value) && !isDigit(value[i+1]) {
+		return value[:i], value[i+1:]
 	}
-	stamp, zone := value[:i], value[i+1:]
-	if strings.HasPrefix(zone, "+") || strings.HasPrefix(zone, "-") {
-		return time.Parse(localTimeLayout(stamp)+" -07:00", value)
+	// An offset can only follow the time of day, so a sign or hyphen before
+	// its first colon belongs to the date.
+	timeOfDay := strings.IndexByte(value, ':')
+	if timeOfDay < 0 {
+		return value, ""
+	}
+	if i := strings.IndexAny(value[timeOfDay:], "+-"); i >= 0 {
+		return value[:timeOfDay+i], value[timeOfDay+i:]
+	}
+	return value, ""
+}
+
+func zoneLocation(zone string) (*time.Location, error) {
+	if zone[0] == '+' || zone[0] == '-' {
+		offset, err := time.Parse("-07:00", zone)
+		if err != nil {
+			return nil, err
+		}
+		_, seconds := offset.Zone()
+		return time.FixedZone("", seconds), nil
 	}
 	location, err := loadZone(zone)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("cannot load timezone %q: %v", zone, err)
+		return nil, fmt.Errorf("cannot load timezone %q: %v", zone, err)
 	}
-	return time.ParseInLocation(localTimeLayout(stamp), stamp, location)
+	return location, nil
 }
 
 // localTimeLayout returns the layout of a date, time or timestamp without
