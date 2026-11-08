@@ -708,6 +708,39 @@ func TestNewColumnTypeRejectsWrongArgumentKinds(t *testing.T) {
 	}
 }
 
+func TestDatabaseTypeName(t *testing.T) {
+	t.Parallel()
+	integer := scalarType("integer")
+	cases := []struct {
+		name      string
+		typeName  string
+		signature typeSignature
+		want      string
+	}{
+		{name: "scalar", typeName: "varchar(10)", signature: scalarType("varchar"), want: "VARCHAR"},
+		{name: "anonymous fields", typeName: "row(integer, varchar)", signature: rowType(namedField("", integer), namedField("", scalarType("varchar"))), want: "ROW(INTEGER, VARCHAR)"},
+		{name: "named and anonymous fields", typeName: "row(x integer, varchar)", signature: rowType(namedField("x", integer), namedField("", scalarType("varchar"))), want: "ROW(x INTEGER, VARCHAR)"},
+		{name: "mixed case field names", typeName: "row(MixedCase integer, lower integer)", signature: rowType(namedField("MixedCase", integer), namedField("lower", integer)), want: "ROW(MixedCase INTEGER, lower INTEGER)"},
+		{name: "quoted field name", typeName: `row("Ünïcode Name" varchar)`, signature: rowType(namedField("Ünïcode Name", scalarType("varchar"))), want: `ROW("Ünïcode Name" VARCHAR)`},
+		{name: "quoted field name with a quote, comma and parentheses", typeName: `row("a""b, (c)" integer, d integer)`, signature: rowType(namedField(`a"b, (c)`, integer), namedField("d", integer)), want: `ROW("a""b, (c)" INTEGER, d INTEGER)`},
+		{name: "field names like keywords", typeName: `row("select" integer, varchar varchar)`, signature: rowType(namedField("select", integer), namedField("varchar", scalarType("varchar"))), want: `ROW("select" INTEGER, varchar VARCHAR)`},
+		{name: "multi-word field types", typeName: "row(ts timestamp(3) with time zone, i interval day to second)", signature: rowType(namedField("ts", scalarType("timestamp with time zone")), namedField("i", scalarType("interval day to second"))), want: "ROW(ts TIMESTAMP(3) WITH TIME ZONE, i INTERVAL DAY TO SECOND)"},
+		{name: "row in an array", typeName: "array(row(MixedCase integer))", signature: arrayType(rowType(namedField("MixedCase", integer))), want: "ARRAY(ROW(MixedCase INTEGER))"},
+		{name: "row as a map value", typeName: "map(varchar(1), row(MixedCase integer))", signature: mapType(scalarType("varchar"), rowType(namedField("MixedCase", integer))), want: "MAP(VARCHAR(1), ROW(MixedCase INTEGER))"},
+		{name: "row in a row", typeName: "row(Outer row(Inner integer), array(row(Deep integer)))", signature: rowType(namedField("Outer", rowType(namedField("Inner", integer))), namedField("", arrayType(rowType(namedField("Deep", integer))))), want: "ROW(Outer ROW(Inner INTEGER), ARRAY(ROW(Deep INTEGER)))"},
+		{name: "field name not matching the signature", typeName: "row(x integer)", signature: rowType(namedField("y", integer)), want: "ROW(X INTEGER)"},
+		{name: "fewer fields than the signature", typeName: "row(x integer)", signature: rowType(namedField("x", integer), namedField("y", integer)), want: "ROW(X INTEGER)"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.NoError(t, unmarshalArguments(&tc.signature))
+
+			assert.Equal(t, tc.want, databaseTypeName(tc.typeName, tc.signature))
+		})
+	}
+}
+
 func TestNewValueDecoderRejectsMissingArguments(t *testing.T) {
 	t.Parallel()
 	for _, signature := range []typeSignature{

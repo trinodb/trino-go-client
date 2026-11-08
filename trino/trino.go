@@ -4268,7 +4268,7 @@ func newOptionalInt64(value int64) optionalInt64 {
 }
 
 func newColumnType(typeName string, signature typeSignature) (*columnType, error) {
-	result := &columnType{databaseTypeName: databaseTypeName(typeName, signature.RawType)}
+	result := &columnType{databaseTypeName: databaseTypeName(typeName, signature)}
 	var err error
 	result.scanType, err = getScanType(signature)
 	if err != nil {
@@ -4378,11 +4378,103 @@ func intervalTypeName(signature typeSignature) string {
 // databaseTypeName names a container by its full type, since its raw type
 // alone does not say what it holds, and any other type by its raw type,
 // leaving its parameters to ColumnTypeLength and ColumnTypePrecisionScale.
-func databaseTypeName(typeName, rawType string) string {
-	if rawType == "map" || rawType == "array" || rawType == "row" {
+// ROW field names keep their case, since they are identifiers, not type
+// names; if typeName does not match the signature, all of it is upper-cased.
+func databaseTypeName(typeName string, signature typeSignature) string {
+	if !isContainer(signature.RawType) {
+		return strings.ToUpper(signature.RawType)
+	}
+	var name strings.Builder
+	if !appendTypeName(&name, typeName, signature) {
 		return strings.ToUpper(typeName)
 	}
-	return strings.ToUpper(rawType)
+	return name.String()
+}
+
+func isContainer(rawType string) bool {
+	return rawType == "map" || rawType == "array" || rawType == "row"
+}
+
+// appendTypeName appends typeName, the text of a type with signature,
+// upper-cased except for the names of ROW fields, or returns false if
+// typeName does not have the arguments signature has.
+func appendTypeName(name *strings.Builder, typeName string, signature typeSignature) bool {
+	if !isContainer(signature.RawType) {
+		name.WriteString(strings.ToUpper(typeName))
+		return true
+	}
+	open := strings.IndexByte(typeName, '(')
+	if open < 0 || !strings.EqualFold(typeName[:open], signature.RawType) || !strings.HasSuffix(typeName, ")") {
+		return false
+	}
+	arguments := splitTypeArguments(typeName[open+1 : len(typeName)-1])
+	if len(arguments) != len(signature.Arguments) {
+		return false
+	}
+	name.WriteString(strings.ToUpper(typeName[:open+1]))
+	for i, argument := range arguments {
+		if i > 0 {
+			name.WriteByte(',')
+		}
+		argumentType := writeLeadingSpaces(name, argument)
+		argumentSignature, err := typeArgumentSignature(signature.Arguments[i])
+		if err != nil {
+			return false
+		}
+		if fieldName := signature.Arguments[i].namedTypeSignature.FieldName.Name; fieldName != "" {
+			writtenName, ok := cutFieldName(argumentType, fieldName)
+			if !ok {
+				return false
+			}
+			name.WriteString(writtenName)
+			argumentType = writeLeadingSpaces(name, argumentType[len(writtenName):])
+		}
+		if !appendTypeName(name, argumentType, argumentSignature) {
+			return false
+		}
+	}
+	name.WriteByte(')')
+	return true
+}
+
+// splitTypeArguments splits the arguments of a type on the commas outside
+// any nested type and quoted field name.
+func splitTypeArguments(arguments string) []string {
+	var result []string
+	depth, quoted, start := 0, false, 0
+	for i := 0; i < len(arguments); i++ {
+		switch {
+		case arguments[i] == '"':
+			quoted = !quoted
+		case quoted:
+		case arguments[i] == '(':
+			depth++
+		case arguments[i] == ')':
+			depth--
+		case arguments[i] == ',' && depth == 0:
+			result = append(result, arguments[start:i])
+			start = i + 1
+		}
+	}
+	return append(result, arguments[start:])
+}
+
+// writeLeadingSpaces writes the spaces text starts with, returning the rest.
+func writeLeadingSpaces(name *strings.Builder, text string) string {
+	rest := strings.TrimLeft(text, " ")
+	name.WriteString(text[:len(text)-len(rest)])
+	return rest
+}
+
+// cutFieldName returns fieldName the way field starts with it, quoted or
+// not, if a type follows it.
+func cutFieldName(field, fieldName string) (string, bool) {
+	for _, writtenName := range []string{fieldName, `"` + strings.ReplaceAll(fieldName, `"`, `""`) + `"`} {
+		if strings.HasPrefix(field, writtenName+" ") {
+			return writtenName, true
+		}
+	}
+	return "", false
 }
 
 // getScanType returns the type ColumnTypeScanType reports. An ARRAY or MAP
