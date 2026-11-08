@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -517,6 +518,8 @@ func TestParseDSNToConfig(t *testing.T) {
 
 func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	t.Parallel()
+	// Some options cannot be combined, so the fields are spread over DSNs that
+	// are each valid.
 	complexDSN := "https://user:pass@localhost:8080/?" +
 		"source=test-source&" +
 		"catalog=test_catalog&" +
@@ -530,25 +533,19 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"timezone=Asia%2FTokyo&" +
 		"naiveTimeZone=%2B05%3A30&" +
 		"resourceEstimates=EXECUTION_TIME%3A10m%3BPEAK_MEMORY%3A1GB&" +
-		"custom_client=test_client&" +
 		"KerberosEnabled=true&" +
 		"KerberosKeytabPath=/path/to/keytab&" +
 		"KerberosPrincipal=user%40REALM.COM&" +
 		"KerberosRemoteServiceName=trino-service&" +
 		"KerberosRealm=REALM.COM&" +
 		"KerberosConfigPath=/etc/krb5.conf&" +
-		"KerberosCredentialCachePath=/tmp/krb5cc_1000&" +
 		"KerberosServicePrincipalPattern=HTTP%40%24%7BHOST%7D&" +
 		"KerberosUseCanonicalHostname=false&" +
 		"SSLCertPath=/path/to/cert.pem&" +
-		"SSLCert=-----BEGIN%20CERTIFICATE-----test-cert-----END%20CERTIFICATE-----&" +
 		"SSLClientCertPath=/path/to/client-cert.pem&" +
-		"SSLClientCert=-----BEGIN%20CERTIFICATE-----test-client-cert-----END%20CERTIFICATE-----&" +
 		"SSLClientKeyPath=/path/to/client-key.pem&" +
-		"SSLClientKey=-----BEGIN%20PRIVATE%20KEY-----test-client-key-----END%20PRIVATE%20KEY-----&" +
 		"SSLVerification=CA&" +
 		"httpProxy=proxy.example.com%3A3128&" +
-		"socksProxy=proxy.example.com%3A1080&" +
 		"accessToken=jwt-token-here&" +
 		"explicitPrepare=false&" +
 		"forwardAuthorizationHeader=true&" +
@@ -556,41 +553,42 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 		"request_retry_timeout=90s&" +
 		"request_retry_max_attempts=4&" +
 		"heartbeat_interval=45s&" +
+		"roles=catalog1%3Arole1%3Bcatalog2%3Arole2"
+	externalAuthenticationDSN := "https://localhost:8080/?" +
+		"KerberosCredentialCachePath=/tmp/krb5cc_1000&" +
+		"SSLCert=-----BEGIN%20CERTIFICATE-----test-cert-----END%20CERTIFICATE-----&" +
+		"SSLClientCert=-----BEGIN%20CERTIFICATE-----test-client-cert-----END%20CERTIFICATE-----&" +
+		"SSLClientKey=-----BEGIN%20PRIVATE%20KEY-----test-client-key-----END%20PRIVATE%20KEY-----&" +
+		"socksProxy=proxy.example.com%3A1080&" +
 		"externalAuthentication=true&" +
-		"externalAuthenticationTimeout=5m&" +
+		"externalAuthenticationTimeout=5m"
+	clientCredentialsDSN := "https://localhost:8080/?" +
+		"custom_client=test_client&" +
 		"oauth2ClientId=client-id&" +
 		"oauth2ClientSecret=client-secret&" +
 		"oauth2TokenEndpoint=https%3A%2F%2Fidp.example.com%2Ftoken&" +
-		"oauth2Scope=openid%20profile&" +
-		"roles=catalog1%3Arole1%3Bcatalog2%3Arole2"
+		"oauth2Scope=openid%20profile"
 
 	config, err := ParseDSN(complexDSN)
 	require.NoError(t, err)
-	require.NotNil(t, config)
+	externalAuthenticationConfig, err := ParseDSN(externalAuthenticationDSN)
+	require.NoError(t, err)
+	clientCredentialsConfig, err := ParseDSN(clientCredentialsDSN)
+	require.NoError(t, err)
 
-	v := reflect.ValueOf(config).Elem()
-	configType := v.Type()
+	configs := []reflect.Value{
+		reflect.ValueOf(config).Elem(),
+		reflect.ValueOf(externalAuthenticationConfig).Elem(),
+		reflect.ValueOf(clientCredentialsConfig).Elem(),
+	}
+	configType := configs[0].Type()
 
-	for i := 0; i < v.NumField(); i++ {
+	for i := 0; i < configType.NumField(); i++ {
 		if configType.Field(i).Tag.Get("dsn") == "-" {
 			continue
 		}
-		field := v.Field(i)
-		fieldName := configType.Field(i).Name
-		fieldType := field.Type()
-
-		switch fieldType.Kind() {
-		case reflect.String:
-			assert.NotEmpty(t, field.String(), "Field %s should not be empty - add it to the test DSN and ParseDSNToConfig", fieldName)
-		case reflect.Slice:
-			assert.Greater(t, field.Len(), 0, "Field %s should not be empty slice - add it to the test DSN and ParseDSNToConfig", fieldName)
-		case reflect.Map:
-			assert.Greater(t, field.Len(), 0, "Field %s should not be empty map - add it to the test DSN and ParseDSNToConfig", fieldName)
-		case reflect.Bool:
-			assert.True(t, field.Bool(), "Field %s should be true - add it to the test DSN and ParseDSNToConfig", fieldName)
-		case reflect.Ptr:
-			assert.NotNil(t, field.Interface(), "Field %s should not be nil - add it to the test DSN and ParseDSNToConfig", fieldName)
-		}
+		isSet := slices.ContainsFunc(configs, func(v reflect.Value) bool { return !v.Field(i).IsZero() })
+		assert.True(t, isSet, "Field %s should be set by one of the test DSNs - add it to a test DSN and ParseDSNToConfig", configType.Field(i).Name)
 	}
 
 	assert.Equal(t, "https://user:pass@localhost:8080", config.ServerURI)
@@ -606,25 +604,25 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.Equal(t, "Asia/Tokyo", config.TimeZone)
 	assert.Equal(t, "+05:30", config.NaiveTimeZone)
 	assert.Equal(t, map[string]string{"EXECUTION_TIME": "10m", "PEAK_MEMORY": "1GB"}, config.ResourceEstimates)
-	assert.Equal(t, "test_client", config.CustomClientName)
+	assert.Equal(t, "test_client", clientCredentialsConfig.CustomClientName)
 	assert.Equal(t, true, config.KerberosEnabled)
 	assert.Equal(t, "/path/to/keytab", config.KerberosKeytabPath)
 	assert.Equal(t, "user@REALM.COM", config.KerberosPrincipal)
 	assert.Equal(t, "trino-service", config.KerberosRemoteServiceName)
 	assert.Equal(t, "REALM.COM", config.KerberosRealm)
 	assert.Equal(t, "/etc/krb5.conf", config.KerberosConfigPath)
-	assert.Equal(t, "/tmp/krb5cc_1000", config.KerberosCredentialCachePath)
+	assert.Equal(t, "/tmp/krb5cc_1000", externalAuthenticationConfig.KerberosCredentialCachePath)
 	assert.Equal(t, "HTTP@${HOST}", config.KerberosServicePrincipalPattern)
 	assert.True(t, config.KerberosDisableCanonicalHostname)
 	assert.Equal(t, "/path/to/cert.pem", config.SSLCertPath)
-	assert.Equal(t, "-----BEGIN CERTIFICATE-----test-cert-----END CERTIFICATE-----", config.SSLCert)
+	assert.Equal(t, "-----BEGIN CERTIFICATE-----test-cert-----END CERTIFICATE-----", externalAuthenticationConfig.SSLCert)
 	assert.Equal(t, "/path/to/client-cert.pem", config.SSLClientCertPath)
-	assert.Equal(t, "-----BEGIN CERTIFICATE-----test-client-cert-----END CERTIFICATE-----", config.SSLClientCert)
+	assert.Equal(t, "-----BEGIN CERTIFICATE-----test-client-cert-----END CERTIFICATE-----", externalAuthenticationConfig.SSLClientCert)
 	assert.Equal(t, "/path/to/client-key.pem", config.SSLClientKeyPath)
-	assert.Equal(t, "-----BEGIN PRIVATE KEY-----test-client-key-----END PRIVATE KEY-----", config.SSLClientKey)
+	assert.Equal(t, "-----BEGIN PRIVATE KEY-----test-client-key-----END PRIVATE KEY-----", externalAuthenticationConfig.SSLClientKey)
 	assert.Equal(t, SSLVerificationCA, config.SSLVerification)
 	assert.Equal(t, "proxy.example.com:3128", config.HTTPProxy)
-	assert.Equal(t, "proxy.example.com:1080", config.SOCKSProxy)
+	assert.Equal(t, "proxy.example.com:1080", externalAuthenticationConfig.SOCKSProxy)
 	assert.Equal(t, "jwt-token-here", config.AccessToken)
 	assert.Equal(t, true, config.DisableExplicitPrepare)
 	assert.Equal(t, true, config.ForwardAuthorizationHeader)
@@ -637,13 +635,13 @@ func TestParseDSNToConfigAllFieldsHandled(t *testing.T) {
 	assert.NotNil(t, config.HeartbeatInterval)
 	assert.Equal(t, 45*time.Second, *config.HeartbeatInterval)
 	assert.Equal(t, map[string]string{"catalog1": "role1", "catalog2": "role2"}, config.Roles)
-	assert.True(t, config.ExternalAuthentication)
-	require.NotNil(t, config.ExternalAuthenticationTimeout)
-	assert.Equal(t, 5*time.Minute, *config.ExternalAuthenticationTimeout)
-	assert.Equal(t, "client-id", config.OAuth2ClientID)
-	assert.Equal(t, "client-secret", config.OAuth2ClientSecret)
-	assert.Equal(t, "https://idp.example.com/token", config.OAuth2TokenEndpoint)
-	assert.Equal(t, "openid profile", config.OAuth2Scope)
+	assert.True(t, externalAuthenticationConfig.ExternalAuthentication)
+	require.NotNil(t, externalAuthenticationConfig.ExternalAuthenticationTimeout)
+	assert.Equal(t, 5*time.Minute, *externalAuthenticationConfig.ExternalAuthenticationTimeout)
+	assert.Equal(t, "client-id", clientCredentialsConfig.OAuth2ClientID)
+	assert.Equal(t, "client-secret", clientCredentialsConfig.OAuth2ClientSecret)
+	assert.Equal(t, "https://idp.example.com/token", clientCredentialsConfig.OAuth2TokenEndpoint)
+	assert.Equal(t, "openid profile", clientCredentialsConfig.OAuth2Scope)
 }
 
 func TestParseDSNPasswordRequiresTLS(t *testing.T) {
@@ -925,7 +923,7 @@ func TestConnErrorDSN(t *testing.T) {
 }
 
 // A custom client uses its own transport, so TLS settings in the DSN would be
-// silently ignored on sql.Open.
+// silently ignored.
 func TestCustomClientTLSConflicts(t *testing.T) {
 	t.Parallel()
 	require.NoError(t, RegisterCustomClient("tls-conflict", &http.Client{}))
@@ -941,17 +939,7 @@ func TestCustomClientTLSConflicts(t *testing.T) {
 		"verification":     "SSLVerification=NONE",
 	} {
 		t.Run(name, func(t *testing.T) {
-			dsn := "https://localhost:8443?custom_client=tls-conflict&" + query
-			db, err := sql.Open("trino", dsn)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, db.Close()) })
-			assert.ErrorContains(t, db.Ping(), wantErr)
-
-			conf, err := ParseDSN(dsn)
-			require.NoError(t, err)
-			_, err = NewConnector(conf)
-			assert.ErrorContains(t, err, wantErr)
-			_, err = conf.FormatDSN()
+			_, err := sql.Open("trino", "https://localhost:8443?custom_client=tls-conflict&"+query)
 			assert.ErrorContains(t, err, wantErr)
 		})
 	}
@@ -1146,13 +1134,8 @@ func TestSSLClientCertKeyPairingRejected(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			db, err := sql.Open("trino", "https://localhost:9?"+tc.query)
-			require.NoError(t, err)
-			t.Cleanup(func() { require.NoError(t, db.Close()) })
-
-			err = db.Ping()
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "must be specified together")
+			_, err := sql.Open("trino", "https://localhost:9?"+tc.query)
+			assert.ErrorContains(t, err, "must be specified together")
 		})
 	}
 }

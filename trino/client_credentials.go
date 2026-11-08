@@ -39,23 +39,6 @@ var errClientCredentialsNeedsTLS = errors.New("trino: TLS/SSL is required for au
 // validateClientCredentials mirrors the JDBC driver, which rejects the other
 // ways to authenticate, since each of them sends its own Authorization header.
 func (c *Config) validateClientCredentials(serverURL *url.URL) error {
-	if err := c.validateClientCredentialsOptions(serverURL); err != nil {
-		return err
-	}
-	if c.OAuth2ClientID == "" {
-		return nil
-	}
-	password, _ := serverURL.User.Password()
-	if c.ExternalAuthentication || password != "" || c.AccessToken != "" || c.KerberosEnabled || c.ForwardAuthorizationHeader {
-		return fmt.Errorf("trino: %s cannot be combined with %s, a password, an %s, Kerberos or %s", oauth2ClientIDConfig, externalAuthenticationConfig, accessTokenConfig, forwardAuthorizationHeaderConfig)
-	}
-	return nil
-}
-
-// validateClientCredentialsOptions checks the client credentials options on
-// their own, like ParseDSN does for every option; the conflicts with other
-// options are reported when connecting.
-func (c *Config) validateClientCredentialsOptions(serverURL *url.URL) error {
 	if c.OAuth2ClientID == "" {
 		for _, option := range []struct{ name, value string }{
 			{oauth2ClientSecretConfig, c.OAuth2ClientSecret},
@@ -74,11 +57,16 @@ func (c *Config) validateClientCredentialsOptions(serverURL *url.URL) error {
 	if serverURL.Scheme != "https" {
 		return errClientCredentialsNeedsTLS
 	}
-	if c.OAuth2TokenEndpoint == "" {
-		return nil
+	if c.OAuth2TokenEndpoint != "" {
+		if _, err := parseConfiguredTokenEndpoint(c.OAuth2TokenEndpoint); err != nil {
+			return err
+		}
 	}
-	_, err := parseConfiguredTokenEndpoint(c.OAuth2TokenEndpoint)
-	return err
+	password, _ := serverURL.User.Password()
+	if c.ExternalAuthentication || password != "" || c.AccessToken != "" || c.KerberosEnabled || c.ForwardAuthorizationHeader {
+		return fmt.Errorf("trino: %s cannot be combined with %s, a password, an %s, Kerberos or %s", oauth2ClientIDConfig, externalAuthenticationConfig, accessTokenConfig, forwardAuthorizationHeaderConfig)
+	}
+	return nil
 }
 
 // parseConfiguredTokenEndpoint accepts only https URLs, since the client
