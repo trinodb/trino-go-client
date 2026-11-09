@@ -235,6 +235,36 @@ func TestTransactionQueryRowOverSeveralPagesCancelsQuery(t *testing.T) {
 	assert.Equal(t, "txn-1", cancelled[0].header.Get(trinoTransactionHeader))
 }
 
+// Inside a transaction, closing rows whose next page is the last one reads
+// that page instead of cancelling the query, which would abort the
+// transaction, also when the server is slow to send it.
+func TestTransactionQueryRowWaitsForASlowLastPage(t *testing.T) {
+	t.Parallel()
+	fc := newTransactionCoordinator(t, "")
+	fc.respond(
+		statementPage(),
+		resultPage([][]any{{1}}),
+		finalPage(),
+	)
+	fc.onPage(func(index int, r *http.Request) {
+		if index == 2 {
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
+	db := fc.open(t, "")
+
+	tx, err := db.Begin()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = tx.Rollback() })
+
+	var value int
+	require.NoError(t, tx.QueryRow("SELECT orderkey FROM lineitem").Scan(&value))
+	assert.Equal(t, 1, value)
+	for _, request := range fc.capturedRequests() {
+		assert.NotEqual(t, http.MethodDelete, request.method, "the query ended without a cancel")
+	}
+}
+
 type transactionContextKey struct{}
 
 // statementContextTransport records, for every statement it sends, the

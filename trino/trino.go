@@ -2556,6 +2556,11 @@ type execution struct {
 	cancelQuery context.CancelFunc
 	// stopped is set once stop has run.
 	stopped bool
+	// serverDone is set once the server has ended the query: it sent the
+	// last page, without a nextUri, or reported the query as failed or
+	// cancelled. The polling goroutines read ahead of the caller, so rows
+	// closed early can tell whether a cancel is still needed.
+	serverDone atomic.Bool
 	// spoolingProcessorExited is closed when proccessSpollingSegments returns.
 	spoolingProcessorExited chan struct{}
 	waitSegmentAcks         sync.WaitGroup
@@ -3183,8 +3188,12 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*exec
 				}
 				err = handleResponseError(resp.StatusCode, qresp.Error)
 				if err != nil {
+					ex.serverDone.Store(true)
 					ex.errors <- err
 					return
+				}
+				if qresp.NextURI == "" {
+					ex.serverDone.Store(true)
 				}
 				select {
 				case ex.nextURIs <- qresp.NextURI:
@@ -3201,6 +3210,9 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*exec
 			}
 		}
 	}()
+	if sr.NextURI == "" {
+		ex.serverDone.Store(true)
+	}
 	ex.nextURIs <- sr.NextURI
 	if updater := ex.progressUpdater; updater != nil {
 		ex.statsCh = make(chan QueryProgressInfo)
@@ -3414,26 +3426,39 @@ func (qr *driverRows) Close() error {
 		return nil
 	}
 	qr.err = io.EOF
-	if !qr.exec.usingSpooledProtocol {
-		err := qr.fetch()
-		if err != nil && err != io.EOF {
-			return err
-		}
-		if qr.nextURI == "" {
-			return nil
-		}
-	} else {
-		select {
-		case _, ok := <-qr.exec.spoolingRowsChannel:
-			if !ok {
-				// channel is closed, all data has been consumed
-				return nil
-			}
-		case <-time.NewTimer(100 * time.Millisecond).C:
-			// no data is ready
-		}
+	// Cancel only a query the server has not ended.
+	if qr.exec.serverDone.Load() {
+		return nil
+	}
+	// The next page is often the last one, as after QueryRow, so read it
+	// before cancelling: a cancel aborts the transaction the query belongs
+	// to, and some servers answer it with an error for a query that has just
+	// finished.
+	ended, err := qr.awaitEnd()
+	if err != nil || ended {
+		return err
 	}
 	return qr.cancelQueryOnServer()
+}
+
+// awaitEnd reads the next page of a direct result, or waits briefly for the
+// rows of a spooled one, and reports whether the query has ended since.
+func (qr *driverRows) awaitEnd() (bool, error) {
+	if !qr.exec.usingSpooledProtocol {
+		if err := qr.fetch(); err != nil && err != io.EOF {
+			return false, err
+		}
+		return qr.nextURI == "" || qr.exec.serverDone.Load(), nil
+	}
+	select {
+	case _, ok := <-qr.exec.spoolingRowsChannel:
+		if !ok {
+			// all rows have been read
+			return true, nil
+		}
+	case <-time.After(100 * time.Millisecond):
+	}
+	return qr.exec.serverDone.Load(), nil
 }
 
 // cancelAbandonedQuery cancels a query that ended with err before its rows
