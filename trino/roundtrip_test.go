@@ -650,6 +650,67 @@ func TestRowsCloseCancelsTheQuery(t *testing.T) {
 	}
 }
 
+// QueryRow closes its rows after the first row, usually while the last page
+// is still on its way. Close reads that page instead of cancelling a query
+// that is about to end: Trino 372 answers such a cancel with 500.
+func TestQueryRowWaitsForASlowLastPage(t *testing.T) {
+	t.Parallel()
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), resultPage([][]any{{1}}), finalPage())
+	fc.onPage(func(index int, r *http.Request) {
+		if index == 2 {
+			time.Sleep(200 * time.Millisecond)
+		}
+	})
+	fc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodDelete {
+			return false
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		return true
+	})
+	db := fc.open(t, "")
+
+	var value int
+	require.NoError(t, db.QueryRow("SELECT 1").Scan(&value))
+	assert.Equal(t, 1, value)
+}
+
+// Rows of a query whose last page the driver has read need no cancel, also
+// when the caller stops reading early.
+func TestRowsCloseOfAFinishedQuerySendsNoCancel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		page func(string) *queryResponse
+	}{
+		{"direct", intRows(1, 2)},
+		{"spooled", spooledRows(reuseInlineRows(t, 0, 1), reuseInlineRows(t, 1, 2))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sc := newScriptedCoordinator(t, scriptedQuery{id: "q1", pages: []scriptedPage{{body: tc.page}}})
+			db := sc.open(t, "")
+			rows, err := db.Query("SELECT v")
+			require.NoError(t, err)
+			require.True(t, rows.Next())
+			require.NoError(t, rows.Close())
+			assert.Empty(t, deleteRequests(sc))
+		})
+	}
+}
+
+// deleteRequests returns the paths of the DELETE requests sc received.
+func deleteRequests(sc *scriptedCoordinator) []string {
+	var paths []string
+	for _, r := range sc.capturedRequests() {
+		if r.method == http.MethodDelete {
+			paths = append(paths, r.path)
+		}
+	}
+	return paths
+}
+
 // cancelQuery closes rows while the query has two pages left, answers every
 // DELETE with status, and returns the number of DELETEs and the error from
 // Close.
