@@ -1319,6 +1319,7 @@ type Conn struct {
 	resourceEstimates          map[string]string
 	kerberosEnabled            bool
 	kerberosClient             *client.Client
+	ownsKerberosClient         bool
 	kerberosServicePrincipal   kerberosServicePrincipal
 	useExplicitPrepare         bool
 	forwardAuthorizationHeader bool
@@ -1437,14 +1438,6 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 	if err != nil {
 		return nil, fmt.Errorf("trino: invalid server URL: %w", redactURLError(conf.ServerURI, err))
 	}
-	var kerberosClient *client.Client
-	if conf.KerberosEnabled {
-		kerberosClient, err = newKerberosClient(conf)
-		if err != nil {
-			return nil, err
-		}
-	}
-
 	var httpClient = http.DefaultClient
 	if conf.HTTPClient != nil {
 		httpClient = conf.HTTPClient
@@ -1489,7 +1482,6 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 		httpClient:                 *httpClient,
 		segmentHTTPClient:          *segmentHTTPClient,
 		httpHeaders:                make(http.Header),
-		kerberosClient:             kerberosClient,
 		kerberosEnabled:            conf.KerberosEnabled,
 		kerberosServicePrincipal:   newKerberosServicePrincipal(conf),
 		useExplicitPrepare:         !conf.DisableExplicitPrepare,
@@ -1568,6 +1560,16 @@ func newConnFromConfig(conf *Config, externalAuth *externalAuthenticator, client
 		if v := c.httpHeaders.Values(name); v != nil {
 			c.configuredSession[name] = slices.Clone(v)
 		}
+	}
+
+	// Log in last: a client the driver logs in renews its ticket in a
+	// goroutine until Close destroys it, so no error may follow the login.
+	if conf.KerberosEnabled {
+		c.kerberosClient, err = newKerberosClient(conf)
+		if err != nil {
+			return nil, err
+		}
+		c.ownsKerberosClient = conf.KerberosClient == nil
 	}
 
 	return c, nil
@@ -1875,6 +1877,10 @@ func (c *Conn) PrepareContext(ctx context.Context, query string) (driver.Stmt, e
 func (c *Conn) Close() error {
 	if c.ownedTransport != nil {
 		c.ownedTransport.closeIdleConnections()
+	}
+	// A Config.KerberosClient belongs to the caller, who may share it.
+	if c.ownsKerberosClient {
+		c.kerberosClient.Destroy()
 	}
 	return nil
 }
