@@ -1583,11 +1583,14 @@ Segment downloads follow redirects, which the coordinator answers them with in
 the `coordinator_storage_redirect` and `worker_proxy` values of
 `protocol.spooling.retrieval-mode`, sending the client to the storage or to a
 worker. A segment request carries only the headers the server listed for the
-segment, never the `X-Trino-*` session headers or credentials, so following
-the redirect does not leak them; the redirect target needs the segment
-headers, such as the encryption key, so they are kept. The `CheckRedirect`
-policy of an `HTTPClient` or `custom_client` applies, and the default client
-stops after 10 redirects.
+segment, never the `X-Trino-*` session headers or the credentials the driver
+adds, so following the redirect does not leak them; the redirect target needs
+the segment headers, such as the encryption key, so they are kept. The
+`CheckRedirect` policy of an `HTTPClient` or `custom_client` applies, and the
+default client stops after 10 redirects. The transport of an `HTTPClient` or
+`custom_client` also sends every segment download and acknowledgment, to
+whichever host and scheme the server names, so a transport that adds its own
+credentials must add them only to requests for the coordinator.
 
 Spooled segments stay in storage only until the `expiresAt` time the server
 reports for each of them, so rows read too slowly can outlive their segments.
