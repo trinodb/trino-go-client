@@ -609,3 +609,32 @@ func (r *countingResolver) LookupAddr(ctx context.Context, addr string) ([]strin
 	r.lookups++
 	return r.fakeResolver.LookupAddr(ctx, addr)
 }
+
+// Closing a connection destroys the client the driver logged in, which stops
+// its ticket renewal, but leaves a caller's client logged in.
+func TestKerberosConnCloseDestroysOnlyTheDriverClient(t *testing.T) {
+	t.Parallel()
+	krb5Files := newKerberosTestFiles(t, "alice", "trino/127.0.0.1")
+	callerClient := newTestKerberosClient(t, krb5Files)
+	cases := []struct {
+		name      string
+		conf      Config
+		wantAfter string
+	}{
+		{"credential cache", Config{KerberosConfigPath: krb5Files.config, KerberosCredentialCachePath: krb5Files.credentialCache}, ""},
+		{"caller client", Config{KerberosClient: callerClient}, "alice"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := tc.conf
+			conf.ServerURI = "https://localhost:8443"
+			conf.KerberosEnabled = true
+			conn, err := newConnFromConfig(&conf, nil, nil, &driverTransport{})
+			require.NoError(t, err)
+			require.Equal(t, "alice", conn.kerberosClient.Credentials.UserName())
+
+			require.NoError(t, conn.Close())
+			assert.Equal(t, tc.wantAfter, conn.kerberosClient.Credentials.UserName())
+		})
+	}
+}
