@@ -4521,7 +4521,19 @@ func (qr *driverRows) queueSpoolingSegments(spooled spooledData) bool {
 	return true
 }
 
+// maxTypeSignatureDepth limits how deeply the types of a column nest. Each
+// level decodes the JSON of all the levels below it again, so the cost grows
+// with the square of the depth.
+const maxTypeSignatureDepth = 100
+
 func unmarshalArguments(signature *typeSignature) error {
+	return unmarshalArgumentsAt(signature, 1)
+}
+
+func unmarshalArgumentsAt(signature *typeSignature, depth int) error {
+	if depth > maxTypeSignatureDepth {
+		return fmt.Errorf("type signature is nested deeper than %d levels", maxTypeSignatureDepth)
+	}
 	for i, argument := range signature.Arguments {
 		var payload interface{}
 		switch argument.Kind {
@@ -4538,9 +4550,9 @@ func unmarshalArguments(signature *typeSignature) error {
 		}
 		switch argument.Kind {
 		case KIND_TYPE:
-			err = unmarshalArguments(&(signature.Arguments[i].typeSignature))
+			err = unmarshalArgumentsAt(&(signature.Arguments[i].typeSignature), depth+1)
 		case KIND_NAMED_TYPE:
-			err = unmarshalArguments(&(signature.Arguments[i].namedTypeSignature.TypeSignature))
+			err = unmarshalArgumentsAt(&(signature.Arguments[i].namedTypeSignature.TypeSignature), depth+1)
 		}
 		if err != nil {
 			return err
