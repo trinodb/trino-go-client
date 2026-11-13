@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"database/sql"
 	"encoding/json/jsontext"
+	"encoding/json/v2"
 	"fmt"
 	"math"
 	"reflect"
@@ -942,4 +943,20 @@ func TestNullMapLocation(t *testing.T) {
 			assert.Equal(t, "Asia/Tokyo", key.Location().String())
 		}
 	})
+}
+
+// Each level of a type signature decodes the levels below it again, so the
+// depth is limited.
+func TestUnmarshalArgumentsLimitsDepth(t *testing.T) {
+	t.Parallel()
+	nested := func(arrays int) *typeSignature {
+		raw := strings.Repeat(`{"rawType":"array","arguments":[{"kind":"TYPE","value":`, arrays) +
+			`{"rawType":"varchar","arguments":[{"kind":"LONG","value":10}]}` +
+			strings.Repeat(`}]}`, arrays)
+		var signature typeSignature
+		require.NoError(t, json.Unmarshal([]byte(raw), &signature))
+		return &signature
+	}
+	require.NoError(t, unmarshalArguments(nested(maxTypeSignatureDepth-1)))
+	assert.ErrorContains(t, unmarshalArguments(nested(maxTypeSignatureDepth)), "nested deeper than 100 levels")
 }
