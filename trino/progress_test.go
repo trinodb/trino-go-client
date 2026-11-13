@@ -132,3 +132,27 @@ func TestProgressCallbackArgumentsOfWrongTypeReturnError(t *testing.T) {
 		})
 	}
 }
+
+// Closing the rows stops the progress callback while the spooling processor
+// may still be about to report the page it read. That report must be dropped,
+// not panic on a closed channel.
+func TestProgressCallbackCloseWhileSpoolingProcessorReports(t *testing.T) {
+	t.Parallel()
+	segment := inlineSegment("W1sxMDAwXSwgWzEwMDAxXV0=", map[string]any{"segmentSize": 17, "rowOffset": 0})
+	// The send of each report races the stop, so a few queries are needed to
+	// hit it.
+	for range 10 {
+		fc := newFakeCoordinator(t)
+		fc.respond(statementPage(), spooledPage("json", segment), resultPage([][]any{{1}}), finalPage())
+		db := fc.open(t, "")
+
+		rows, err := db.Query("SELECT 1",
+			sql.Named(trinoProgressCallbackParam, &recordingProgressUpdater{}),
+			sql.Named(trinoProgressCallbackPeriodParam, time.Nanosecond))
+		require.NoError(t, err)
+		// The second page fails the query, so Next may return that
+		// error instead of the first row; only the Close matters here.
+		rows.Next()
+		require.NoError(t, rows.Close())
+	}
+}

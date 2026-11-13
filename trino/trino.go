@@ -2546,6 +2546,7 @@ type execution struct {
 	httpResponses                 chan *http.Response
 	queryResponses                chan queryResponse
 	statsCh                       chan QueryProgressInfo
+	progressDone                  chan struct{}
 	usingSpooledProtocol          bool
 	spoolingMaxOutOfOrderSegments int
 	spoolingWorkerCount           int
@@ -2633,8 +2634,8 @@ func (ex *execution) stop() {
 		return
 	}
 	close(ex.doneCh)
-	if ex.statsCh != nil {
-		<-ex.statsCh
+	if ex.progressDone != nil {
+		<-ex.progressDone
 	}
 	errs := ex.errors
 	go func() {
@@ -3220,15 +3221,18 @@ func (st *driverStmt) exec(ctx context.Context, args []driver.NamedValue) (*exec
 	ex.nextURIs <- sr.NextURI
 	if updater := ex.progressUpdater; updater != nil {
 		ex.statsCh = make(chan QueryProgressInfo)
+		ex.progressDone = make(chan struct{})
 
-		// progress updater go func
+		// progress updater go func. It never closes statsCh: the spooling
+		// processor may still send on it after stop, and a send on a
+		// closed channel panics. stop waits for progressDone instead.
 		go func() {
+			defer close(ex.progressDone)
 			for {
 				select {
 				case stats := <-ex.statsCh:
 					updater.Update(stats)
 				case <-ex.doneCh:
-					close(ex.statsCh)
 					return
 				}
 			}
