@@ -542,6 +542,10 @@ func variantValueSize(value []byte) (int, error) {
 type variantValidator struct {
 	metadata variantMetadata
 	fields   [][2]int
+	// seen holds, for each field ID, the generation of the last object
+	// that named it, so one slice serves every object of the value.
+	seen       []uint32
+	generation uint32
 }
 
 // validateValue checks that value starts with a well-formed variant value,
@@ -588,12 +592,14 @@ func (v *variantValidator) validateValue(value []byte, depth int) (int, error) {
 // it, and fields are sorted by offset only when they are stored in another
 // order, which the specification also allows.
 func (v *variantValidator) validateObjectFields(value []byte, container variantContainer, valuesSize int, depth int) error {
+	// Check every ID before validating the values: a nested object reuses
+	// the generations in seen.
+	if err := v.checkObjectFieldIDs(value, container); err != nil {
+		return err
+	}
 	previousEnd := 0
 	inOrder := true
 	for i := 0; i < container.count; i++ {
-		if fieldID := int(readVariantUint(value[container.idsStart+i*container.idSize:], container.idSize)); fieldID >= v.metadata.size {
-			return fmt.Errorf("variant field ID %d is not in the metadata dictionary of %d keys", fieldID, v.metadata.size)
-		}
 		start := container.offset(i)
 		if start > valuesSize {
 			return fmt.Errorf("variant element %d has invalid offsets %d and %d", i, start, valuesSize)
@@ -609,6 +615,31 @@ func (v *variantValidator) validateObjectFields(value []byte, container variantC
 			return err
 		}
 		previousEnd = start + size
+	}
+	return nil
+}
+
+// checkObjectFieldIDs checks that the field IDs of an object are in the
+// metadata dictionary and that none repeats: an object naming one long key
+// many times would otherwise multiply its size when converted.
+func (v *variantValidator) checkObjectFieldIDs(value []byte, container variantContainer) error {
+	if len(v.seen) < v.metadata.size {
+		v.seen = make([]uint32, v.metadata.size)
+	}
+	v.generation++
+	if v.generation == 0 {
+		clear(v.seen)
+		v.generation = 1
+	}
+	for i := 0; i < container.count; i++ {
+		fieldID := int(readVariantUint(value[container.idsStart+i*container.idSize:], container.idSize))
+		if fieldID >= v.metadata.size {
+			return fmt.Errorf("variant field ID %d is not in the metadata dictionary of %d keys", fieldID, v.metadata.size)
+		}
+		if v.seen[fieldID] == v.generation {
+			return fmt.Errorf("variant object repeats field ID %d", fieldID)
+		}
+		v.seen[fieldID] = v.generation
 	}
 	return nil
 }

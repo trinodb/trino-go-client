@@ -542,3 +542,33 @@ func TestNewVariantReusesTheFieldBufferForObjectsOutOfOrder(t *testing.T) {
 	})
 	assert.Less(t, allocs, float64(objects), "the objects should not allocate one buffer each")
 }
+
+// An object may name each key once: one long key named by many fields would
+// otherwise multiply its size when the value is converted.
+func TestNewVariantRejectsRepeatedObjectFieldIDs(t *testing.T) {
+	t.Parallel()
+	metadata := []byte{0x01, 0x01, 0x00, 0x01, 'a'}
+	cases := []struct {
+		name  string
+		value []byte
+	}{
+		// Fields "a" and "a": null, then true.
+		{"two fields", []byte{0x02, 0x02, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x04}},
+		// Fields "a" and "a": the object {"a":null}, then true. The nested
+		// object names "a" too, between the two outer ones.
+		{"around a nested object", []byte{0x02, 0x02, 0x00, 0x00, 0x00, 0x06, 0x07, 0x02, 0x01, 0x00, 0x00, 0x01, 0x00, 0x04}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := newVariant(metadata, tc.value, nil)
+			assert.ErrorContains(t, err, "repeats field ID 0")
+		})
+	}
+
+	// Sibling and nested objects may each name the same key once.
+	nested := []byte{0x03, 0x02, 0x00, 0x06, 0x11, 0x02, 0x01, 0x00, 0x00, 0x01, 0x00, 0x02, 0x01, 0x00, 0x00, 0x06, 0x02, 0x01, 0x00, 0x00, 0x01, 0x04}
+	v, err := newVariant(metadata, nested, nil)
+	require.NoError(t, err)
+	assert.Equal(t, `[{"a":null},{"a":{"a":true}}]`, v.String())
+}
