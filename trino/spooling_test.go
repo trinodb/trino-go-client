@@ -1546,3 +1546,30 @@ func TestSpoolingProtocolSegmentBacklog(t *testing.T) {
 		})
 	})
 }
+
+func TestSpoolingProtocolRejectsSpooledDataWithoutColumns(t *testing.T) {
+	t.Parallel()
+	// Each segment holds one row with no values, which decodes without
+	// columns, so only the missing column list can fail the query.
+	columnless := func(offset int) page {
+		return pageOf(&queryResponse{
+			ID: fakeQueryID,
+			Data: jsonData(map[string]any{
+				"encoding": "json",
+				"segments": []map[string]any{inlineSegment("W1tdXQ==", map[string]any{"rowOffset": offset, "segmentSize": 4, "rowsCount": 1})},
+			}),
+		})
+	}
+	fc := newFakeCoordinator(t)
+	fc.respond(statementPage(), columnless(0), columnless(1), columnless(2), finalPage())
+	db := fc.open(t, "")
+
+	rows, err := db.Query("SELECT 1")
+	if err == nil {
+		for rows.Next() {
+		}
+		err = rows.Err()
+		require.NoError(t, rows.Close())
+	}
+	require.ErrorContains(t, err, "spooled data without columns")
+}

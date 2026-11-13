@@ -4126,6 +4126,11 @@ func (qr *driverRows) fetch() error {
 				}
 			case '{':
 				// spooling protocol
+				if qr.columns == nil {
+					// The workers decode with the columns known when they
+					// start, so the server must send the columns first.
+					return errors.New("trino: spooled data without columns")
+				}
 				spooled, err := decodeSpooledData(qresp.Data)
 				if err != nil {
 					return err
@@ -4483,9 +4488,6 @@ func (qr *driverRows) proccessSpollingSegments(first spooledData) {
 			}
 
 			qr.exec.sendHeartbeatURI(qresp.NextURI)
-			if err := qr.initColumns(&qresp); err != nil {
-				qr.exec.errors <- err
-			}
 
 			switch qresp.Data.Kind() {
 			case '{':
