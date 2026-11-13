@@ -448,3 +448,29 @@ func TestNoTransactionHeaderSentInAutocommit(t *testing.T) {
 		assert.Empty(t, request.header.Values(trinoTransactionHeader), "%s %s", request.method, request.path)
 	}
 }
+
+// A ROLLBACK runs after the caller gave up on the transaction, so a server
+// that stalls it must not keep the connection for DefaultQueryTimeout.
+// Not parallel: it lowers DefaultCancelQueryTimeout.
+func TestTransactionRollbackIsBounded(t *testing.T) {
+	defer func(timeout time.Duration) { DefaultCancelQueryTimeout = timeout }(DefaultCancelQueryTimeout)
+	DefaultCancelQueryTimeout = 100 * time.Millisecond
+
+	fc := newTransactionCoordinator(t, "")
+	fc.onRequest(func(w http.ResponseWriter, r *http.Request) bool {
+		// The only statement sent inside the transaction is the ROLLBACK.
+		if id := r.Header.Get(trinoTransactionHeader); r.Method == http.MethodPost && id != "" && id != noTransactionID {
+			<-r.Context().Done()
+			return true
+		}
+		return false
+	})
+	db := fc.open(t, "")
+	tx, err := db.BeginTx(context.Background(), nil)
+	require.NoError(t, err)
+
+	start := time.Now()
+	err = tx.Rollback()
+	assert.ErrorIs(t, err, context.DeadlineExceeded)
+	assert.Less(t, time.Since(start), 5*time.Second)
+}

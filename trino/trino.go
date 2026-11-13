@@ -1818,12 +1818,18 @@ var _ driver.Tx = &driverTx{}
 
 // Commit implements the driver.Tx interface.
 func (tx *driverTx) Commit() error {
-	return tx.finish("COMMIT")
+	return tx.finish(tx.ctx, "COMMIT")
 }
 
 // Rollback implements the driver.Tx interface.
 func (tx *driverTx) Rollback() error {
-	err := tx.finish("ROLLBACK")
+	// database/sql rolls back when the BeginTx context ends, and that
+	// context does not reach the ROLLBACK. Bound it like a query
+	// cancellation, so a stalled server cannot keep the connection busy
+	// for DefaultQueryTimeout after the caller gave up.
+	ctx, cancel := context.WithTimeout(tx.ctx, DefaultCancelQueryTimeout)
+	defer cancel()
+	err := tx.finish(ctx, "ROLLBACK")
 	// Trino aborts a transaction itself as soon as a statement inside it fails,
 	// and then refuses ROLLBACK for sessions carrying catalog-scoped state such
 	// as roles. The transaction is discarded either way, which is all the caller
@@ -1834,7 +1840,7 @@ func (tx *driverTx) Rollback() error {
 	return err
 }
 
-func (tx *driverTx) finish(query string) error {
+func (tx *driverTx) finish(ctx context.Context, query string) error {
 	if tx.conn == nil {
 		return sql.ErrTxDone
 	}
@@ -1843,7 +1849,7 @@ func (tx *driverTx) finish(query string) error {
 	// Whether or not the statement succeeds the transaction is over for this
 	// connection, and keeping a dead ID around would fail every later query.
 	defer conn.deleteHTTPHeader(trinoTransactionHeader)
-	return conn.execInternal(tx.ctx, query)
+	return conn.execInternal(ctx, query)
 }
 
 // isTrinoErrorName reports whether err is an error raised by the server with one
