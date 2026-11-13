@@ -1307,7 +1307,8 @@ type Conn struct {
 	// segmentHTTPClient follows redirects, which the coordinator issues for
 	// segment downloads in the COORDINATOR_STORAGE_REDIRECT and WORKER_PROXY
 	// retrieval modes. Segment requests carry only the headers the server
-	// listed for the segment, never the session headers or credentials.
+	// listed for the segment, never the session headers or the credentials
+	// the driver adds; a credential-adding transport still sees them.
 	segmentHTTPClient http.Client
 	// httpHeadersMu guards httpHeaders, which the spooling heartbeat reads
 	// while the query polling updates it from the server responses, and
